@@ -1,9 +1,4 @@
-# Global imports
-import itertools
-import re
-import textwrap
 from dataclasses import dataclass, field, fields
-from enum import Enum, auto
 from typing import List
 
 # ---------------------------- FOOTPRINT PART ----------------------------
@@ -173,16 +168,9 @@ class KiFootprintCircle:
         round_float_values(self)
 
 
-# ---------------- RECTANGLE ----------------
 @dataclass
 class KiFootprintRectangle(KiFootprintTrack):
     ...
-    # points_start_x:List[float] = field(default_factory=list)
-    # points_start_y:List[float] = field(default_factory=list)
-    # points_end_x:List[float] = field(default_factory=list)
-    # points_end_y:List[float] = field(default_factory=list)
-    # stroke_width:float = 0
-    # layers:str = ''
 
 
 # ---------------- ARC ----------------
@@ -228,21 +216,15 @@ class KiFootprintVia:
     def __post_init__(self) -> None:
         round_float_values(self)
 
-    # TODO
 
-
-# ---------------- SOLID REGION ----------------
 @dataclass
 class KiFootprintSolidRegion:
     name: str = ""
-    # TODO
 
 
-# ---------------- COPPER AREA ----------------
 @dataclass
 class KiFootprintCopperArea:
     name: str = ""
-    # TODO
 
 
 # ---------------- FOOTPRINT INFO ----------------

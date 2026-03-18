@@ -1,16 +1,14 @@
-# Global imports
 import itertools
 import re
 import textwrap
 from dataclasses import dataclass, field, fields
 from enum import Enum, auto
-from typing import List, Union
+from typing import List, Optional, Union
 
 
 class KicadVersion(Enum):
     v5 = auto()
     v6 = auto()
-    v6_99 = auto()
 
 
 class KiPinType(Enum):
@@ -142,6 +140,11 @@ class KiSymbolInfo:
     jlc_id: str
     y_low: Union[int, float] = 0
     y_high: Union[int, float] = 0
+    hide_pin_numbers: bool = False
+    hide_pin_names: bool = False
+    value_override: Optional[str] = None
+    symbol_params: Optional[dict] = None
+    symbol_description: Optional[str] = None
 
     def export_v5(self) -> str:
         field_offset_y = KiExportConfigV5.FIELD_OFFSET_START.value
@@ -151,8 +154,8 @@ class KiSymbolInfo:
                 name=sanitize_fields(self.name),
                 ref=self.prefix,
                 pin_name_offset=KiExportConfigV5.PIN_NAME_OFFSET.value,
-                show_pin_number="Y",
-                show_pin_name="Y",
+                show_pin_number="N" if self.hide_pin_numbers else "Y",
+                show_pin_name="N" if self.hide_pin_names else "Y",
                 num_units=1,
             ),
             'F0 "{ref_prefix}" {x} {y} {font_size} H V {text_justification} CNN'.format(
@@ -163,13 +166,16 @@ class KiSymbolInfo:
                 font_size=KiExportConfigV5.FIELD_FONT_SIZE.value,
             ),
             'F1 "{num}" {x} {y} {font_size} H V {text_justification} CNN'.format(
-                num=self.name,
+                num=self.value_override if self.value_override else self.name,
                 x=0,
                 y=self.y_low - field_offset_y,
                 text_justification="C",  # Center align
                 font_size=KiExportConfigV5.FIELD_FONT_SIZE.value,
             ),
         ]
+
+        if self.value_override and self.value_override != self.name:
+            header.append(f'F4 "{self.name}" 0 0 0 H I C CNN "Description"')
 
         if self.package:
             field_offset_y += KiExportConfigV5.FIELD_OFFSET_INCREMENT.value
@@ -211,106 +217,89 @@ class KiSymbolInfo:
         return "\n".join(header)
 
     def export_v6(self) -> List[str]:
-        property_template = textwrap.indent(
+        _prop_visible = textwrap.indent(
             textwrap.dedent(
                 """
-                (property
-                  "{key}"
-                  "{value}"
-                  (id {id_})
+                (property "{key}" "{value}"
                   (at 0 {pos_y:.2f} 0)
-                  (effects (font (size {font_size} {font_size}) {style}) {hide})
+                  (effects
+                    (font
+                      (size {font_size} {font_size})
+                    )
+                  )
+                )"""
+            ),
+            "  ",
+        )
+        _prop_hidden = textwrap.indent(
+            textwrap.dedent(
+                """
+                (property "{key}" "{value}"
+                  (at 0 {pos_y:.2f} 0)
+                  (effects
+                    (font
+                      (size {font_size} {font_size})
+                    )
+                    (hide yes)
+                  )
                 )"""
             ),
             "  ",
         )
 
+        def _prop(key, value, pos_y, hide="hide"):
+            safe_value = str(value).replace('"', "'")
+            template = _prop_visible if hide == "" else _prop_hidden
+            return template.format(
+                key=key,
+                value=safe_value,
+                pos_y=pos_y,
+                font_size=KiExportConfigV6.PROPERTY_FONT_SIZE.value,
+            )
+
         field_offset_y = KiExportConfigV6.FIELD_OFFSET_START.value
         header: List[str] = [
-            property_template.format(
-                key="Reference",
-                value=self.prefix,
-                id_=0,
-                pos_y=self.y_high + field_offset_y,
-                font_size=KiExportConfigV6.PROPERTY_FONT_SIZE.value,
-                style="",
-                hide="",
-            ),
-            property_template.format(
-                key="Value",
-                value=self.name,
-                id_=1,
-                pos_y=self.y_low - field_offset_y,
-                font_size=KiExportConfigV6.PROPERTY_FONT_SIZE.value,
-                style="",
-                hide="",
-            ),
+            _prop("Reference", self.prefix, self.y_high + field_offset_y, hide=""),
         ]
-        if self.package:
-            field_offset_y += KiExportConfigV6.FIELD_OFFSET_INCREMENT.value
-            header.append(
-                property_template.format(
-                    key="Footprint",
-                    value=self.package,
-                    id_=2,
-                    pos_y=self.y_low - field_offset_y,
-                    font_size=KiExportConfigV6.PROPERTY_FONT_SIZE.value,
-                    style="",
-                    hide="hide",
-                )
+
+        header.append(
+            _prop(
+                "Value",
+                self.value_override if self.value_override else self.name,
+                self.y_low - field_offset_y,
+                hide="",
             )
-        if self.datasheet:
-            field_offset_y += KiExportConfigV6.FIELD_OFFSET_INCREMENT.value
-            header.append(
-                property_template.format(
-                    key="Datasheet",
-                    value=self.datasheet,
-                    id_=3,
-                    pos_y=self.y_low - field_offset_y,
-                    font_size=KiExportConfigV6.PROPERTY_FONT_SIZE.value,
-                    style="",
-                    hide="hide",
-                )
-            )
+        )
+
+        field_offset_y += KiExportConfigV6.FIELD_OFFSET_INCREMENT.value
+        header.append(_prop("Footprint", self.package or "", self.y_low - field_offset_y))
+
+        field_offset_y += KiExportConfigV6.FIELD_OFFSET_INCREMENT.value
+        header.append(_prop("Datasheet", self.datasheet or "", self.y_low - field_offset_y))
+
+        description_value = self.symbol_description or (
+            self.name if self.value_override and self.value_override != self.name else ""
+        )
+        field_offset_y += KiExportConfigV6.FIELD_OFFSET_INCREMENT.value
+        header.append(_prop("Description", description_value, self.y_low - field_offset_y))
+
         if self.manufacturer:
             field_offset_y += KiExportConfigV6.FIELD_OFFSET_INCREMENT.value
-            header.append(
-                property_template.format(
-                    key="Manufacturer",
-                    value=self.manufacturer,
-                    id_=4,
-                    pos_y=self.y_low - field_offset_y,
-                    font_size=KiExportConfigV6.PROPERTY_FONT_SIZE.value,
-                    style="",
-                    hide="hide",
-                )
-            )
+            header.append(_prop("Manufacturer", self.manufacturer, self.y_low - field_offset_y))
+
         if self.lcsc_id:
             field_offset_y += KiExportConfigV6.FIELD_OFFSET_INCREMENT.value
-            header.append(
-                property_template.format(
-                    key="LCSC Part",
-                    value=self.lcsc_id,
-                    id_=5,
-                    pos_y=self.y_low - field_offset_y,
-                    font_size=KiExportConfigV6.PROPERTY_FONT_SIZE.value,
-                    style="",
-                    hide="hide",
-                )
-            )
+            header.append(_prop("LCSC Part", self.lcsc_id, self.y_low - field_offset_y))
+
         if self.jlc_id:
             field_offset_y += KiExportConfigV6.FIELD_OFFSET_INCREMENT.value
-            header.append(
-                property_template.format(
-                    key="JLC Part",
-                    value=self.jlc_id,
-                    id_=6,
-                    pos_y=self.y_low - field_offset_y,
-                    font_size=KiExportConfigV6.PROPERTY_FONT_SIZE.value,
-                    style="",
-                    hide="hide",
-                )
-            )
+            header.append(_prop("JLC Part", self.jlc_id, self.y_low - field_offset_y))
+
+        if self.symbol_params:
+            for param_key, param_value in self.symbol_params.items():
+                if param_value:
+                    field_offset_y += KiExportConfigV6.FIELD_OFFSET_INCREMENT.value
+                    header.append(_prop(param_key, param_value, self.y_low - field_offset_y))
 
         return header
 
@@ -326,9 +315,10 @@ class KiSymbolPin:
     orientation: float
     pos_x: Union[int, float]
     pos_y: Union[int, float]
+    hide_number: bool = False
+    hide_name: bool = False
 
     def export_v5(self) -> str:
-
         return (
             "X {name} {num} {x} {y} {length:.0f} {orientation} {num_sz} {name_sz}"
             " {unit_num} 1 {pin_type} {pin_style}\n".format(
@@ -342,8 +332,8 @@ class KiSymbolPin:
                 orientation=ki_pin_orientation_v5_format[f"{self.orientation}"]
                 if f"{self.orientation}" in ki_pin_orientation_v5_format
                 else ki_pin_orientation_v5_format["0"],
-                num_sz=KiExportConfigV5.PIN_NUM_SIZE.value,
-                name_sz=KiExportConfigV5.PIN_NAME_SIZE.value,
+                num_sz=0 if self.hide_number else KiExportConfigV5.PIN_NUM_SIZE.value,
+                name_sz=0 if self.hide_name else KiExportConfigV5.PIN_NAME_SIZE.value,
                 unit_num=1,
                 pin_type=ki_pin_type_v5_format[self.type],
                 pin_style=ki_pin_style_v5_format[self.style],
@@ -351,12 +341,20 @@ class KiSymbolPin:
         )
 
     def export_v6(self) -> str:
+        name_effects = "(effects (font (size {s} {s})){hide})".format(
+            s=KiExportConfigV6.PIN_NAME_SIZE.value,
+            hide=" hide" if self.hide_name else "",
+        )
+        num_effects = "(effects (font (size {s} {s})){hide})".format(
+            s=KiExportConfigV6.PIN_NUM_SIZE.value,
+            hide=" hide" if self.hide_number else "",
+        )
         return """
             (pin {pin_type} {pin_style}
               (at {x:.2f} {y:.2f} {orientation})
               (length {pin_length})
-              (name "{pin_name}" (effects (font (size {name_size} {name_size}))))
-              (number "{pin_num}" (effects (font (size {num_size} {num_size}))))
+              (name "{pin_name}" {name_effects})
+              (number "{pin_num}" {num_effects})
             )""".format(
             pin_type=self.type.name[1:]
             if self.type.name.startswith("_")
@@ -366,13 +364,12 @@ class KiSymbolPin:
             y=self.pos_y,
             orientation=(180 + self.orientation) % 360,  # TODO: 360 - ?
             pin_length=self.length,
-            # pin_length=KiExportConfigV6.PIN_LENGTH.value,
             pin_name=apply_pin_name_style(
                 pin_name=self.name, kicad_version=KicadVersion.v6
             ),
-            name_size=KiExportConfigV6.PIN_NAME_SIZE.value,
+            name_effects=name_effects,
             pin_num=self.number,
-            num_size=KiExportConfigV6.PIN_NUM_SIZE.value,
+            num_effects=num_effects,
         )
 
 
@@ -638,22 +635,32 @@ class KiSymbol:
         sym_pins = sym_export_data.pop("pins")
         sym_graphic_items = itertools.chain.from_iterable(sym_export_data.values())
 
-        return textwrap.indent(
-            textwrap.dedent(
-                """
-            (symbol "{library_id}"
-              (in_bom yes)
-              (on_board yes)
-              {symbol_properties}
-              (symbol "{library_id}_0_1"
-                {graphic_items}
-                {pins}
-              )
-            )"""
-            ),
-            "  ",
-        ).format(
+        pin_number_hide = (
+            "\n    (pin_numbers\n      (hide yes)\n    )" if self.info.hide_pin_numbers else ""
+        )
+        pin_name_hide = (
+            "\n    (pin_names\n      (hide yes)\n    )" if self.info.hide_pin_names else ""
+        )
+
+        template = textwrap.dedent(
+            """
+        (symbol "{library_id}"{pin_number_hide}{pin_name_hide}
+          (exclude_from_sim no)
+          (in_bom yes)
+          (on_board yes)
+          {symbol_properties}
+          (symbol "{library_id}_0_1"
+            {graphic_items}
+            {pins}
+          )
+          (embedded_fonts no)
+        )"""
+        )
+
+        return textwrap.indent(template, "  ").format(
             library_id=sanitize_fields(self.info.name),
+            pin_number_hide=pin_number_hide,
+            pin_name_hide=pin_name_hide,
             symbol_properties=textwrap.indent(
                 textwrap.dedent("".join(sym_info)), "  " * 2
             ),

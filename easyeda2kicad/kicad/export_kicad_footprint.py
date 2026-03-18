@@ -4,7 +4,7 @@ import os
 from math import acos, cos, isnan, pi, sin, sqrt
 from typing import List, Optional, Tuple, Union
 
-from easyeda2kicad.easyeda.parameters_easyeda import ee_footprint
+from easyeda2kicad.easyeda.parameters_easyeda import EeFootprint
 from easyeda2kicad.kicad.parameters_kicad_footprint import *
 
 # ---------------------------------------
@@ -80,7 +80,6 @@ def compute_arc(
     # Step 3 : Compute (cx, cy) from (cx1, cy1)
     sx2 = (start_x + end_x) / 2.0
     sy2 = (start_y + end_y) / 2.0
-    # print(start_x, end_x)
     cx = sx2 + (cos_angle * cx1 - sin_angle * cy1)
     cy = sy2 + (sin_angle * cx1 + cos_angle * cy1)
 
@@ -282,7 +281,7 @@ def sanitize_model_filename(name: str) -> str:
     return base.replace("\\", "_").replace("/", "_")
 
 
-def compute_geometry_center(footprint: ee_footprint) -> Tuple[float, float]:
+def compute_geometry_center(footprint: EeFootprint) -> Tuple[float, float]:
     min_x = float("inf")
     max_x = float("-inf")
     min_y = float("inf")
@@ -372,9 +371,9 @@ def compute_geometry_center(footprint: ee_footprint) -> Tuple[float, float]:
 
 
 class ExporterFootprintKicad:
-    def __init__(self, footprint: ee_footprint):
+    def __init__(self, footprint: EeFootprint):
         self.input = footprint
-        if not isinstance(self.input, ee_footprint):
+        if not isinstance(self.input, EeFootprint):
             logging.error("Unsupported conversion")
         else:
             self.generate_kicad_footprint()

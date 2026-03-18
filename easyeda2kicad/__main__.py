@@ -1,8 +1,6 @@
-# Global imports
 import argparse
 import logging
 import os
-import re
 import sys
 from textwrap import dedent
 from typing import List
@@ -18,30 +16,15 @@ from easyeda2kicad.easyeda.parameters_easyeda import EeSymbol
 from easyeda2kicad.helpers import (
     add_component_in_symbol_lib_file,
     add_sub_components_in_symbol_lib_file,
-    get_local_config,
     id_already_in_symbol_lib,
     set_logger,
+    symbol_is_empty,
     update_component_in_symbol_lib_file,
 )
 from easyeda2kicad.kicad.export_kicad_3d_model import Exporter3dModelKicad
 from easyeda2kicad.kicad.export_kicad_footprint import ExporterFootprintKicad
 from easyeda2kicad.kicad.export_kicad_symbol import ExporterSymbolKicad
 from easyeda2kicad.kicad.parameters_kicad_symbol import KicadVersion, sanitize_fields
-
-
-def symbol_is_empty(symbol: EeSymbol) -> bool:
-    return not any(
-        [
-            symbol.pins,
-            symbol.rectangles,
-            symbol.circles,
-            symbol.arcs,
-            symbol.ellipses,
-            symbol.polylines,
-            symbol.polygons,
-            symbol.paths,
-        ]
-    )
 
 
 def get_parser() -> argparse.ArgumentParser:
@@ -213,22 +196,6 @@ def valid_arguments(arguments: dict) -> bool:
     return True
 
 
-def delete_component_in_symbol_lib(
-    lib_path: str, component_id: str, component_name: str
-) -> None:
-    with open(file=lib_path, encoding="utf-8") as f:
-        current_lib = f.read()
-        new_data = re.sub(
-            rf'(#\n# {component_name}\n#\n.*?F6 "{component_id}".*?ENDDEF\n)',
-            "",
-            current_lib,
-            flags=re.DOTALL,
-        )
-
-    with open(file=lib_path, mode="w", encoding="utf-8") as my_lib:
-        my_lib.write(new_data)
-
-
 def fp_already_in_footprint_lib(lib_path: str, package_name: str) -> bool:
     if os.path.isfile(f"{lib_path}/{package_name}.kicad_mod"):
         logging.warning(f"The footprint for this id is already in {lib_path}")
@@ -254,8 +221,6 @@ def main(argv: List[str] = sys.argv[1:]) -> int:
 
     if not valid_arguments(arguments=arguments):
         return 1
-
-    # conf = get_local_config()
 
     component_id = arguments["lcsc_id"]
     kicad_version = arguments["kicad_version"]
@@ -304,7 +269,6 @@ def main(argv: List[str] = sys.argv[1:]) -> int:
         exporter = ExporterSymbolKicad(
             symbol=easyeda_symbol, kicad_version=kicad_version
         )
-        # print(exporter.output)
         kicad_symbol_lib = exporter.export(
             footprint_lib_name=arguments["output"].split("/")[-1].split(".")[0],
         )

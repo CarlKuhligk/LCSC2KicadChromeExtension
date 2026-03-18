@@ -482,7 +482,7 @@ class EeFootprintText(BaseModel):
     center_y: float
     stroke_width: float
     rotation: int
-    miror: str
+    mirror: str
     layer_id: int
     net: str
     font_size: float
@@ -554,7 +554,7 @@ class Ee3dModel:
 
 
 @dataclass
-class ee_footprint:
+class EeFootprint:
     info: EeFootprintInfo
     bbox: EeFootprintBbox
     model_3d: Ee3dModel

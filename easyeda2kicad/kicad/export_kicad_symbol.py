@@ -38,15 +38,14 @@ def px_to_mm(dim: Union[int, float]) -> float:
 
 
 def convert_ee_pins(
-    ee_pins: List[EeSymbolPin], ee_bbox: EeSymbolBbox, kicad_version: KicadVersion
+    ee_pins: List[EeSymbolPin],
+    ee_bbox: EeSymbolBbox,
+    kicad_version: KicadVersion,
+    hide_pin_numbers: bool = False,
+    hide_pin_names: bool = False,
 ) -> List[KiSymbolPin]:
 
     to_ki: Callable = px_to_mil if kicad_version == KicadVersion.v5 else px_to_mm
-    # pin_spacing = (
-    #     KiExportConfigV5.PIN_SPACING.value
-    #     if kicad_version == KicadVersion.v5
-    #     else KiExportConfigV6.PIN_SPACING.value
-    # )
 
     kicad_pins = []
     for ee_pin in ee_pins:
@@ -61,6 +60,8 @@ def convert_ee_pins(
             orientation=ee_pin.settings.rotation,
             pos_x=to_ki(int(ee_pin.settings.pos_x) - int(ee_bbox.x)),
             pos_y=-to_ki(int(ee_pin.settings.pos_y) - int(ee_bbox.y)),
+            hide_number=hide_pin_numbers,
+            hide_name=hide_pin_names,
         )
 
         if ee_pin.dot.is_displayed and ee_pin.clock.is_displayed:
@@ -69,16 +70,6 @@ def convert_ee_pins(
             ki_pin.style = KiPinStyle.inverted
         elif ee_pin.clock.is_displayed:
             ki_pin.style = KiPinStyle.clock
-
-        # Deal with different pin length
-        # if ee_pin.settings.rotation == 0:
-        #     ki_pin.pos_x -= to_ki(pin_length) - pin_spacing
-        # elif ee_pin.settings.rotation == 180:
-        #     ki_pin.pos_x += to_ki(pin_length) - pin_spacing
-        # elif ee_pin.settings.rotation == 90:
-        #     ki_pin.pos_y -= to_ki(pin_length) - pin_spacing
-        # elif ee_pin.settings.rotation == 270:
-        #     ki_pin.pos_y += to_ki(pin_length) - pin_spacing
 
         kicad_pins.append(ki_pin)
 
@@ -133,12 +124,12 @@ def convert_ee_ellipses(
     # Ellipses are not supported in Kicad -> If it's not a real ellipse, but just a circle
     return [
         KiSymbolCircle(
-            pos_x=to_ki(int(ee_ellipses.center_x) - int(ee_bbox.x)),
-            pos_y=-to_ki(int(ee_ellipses.center_y) - int(ee_bbox.y)),
-            radius=to_ki(ee_ellipses.radius_x),
+            pos_x=to_ki(int(ee_ellipse.center_x) - int(ee_bbox.x)),
+            pos_y=-to_ki(int(ee_ellipse.center_y) - int(ee_bbox.y)),
+            radius=to_ki(ee_ellipse.radius_x),
         )
-        for ee_ellipses in ee_ellipses
-        if ee_ellipses.radius_x == ee_ellipses.radius_y
+        for ee_ellipse in ee_ellipses
+        if ee_ellipse.radius_x == ee_ellipse.radius_y
     ]
 
 
@@ -300,22 +291,40 @@ def convert_ee_paths(
     return kicad_polygons, kicad_beziers
 
 
-def convert_to_kicad(ee_symbol: EeSymbol, kicad_version: KicadVersion) -> KiSymbol:
+def convert_to_kicad(
+    ee_symbol: EeSymbol,
+    kicad_version: KicadVersion,
+    hide_pin_numbers: bool = False,
+    hide_pin_names: bool = False,
+    value_override: str = None,
+    symbol_params: dict = None,
+    symbol_description: str = None,
+    symbol_datasheet_url: str = None,
+) -> KiSymbol:
 
     ki_info = KiSymbolInfo(
         name=ee_symbol.info.name,
         prefix=ee_symbol.info.prefix.replace("?", ""),
         package=ee_symbol.info.package,
         manufacturer=ee_symbol.info.manufacturer,
-        datasheet=ee_symbol.info.datasheet,
+        datasheet=symbol_datasheet_url or ee_symbol.info.datasheet or "",
         lcsc_id=ee_symbol.info.lcsc_id,
         jlc_id=ee_symbol.info.jlc_id,
+        hide_pin_numbers=hide_pin_numbers,
+        hide_pin_names=hide_pin_names,
+        value_override=value_override,
+        symbol_params=symbol_params,
+        symbol_description=symbol_description,
     )
 
     kicad_symbol = KiSymbol(
         info=ki_info,
         pins=convert_ee_pins(
-            ee_pins=ee_symbol.pins, ee_bbox=ee_symbol.bbox, kicad_version=kicad_version
+            ee_pins=ee_symbol.pins,
+            ee_bbox=ee_symbol.bbox,
+            kicad_version=kicad_version,
+            hide_pin_numbers=hide_pin_numbers,
+            hide_pin_names=hide_pin_names,
         ),
         rectangles=convert_ee_rectangles(
             ee_rectangles=ee_symbol.rectangles,
@@ -359,11 +368,30 @@ def tune_footprint_ref_path(ki_symbol: KiSymbol, footprint_lib_name: str):
 
 
 class ExporterSymbolKicad:
-    def __init__(self, symbol, kicad_version: KicadVersion):
+    def __init__(
+        self,
+        symbol,
+        kicad_version: KicadVersion,
+        hide_pin_numbers: bool = False,
+        hide_pin_names: bool = False,
+        value_override: str = None,
+        symbol_params: dict = None,
+        symbol_description: str = None,
+        symbol_datasheet_url: str = None,
+    ):
         self.input: EeSymbol = symbol
         self.version = kicad_version
         self.output = (
-            convert_to_kicad(ee_symbol=self.input, kicad_version=kicad_version)
+            convert_to_kicad(
+                ee_symbol=self.input,
+                kicad_version=kicad_version,
+                hide_pin_numbers=hide_pin_numbers,
+                hide_pin_names=hide_pin_names,
+                value_override=value_override,
+                symbol_params=symbol_params,
+                symbol_description=symbol_description,
+                symbol_datasheet_url=symbol_datasheet_url,
+            )
             if isinstance(self.input, EeSymbol)
             else logging.error("Unknown input symbol format")
         )

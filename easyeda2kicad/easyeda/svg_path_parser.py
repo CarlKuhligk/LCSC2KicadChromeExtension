@@ -1,11 +1,7 @@
-# Global imports
 import logging
 import re
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import List, Union
 
-from pydantic import BaseModel, validator
+from pydantic import BaseModel
 
 
 class SvgPathMoveTo(BaseModel):

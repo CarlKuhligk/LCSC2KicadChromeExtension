@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import os
-import platform
 import re
 import uuid
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple
 
@@ -24,7 +24,9 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from easyeda2kicad.helpers import extract_symbol_from_lib, list_symbols_in_lib
 from easyeda2kicad.kicad.parameters_kicad_symbol import KicadVersion
+from easyeda2kicad.kicad.template_merger import KNOWN_TEMPLATE_NAMES
 from easyeda2kicad.service import (
     ConversionError,
     ConversionRequest,
@@ -34,7 +36,7 @@ from easyeda2kicad.service import (
 )
 
 
-class TaskStatus(str):
+class TaskStatus(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -78,6 +80,27 @@ class TaskCreatePayload(BaseModel):
     )
     model_path: Optional[str] = Field(
         None, description="Explicit 3D model base path to use as-is."
+    )
+    hide_pin_numbers: bool = Field(False, description="Hide pin numbers in exported symbol.")
+    hide_pin_names: bool = Field(False, description="Hide pin names in exported symbol.")
+    symbol_value_override: Optional[str] = Field(
+        None, description="Override symbol Value property (e.g. resistance value from component page)."
+    )
+    symbol_params: Optional[Dict[str, str]] = Field(
+        None, description="Additional component parameters from LCSC page to include as symbol properties."
+    )
+    symbol_description: Optional[str] = Field(
+        None, description="Component description text scraped from LCSC product page."
+    )
+    symbol_datasheet_url: Optional[str] = Field(
+        None, description="Actual datasheet PDF URL scraped from LCSC product page, overrides EasyEDA value."
+    )
+    use_template: bool = Field(False, description="Use a template symbol instead of EasyEDA graphics.")
+    template_name: Optional[str] = Field(
+        None, description="Name of the template symbol (e.g. 'Template_Resistor')."
+    )
+    template_lib_path: Optional[str] = Field(
+        None, description="Full path to the .kicad_sym file that contains the template symbols."
     )
 
     @field_validator("lcsc_id")
@@ -333,7 +356,7 @@ def _inspect_library(path: str) -> LibraryValidateResponse:
     if symbol_exists:
         writable = os.access(str(symbol_exists.parent), os.W_OK)
         if not writable:
-            warnings.append("Bibliotheksdatei kann nicht überschrieben werden.")
+            warnings.append("Library file is not writable.")
     elif exists and is_dir:
         writable = os.access(str(resolved), os.W_OK)
         if not writable:
@@ -975,6 +998,15 @@ def create_app(
                 project_relative=payload.project_relative,
                 project_relative_path=payload.project_relative_path,
                 model_path=payload.model_path,
+                hide_pin_numbers=payload.hide_pin_numbers,
+                hide_pin_names=payload.hide_pin_names,
+                symbol_value_override=payload.symbol_value_override,
+                symbol_params=payload.symbol_params,
+                symbol_description=payload.symbol_description,
+                symbol_datasheet_url=payload.symbol_datasheet_url,
+                use_template=payload.use_template,
+                template_name=payload.template_name,
+                template_lib_path=payload.template_lib_path,
             )
         except ConversionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1035,6 +1067,21 @@ def create_app(
     async def libraries_components(payload: ComponentBatchRequest) -> ComponentBatchResponse:
         return _check_components_in_library(payload.path, payload.lcsc_ids)
 
+    @router.get("/templates/symbols")
+    async def templates_symbols(lib_path: str) -> Dict[str, Any]:
+        """Return all top-level symbol names in a .kicad_sym template library."""
+        symbols = list_symbols_in_lib(lib_path)
+        return {"symbols": symbols}
+
+    @router.get("/templates/check")
+    async def templates_check(lib_path: str) -> Dict[str, bool]:
+        """
+        Check which of the known template names exist in the given .kicad_sym file.
+        lib_path should point directly to the template library file.
+        """
+        symbols_set = set(list_symbols_in_lib(lib_path))
+        return {name: name in symbols_set for name in KNOWN_TEMPLATE_NAMES}
+
     @router.get("/tasks/{task_id}", response_model=TaskDetail)
     async def retrieve_task(task: TaskRecord = Depends(get_task)) -> TaskDetail:
         return as_detail(task)
@@ -1068,13 +1115,3 @@ def create_app(
     return app
 
 
-async def startup_app(app: FastAPI) -> None:
-    start_worker = getattr(app.state, "start_worker", None)
-    if callable(start_worker):
-        await start_worker()
-
-
-async def shutdown_app(app: FastAPI) -> None:
-    stop_worker = getattr(app.state, "stop_worker", None)
-    if callable(stop_worker):
-        await stop_worker()

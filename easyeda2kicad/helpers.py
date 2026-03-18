@@ -1,20 +1,33 @@
-# Global imports
-import json
 import logging
 import math
 import os
 import re
 import textwrap
-from datetime import datetime
+from typing import TYPE_CHECKING
 
-from easyeda2kicad import __version__
 from easyeda2kicad.kicad.parameters_kicad_symbol import KicadVersion
+
+if TYPE_CHECKING:
+    from easyeda2kicad.easyeda.parameters_easyeda import EeSymbol
 
 sym_lib_regex_pattern = {
     "v5": r"(#\n# {component_name}\n#\n.*?ENDDEF\n)",
     "v6": r'\n(?P<indent>[ \t]*)\(symbol "{component_name}".*?\n(?P=indent)\)',
-    "v6_99": r"",
 }
+
+
+def symbol_is_empty(symbol: "EeSymbol") -> bool:
+    """Return True if the EasyEDA symbol has no graphical content."""
+    return not any((
+        symbol.pins,
+        symbol.rectangles,
+        symbol.circles,
+        symbol.arcs,
+        symbol.ellipses,
+        symbol.polylines,
+        symbol.polygons,
+        symbol.paths,
+    ))
 
 
 def set_logger(log_file: str, log_level: int) -> None:
@@ -61,6 +74,34 @@ def _component_name_variants(component_name: str) -> list[str]:
     return variants
 
 
+def list_symbols_in_lib(lib_path: str) -> list:
+    """Return all top-level symbol names from a .kicad_sym file."""
+    try:
+        with open(lib_path, encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+        all_names = re.findall(r'\(symbol\s+"([^"]+)"', content)
+        # Sub-symbols have a _N_N suffix (e.g. MyPart_0_1) — filter those out
+        return [n for n in all_names if not re.search(r"_\d+_\d+$", n)]
+    except OSError:
+        return []
+
+
+def extract_symbol_from_lib(lib_path: str, symbol_name: str) -> str | None:
+    """Extract a single symbol block from a .kicad_sym library file by name."""
+    try:
+        with open(lib_path, encoding="utf-8") as f:
+            content = f.read()
+    except OSError:
+        return None
+    pattern = sym_lib_regex_pattern["v6"].format(
+        component_name=sanitize_for_regex(symbol_name)
+    )
+    # re.findall with a named group returns only the captured text (the indent),
+    # not the full match.  Use re.search + .group(0) to get the whole block.
+    m = re.search(pattern, content, flags=re.DOTALL)
+    return m.group(0).strip() if m else None
+
+
 def id_already_in_symbol_lib(
     lib_path: str, component_name: str, kicad_version: KicadVersion
 ) -> bool:
@@ -75,8 +116,8 @@ def id_already_in_symbol_lib(
                 flags=re.DOTALL,
             )
             if component:
-                logging.warning(
-                    "This id is already in %s (matched name: %s)", lib_path, variant
+                logging.info(
+                    "Symbol '%s' already exists in %s", variant, lib_path
                 )
                 return True
     return False
@@ -238,47 +279,6 @@ def add_sub_components_in_symbol_lib_file(
 
     with open(file=lib_path, mode="w", encoding="utf-8") as lib_file:
         lib_file.write(new_lib_data)
-
-
-def get_local_config() -> dict:
-    if not os.path.isfile("easyeda2kicad_config.json"):
-        with open(file="easyeda2kicad_config.json", mode="w", encoding="utf-8") as conf:
-            json.dump(
-                {"updated_at": datetime.utcnow().timestamp(), "version": __version__},
-                conf,
-                indent=4,
-                ensure_ascii=False,
-            )
-        logging.info("Create easyeda2kicad_config.json config file")
-
-    with open(file="easyeda2kicad_config.json", encoding="utf-8") as conf:
-        local_conf: dict = json.load(conf)
-
-    return local_conf
-
-
-def get_arc_center(start_x, start_y, end_x, end_y, rotation_direction, radius):
-    arc_distance = math.sqrt(
-        (end_x - start_x) * (end_x - start_x) + (end_y - start_y) * (end_y - start_y)
-    )
-
-    m_x = (start_x + end_x) / 2
-    m_y = (start_y + end_y) / 2
-    u = (end_x - start_x) / arc_distance
-    v = (end_y - start_y) / arc_distance
-    h = math.sqrt(radius * radius - (arc_distance * arc_distance) / 4)
-
-    center_x = m_x - rotation_direction * h * v
-    center_y = m_y + rotation_direction * h * u
-
-    return center_x, center_y
-
-
-def get_arc_angle_end(
-    center_x: float, end_x: float, radius: float, flag_large_arc: bool
-):
-    theta = math.acos((end_x - center_x) / radius) * 180 / math.pi
-    return 180 + theta if flag_large_arc else 180 + theta
 
 
 def get_middle_arc_pos(

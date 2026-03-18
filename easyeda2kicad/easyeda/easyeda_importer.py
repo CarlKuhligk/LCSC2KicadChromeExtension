@@ -116,6 +116,17 @@ easyeda_handlers = {
 }
 
 
+def _resolve_datasheet_url(ee_data: dict) -> str:
+    lcsc = ee_data.get("lcsc", {}) or {}
+    url = lcsc.get("url")
+    if url:
+        return url
+    number = lcsc.get("number")
+    if number:
+        return f"https://www.lcsc.com/product-detail/{number}.html"
+    return ""
+
+
 class EasyedaSymbolImporter:
     def __init__(self, easyeda_cp_cad_data: dict):
         self.input = easyeda_cp_cad_data
@@ -133,10 +144,18 @@ class EasyedaSymbolImporter:
                 name=ee_data_info["name"],
                 prefix=ee_data_info["pre"],
                 package=ee_data_info.get("package", None),
-                manufacturer=ee_data_info.get("BOM_Manufacturer", None),
-                datasheet=ee_data.get("lcsc", {}).get("url", None),
+                manufacturer=(
+                    ee_data_info.get("BOM_Manufacturer")
+                    or ee_data_info.get("Manufacturer")
+                    or None
+                ),
+                datasheet=_resolve_datasheet_url(ee_data),
                 lcsc_id=ee_data.get("lcsc", {}).get("number", None),
-                jlc_id=ee_data_info.get("BOM_JLCPCB Part Class", None),
+                jlc_id=(
+                    ee_data_info.get("BOM_JLCPCB Part Class")
+                    or ee_data_info.get("JLCPCB Part Class")
+                    or None
+                ),
             ),
             bbox=EeSymbolBbox(
                 x=float(ee_data["dataStr"]["head"]["x"]),
@@ -149,7 +168,7 @@ class EasyedaSymbolImporter:
             if designator in easyeda_handlers:
                 easyeda_handlers[designator](line, new_ee_symbol)
             else:
-                logging.warning(f"Unknow symbol designator : {designator}")
+                logging.warning(f"Unknown symbol designator: {designator}")
 
         return new_ee_symbol
 
@@ -169,8 +188,8 @@ class EasyedaFootprintImporter:
 
     def extract_easyeda_data(
         self, ee_data_str: dict, ee_data_info: dict, is_smd: bool
-    ) -> ee_footprint:
-        new_ee_footprint = ee_footprint(
+    ) -> EeFootprint:
+        new_footprint = EeFootprint(
             info=EeFootprintInfo(
                 name=ee_data_info["package"],
                 fp_type="smd" if is_smd else "tht",
@@ -191,53 +210,53 @@ class EasyedaFootprintImporter:
                 ee_pad = EeFootprintPad(
                     **dict(zip(EeFootprintPad.__fields__, ee_fields[:18]))
                 )
-                new_ee_footprint.pads.append(ee_pad)
+                new_footprint.pads.append(ee_pad)
             elif ee_designator == "TRACK":
                 ee_track = EeFootprintTrack(
                     **dict(zip(EeFootprintTrack.__fields__, ee_fields))
                 )
-                new_ee_footprint.tracks.append(ee_track)
+                new_footprint.tracks.append(ee_track)
             elif ee_designator == "HOLE":
                 ee_hole = EeFootprintHole(
                     **dict(zip(EeFootprintHole.__fields__, ee_fields))
                 )
-                new_ee_footprint.holes.append(ee_hole)
+                new_footprint.holes.append(ee_hole)
             elif ee_designator == "VIA":
                 ee_via = EeFootprintVia(
                     **dict(zip(EeFootprintVia.__fields__, ee_fields))
                 )
-                new_ee_footprint.vias.append(ee_via)
+                new_footprint.vias.append(ee_via)
             elif ee_designator == "CIRCLE":
                 ee_circle = EeFootprintCircle(
                     **dict(zip(EeFootprintCircle.__fields__, ee_fields))
                 )
-                new_ee_footprint.circles.append(ee_circle)
+                new_footprint.circles.append(ee_circle)
             elif ee_designator == "ARC":
                 ee_arc = EeFootprintArc(
                     **dict(zip(EeFootprintArc.__fields__, ee_fields))
                 )
-                new_ee_footprint.arcs.append(ee_arc)
+                new_footprint.arcs.append(ee_arc)
             elif ee_designator == "RECT":
                 ee_rectangle = EeFootprintRectangle(
                     **dict(zip(EeFootprintRectangle.__fields__, ee_fields))
                 )
-                new_ee_footprint.rectangles.append(ee_rectangle)
+                new_footprint.rectangles.append(ee_rectangle)
             elif ee_designator == "TEXT":
                 ee_text = EeFootprintText(
                     **dict(zip(EeFootprintText.__fields__, ee_fields))
                 )
-                new_ee_footprint.texts.append(ee_text)
+                new_footprint.texts.append(ee_text)
             elif ee_designator == "SVGNODE":
-                new_ee_footprint.model_3d = Easyeda3dModelImporter(
+                new_footprint.model_3d = Easyeda3dModelImporter(
                     easyeda_cp_cad_data=[line], download_raw_3d_model=True
                 ).output
 
             elif ee_designator == "SOLIDREGION":
                 ...
             else:
-                logging.warning(f"Unknow footprint designator : {ee_designator}")
+                logging.warning(f"Unknown footprint designator: {ee_designator}")
 
-        return new_ee_footprint
+        return new_footprint
 
 
 # ------------------------------------------------------------------------------

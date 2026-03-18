@@ -1,6 +1,10 @@
-import os, sys, argparse, multiprocessing
-from easyeda2kicad.api.server import create_app
+import argparse
+import multiprocessing
+import os
+
 import uvicorn
+
+from easyeda2kicad.api.server import create_app
 
 
 def main():
