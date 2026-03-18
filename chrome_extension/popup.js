@@ -162,7 +162,9 @@ const state = {
     debug: false,
     projectRelative: false,
     projectRelativePath: "",
+    categorySettings: {},
   },
+  templateSymbols: [],
   lastJob: null,
   ready: false,
   picker: {
@@ -182,6 +184,7 @@ const state = {
 const elements = {};
 const modals = {};
 let pickerManualTimer = null;
+let _lastCategorySettingsJson = null;
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -228,7 +231,7 @@ function cacheElements() {
   elements.libraryModalTabs = document.getElementById("library-modal-tabs");
   elements.libraryModalSubmit = document.getElementById("library-modal-submit");
   elements.libraryImportForm = document.getElementById("library-import-form");
-  elements.libraryImportPath;
+  elements.libraryImportPath = "";
   elements.libraryImportInfo = document.getElementById("library-import-info");
   elements.librarySummary = document.getElementById("library-summary");
   elements.librarySearch = document.getElementById("library-search");
@@ -253,6 +256,8 @@ function cacheElements() {
   elements.settingsProjectRelative = document.getElementById("settings-project-relative");
   elements.settingsProjectRelativePathGroup = document.getElementById("settings-project-relative-path-group");
   elements.settingsProjectRelativePath = document.getElementById("settings-project-relative-path");
+  elements.settingsCategoryList = document.getElementById("settings-category-list");
+  elements.settingsCategoryAdd = document.getElementById("settings-category-add");
 
   // Modals shared
   elements.libraryRequiredModal = document.getElementById("library-required-modal");
@@ -272,7 +277,6 @@ function initModals() {
 
   if (elements.libraryModal) {
     elements.libraryModal.addEventListener("hidden.bs.modal", () => {
-      clearLibraryModalError();
       clearLibraryCreateValidation();
       elements.libraryImportForm?.reset();
       elements.libraryCreateForm?.reset();
@@ -340,7 +344,6 @@ function bindEvents() {
   });
   elements.librarySearch?.addEventListener("input", handleLibrarySearch);
 
-  elements.libraryModalTabs?.addEventListener("shown.bs.tab", clearLibraryModalError);
   elements.libraryModalTabs?.addEventListener("click", (event) => {
     const trigger = event.target.closest('[data-bs-toggle="pill"]');
     if (!trigger) return;
@@ -362,6 +365,7 @@ function bindEvents() {
   elements.settingsForm?.addEventListener("change", debounce(handleSettingsChange, 250));
   elements.settingsTest?.addEventListener("click", testServerConnection);
   elements.settingsProjectRelative?.addEventListener("change", toggleSettingsProjectPath);
+  elements.settingsCategoryAdd?.addEventListener("click", addCategoryRow);
 
   elements.pickerManual?.addEventListener("input", handlePickerManualInput);
   elements.pickerManual?.addEventListener("change", handlePickerManualChange);
@@ -495,9 +499,14 @@ function applyState(snapshot = {}) {
   if (typeof snapshot.projectRelativePath === "string") {
     state.settings.projectRelativePath = snapshot.projectRelativePath;
   }
+  if (snapshot.categorySettings && typeof snapshot.categorySettings === "object") {
+    state.settings.categorySettings = { ...snapshot.categorySettings };
+  }
+  if (Array.isArray(snapshot.templateSymbols)) {
+    state.templateSymbols = snapshot.templateSymbols.slice();
+  }
 
   renderConnectionStatus();
-  renderPartsDefaults();
   renderLibraries();
   renderPartsResult();
   renderSettings();
@@ -528,12 +537,6 @@ function updateBackendControls() {
   });
 }
 
-function renderPartsDefaults() {
-  if (!state.ready) {
-    return;
-  }
-
-}
 
 function renderLibraries() {
   if (!elements.libraryList) return;
@@ -568,7 +571,7 @@ function renderLibraries() {
     } else {
       let summary = `Symbol: ${totals.symbols} · Footprints: ${totals.footprints} · 3D: ${totals.models}`;
       if (query) {
-        summary += ` · Treffer: ${visibleCount}/${totalLibraries}`;
+        summary += ` · Matches: ${visibleCount}/${totalLibraries}`;
       }
       elements.librarySummary.textContent = summary;
     }
@@ -587,8 +590,6 @@ function renderLibraries() {
     } else {
       elements.headerActive.innerHTML = "";
     }
-  } else if (elements.headerActive) {
-    elements.headerActive.innerHTML = "";
   }
 
   if (!totalLibraries) {
@@ -618,25 +619,33 @@ function renderLibraries() {
   libraries.forEach((library) => {
     const item = document.createElement("div");
     item.className = "library-entry";
-	if (library.active) item.className += " active";
+    if (library.active) item.className += " active";
     if (library.missing) item.className += " missing";
+    if (library.isTemplateLibrary) item.className += " template-lib";
     item.dataset.id = library.id;
 
     const info = document.createElement("div");
     info.className = "library-info";
 
     const titleRow = document.createElement("div");
-    titleRow.className = "d-flex align-items-center";
+    titleRow.className = "d-flex align-items-center gap-2";
 
     const title = document.createElement("span");
     title.className = "fw-semibold fs-6";
     title.textContent = library.name || "Untitled library";
     titleRow.appendChild(title);
 
-	const actionWrapper = document.createElement("div");
-    actionWrapper.className = "flex-fill d-flex flex-row-reverse gap-2";
+    if (library.isTemplateLibrary) {
+      const badge = document.createElement("span");
+      badge.className = "library-template-badge";
+      badge.textContent = "TEMPLATE";
+      titleRow.appendChild(badge);
+    }
 
-	const removeBtn = document.createElement("button");
+    const actionWrapper = document.createElement("div");
+    actionWrapper.className = "flex-fill d-flex flex-row-reverse align-items-center gap-2";
+
+    const removeBtn = document.createElement("button");
     removeBtn.type = "button";
     removeBtn.className = "btn btn-outline-danger library-remove";
     removeBtn.setAttribute("aria-label", `Remove library ${library.name || ""}`.trim());
@@ -648,26 +657,55 @@ function renderLibraries() {
     removeBtn.dataset.id = library.id;
     actionWrapper.appendChild(removeBtn);
 
-    const toggle = document.createElement("input");
-    toggle.type = "button";
-    toggle.className = "library-toggle";
-    toggle.disabled = Boolean(library.active || library.missing);
-	toggle.value = library.active ? "Active" : (library.missing ? "Missing" : "Activate");
-    toggle.dataset.id = library.id;
-	toggle.onclick = (event) => {
-		toggle.disabled = true;
-		handleLibraryListChange(event);
-	};
-    actionWrapper.appendChild(toggle);	
+    if (!library.isTemplateLibrary) {
+      const toggle = document.createElement("input");
+      toggle.type = "button";
+      toggle.className = "library-toggle";
+      toggle.disabled = Boolean(library.active || library.missing);
+      toggle.value = library.active ? "Active" : (library.missing ? "Missing" : "Activate");
+      toggle.dataset.id = library.id;
+      toggle.onclick = (event) => {
+        toggle.disabled = true;
+        handleLibraryListChange(event);
+      };
+      actionWrapper.appendChild(toggle);
+    }
 
     titleRow.appendChild(actionWrapper);
     info.appendChild(titleRow);
 
     const assets = document.createElement("div");
-    assets.className = "library-assets mb-2 mt-1";
+    assets.className = "library-assets mb-1 mt-1 d-flex align-items-center gap-2";
     assets.appendChild(renderAssetBadge("Symbol", library.assets?.symbol, library.counts?.symbol));
     assets.appendChild(renderAssetBadge("Footprint", library.assets?.footprint, library.counts?.footprint));
     assets.appendChild(renderAssetBadge("3D", library.assets?.model, library.counts?.model));
+
+    // Template toggle switch — placed inline with the asset badges
+    const switchLabel = document.createElement("label");
+    switchLabel.className = "template-switch ms-auto";
+    switchLabel.title = library.isTemplateLibrary
+      ? "Disable template mode for this library"
+      : "Enable template mode — symbols in this library can be used as templates";
+
+    const switchInput = document.createElement("input");
+    switchInput.type = "checkbox";
+    switchInput.className = "template-switch-input library-template-toggle";
+    switchInput.checked = Boolean(library.isTemplateLibrary);
+    switchInput.dataset.id = library.id;
+
+    const switchTrack = document.createElement("span");
+    switchTrack.className = "template-switch-track";
+    switchTrack.innerHTML = `<span class="template-switch-thumb"></span>`;
+
+    const switchText = document.createElement("span");
+    switchText.className = "template-switch-label";
+    switchText.textContent = "Template";
+
+    switchLabel.appendChild(switchInput);
+    switchLabel.appendChild(switchTrack);
+    switchLabel.appendChild(switchText);
+    assets.appendChild(switchLabel);
+
     info.appendChild(assets);
 	
     const path = document.createElement("div");
@@ -751,6 +789,285 @@ function renderSettings() {
     elements.settingsProjectRelativePath.value = state.settings.projectRelativePath || "";
   }
   toggleSettingsProjectPath();
+  renderCategoryTable();
+}
+
+function renderCategoryTable() {
+  if (!elements.settingsCategoryList) return;
+  const cats = state.settings.categorySettings || {};
+  const json = JSON.stringify(cats);
+  if (json === _lastCategorySettingsJson) return; // unchanged — don't disturb open accordions
+  _lastCategorySettingsJson = json;
+  elements.settingsCategoryList.innerHTML = "";
+  Object.entries(cats).forEach(([category, cfg]) => {
+    elements.settingsCategoryList.appendChild(buildCategoryItem(category, cfg));
+  });
+}
+
+function buildCategoryItem(category, cfg, openByDefault = false) {
+  const item = document.createElement("div");
+  item.className = "cat-item";
+  item.dataset.open = openByDefault ? "1" : "0";
+
+  // ── Header ──────────────────────────────────────────────────────────────
+  const header = document.createElement("div");
+  header.className = "cat-header";
+
+  // Left: name on top, chips below
+  const headerLeft = document.createElement("div");
+  headerLeft.className = "cat-header-left";
+
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.className = "cat-name-input";
+  nameInput.value = category;
+  nameInput.placeholder = "Category name…";
+  nameInput.dataset.field = "category";
+  nameInput.addEventListener("input", debounce(() => {
+    updateCatSummary(item);
+    saveCategoryTableState();
+  }, 400));
+
+  const summaryRow = document.createElement("div");
+  summaryRow.className = "cat-summary";
+
+  headerLeft.appendChild(nameInput);
+  headerLeft.appendChild(summaryRow);
+
+  // Right: chevron + remove
+  const headerRight = document.createElement("div");
+  headerRight.className = "cat-header-right";
+
+  const chevron = document.createElement("span");
+  chevron.className = "cat-chevron";
+  chevron.textContent = "▾";
+
+  const removeBtn = document.createElement("button");
+  removeBtn.type = "button";
+  removeBtn.className = "cat-remove";
+  removeBtn.innerHTML = "&times;";
+  removeBtn.setAttribute("aria-label", `Remove ${category || "category"}`);
+  removeBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    item.remove();
+    saveCategoryTableState();
+  });
+
+  headerRight.appendChild(chevron);
+  headerRight.appendChild(removeBtn);
+
+  header.appendChild(headerLeft);
+  header.appendChild(headerRight);
+
+  header.addEventListener("click", (e) => {
+    // When already open, clicking inside the nameInput just focuses it for editing — don't collapse
+    if (item.dataset.open === "1" && nameInput.contains(e.target)) {
+      nameInput.focus();
+      return;
+    }
+    const isOpen = item.dataset.open === "1";
+    item.dataset.open = isOpen ? "0" : "1";
+    body.hidden = isOpen;
+    chevron.style.transform = isOpen ? "" : "rotate(-90deg)";
+    if (!isOpen) requestAnimationFrame(() => nameInput.select());
+  });
+
+  // ── Body ────────────────────────────────────────────────────────────────
+  const body = document.createElement("div");
+  body.className = "cat-body";
+  body.hidden = !openByDefault;
+  if (openByDefault) chevron.style.transform = "rotate(-90deg)";
+
+  // Value Param
+  const valueInput = document.createElement("input");
+  valueInput.type = "text";
+  valueInput.className = "form-control form-control-sm";
+  valueInput.value = cfg.valueParam || "";
+  valueInput.placeholder = "e.g. Resistance";
+  valueInput.dataset.field = "valueParam";
+  body.appendChild(makeCatField("Value Param", valueInput,
+    "LCSC parameter used as the symbol Value (e.g. Resistance, Capacitance)"));
+
+  // Hide pin numbers — small Bootstrap switch
+  const cbHideNum = document.createElement("input");
+  cbHideNum.type = "checkbox";
+  cbHideNum.className = "form-check-input cat-switch";
+  cbHideNum.setAttribute("role", "switch");
+  cbHideNum.checked = Boolean(cfg.hidePinNumbers);
+  cbHideNum.dataset.field = "hidePinNumbers";
+  body.appendChild(makeCatSwitch("Hide pin numbers", cbHideNum));
+
+  // Hide pin names — small Bootstrap switch
+  const cbHideName = document.createElement("input");
+  cbHideName.type = "checkbox";
+  cbHideName.className = "form-check-input cat-switch";
+  cbHideName.setAttribute("role", "switch");
+  cbHideName.checked = Boolean(cfg.hidePinNames);
+  cbHideName.dataset.field = "hidePinNames";
+  body.appendChild(makeCatSwitch("Hide pin names", cbHideName));
+
+  // Template select + status dot
+  const templateWrap = document.createElement("div");
+  templateWrap.style.cssText = "display:flex;align-items:center;gap:6px;flex:1;min-width:0;";
+
+  const templateSelect = document.createElement("select");
+  templateSelect.className = "form-select form-select-sm template-name-select";
+  templateSelect.dataset.field = "templateName";
+
+  const emptyOpt = document.createElement("option");
+  emptyOpt.value = "";
+  emptyOpt.textContent = "— none —";
+  templateSelect.appendChild(emptyOpt);
+
+  const configuredName = cfg.templateName || "";
+  const symbols = state.templateSymbols || [];
+  symbols.forEach((name) => {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    if (name === configuredName) opt.selected = true;
+    templateSelect.appendChild(opt);
+  });
+  if (configuredName && !symbols.includes(configuredName)) {
+    const opt = document.createElement("option");
+    opt.value = configuredName;
+    opt.textContent = `${configuredName} (not found)`;
+    opt.selected = true;
+    templateSelect.appendChild(opt);
+  }
+
+  const dot = document.createElement("span");
+  dot.className = "template-status-dot";
+  dot.style.cssText = "flex-shrink:0;font-size:12px;cursor:default;";
+  dot.textContent = "●";
+
+  function updateDot(name) {
+    if (!name) {
+      dot.style.color = "#9ca3af"; dot.title = "No template selected";
+    } else if ((state.templateSymbols || []).includes(name)) {
+      dot.style.color = "#22c55e"; dot.title = `Template '${name}' available`;
+    } else {
+      dot.style.color = "#ef4444";
+      dot.title = state.templateSymbols?.length
+        ? `Template '${name}' not found in template library`
+        : "No template library marked — go to Libraries tab";
+    }
+  }
+  updateDot(configuredName);
+
+  templateSelect.addEventListener("change", () => {
+    updateDot(templateSelect.value);
+    updateCatSummary(item);
+    saveCategoryTableState();
+  });
+
+  templateWrap.appendChild(templateSelect);
+  templateWrap.appendChild(dot);
+  body.appendChild(makeCatField("Template", templateWrap));
+
+  // Wire up live-save on checkboxes / value input
+  [cbHideNum, cbHideName].forEach((cb) => cb.addEventListener("change", () => {
+    updateCatSummary(item);
+    saveCategoryTableState();
+  }));
+  valueInput.addEventListener("input", debounce(() => {
+    updateCatSummary(item);
+    saveCategoryTableState();
+  }, 400));
+
+  item.appendChild(header);
+  item.appendChild(body);
+
+  // Populate summary chips after DOM is ready
+  requestAnimationFrame(() => updateCatSummary(item));
+  return item;
+}
+
+function makeCatField(label, control, hint = null) {
+  const row = document.createElement("div");
+  row.className = "cat-field";
+  const lbl = document.createElement("label");
+  lbl.className = "cat-field-label";
+  lbl.textContent = label;
+  if (hint) lbl.title = hint;
+  row.appendChild(lbl);
+  row.appendChild(control);
+  return row;
+}
+
+function makeCatSwitch(label, input) {
+  const uid = `cat-sw-${Math.random().toString(36).slice(2)}`;
+  input.id = uid;
+  const wrap = document.createElement("div");
+  wrap.className = "form-check form-switch cat-switch-row";
+  const lbl = document.createElement("label");
+  lbl.className = "form-check-label cat-switch-label";
+  lbl.htmlFor = uid;
+  lbl.textContent = label;
+  wrap.appendChild(input);
+  wrap.appendChild(lbl);
+  return wrap;
+}
+
+function updateCatSummary(item) {
+  const summaryRow = item.querySelector(".cat-summary");
+  if (!summaryRow) return;
+  summaryRow.innerHTML = "";
+
+  const valueParam = item.querySelector("input[data-field='valueParam']")?.value?.trim();
+  const hideNum = item.querySelector("input[data-field='hidePinNumbers']")?.checked;
+  const hideName = item.querySelector("input[data-field='hidePinNames']")?.checked;
+  const tmplName = item.querySelector("select[data-field='templateName']")?.value?.trim();
+
+  if (valueParam) {
+    const chip = document.createElement("span");
+    chip.className = "cat-chip chip-value";
+    chip.textContent = valueParam;
+    summaryRow.appendChild(chip);
+  }
+  if (hideNum || hideName) {
+    const chip = document.createElement("span");
+    chip.className = "cat-chip chip-hidden";
+    chip.textContent = "Pins hidden";
+    summaryRow.appendChild(chip);
+  }
+
+  // Template: no chip — show via card border colour instead
+  const hasTemplate = Boolean(tmplName && (state.templateSymbols || []).includes(tmplName));
+  item.classList.toggle("has-template", hasTemplate);
+}
+
+function addCategoryRow() {
+  if (!elements.settingsCategoryList) return;
+  const item = buildCategoryItem("", { hidePinNumbers: false, hidePinNames: false, valueParam: "" }, true);
+  elements.settingsCategoryList.appendChild(item);
+  item.querySelector("input[data-field='category']")?.focus();
+}
+
+function readCategoryTableState() {
+  if (!elements.settingsCategoryList) return {};
+  const result = {};
+  Array.from(elements.settingsCategoryList.querySelectorAll(".cat-item")).forEach((item) => {
+    const category = item.querySelector("input[data-field='category']")?.value?.trim();
+    if (!category) return;
+    result[category] = {
+      hidePinNumbers: Boolean(item.querySelector("input[data-field='hidePinNumbers']")?.checked),
+      hidePinNames: Boolean(item.querySelector("input[data-field='hidePinNames']")?.checked),
+      valueParam: item.querySelector("input[data-field='valueParam']")?.value?.trim() || null,
+      templateName: item.querySelector("select[data-field='templateName']")?.value?.trim() || null,
+    };
+  });
+  return result;
+}
+
+function saveCategoryTableState() {
+  const categorySettings = readCategoryTableState();
+  state.settings.categorySettings = categorySettings;
+  // Pre-mark as rendered so the echoed state broadcast doesn't collapse open accordions
+  _lastCategorySettingsJson = JSON.stringify(categorySettings);
+  sendMessage("updateSettings", { categorySettings })
+    .then(() => {})
+    .catch((error) => console.warn("Failed to save category settings", error));
 }
 
 function setActiveTab(tab, options = {}) {
@@ -848,16 +1165,6 @@ function handlePartsSubmit(event) {
     });
 }
 
-function handleLibraryModalSubmit() {
-  const activeTab = elements.libraryModalTabs?.querySelector(".nav-link.active");
-  const target = activeTab?.getAttribute("data-bs-target") || "";
-  if (target === "#library-modal-create") {
-    submitCreateLibrary();
-  } else {
-    submitImportLibrary();
-  }
-}
-
 function handleLibrarySearch(event) {
   const value = event?.target?.value ?? "";
   if (state.libraryFilter === value) {
@@ -875,6 +1182,9 @@ function handleLibraryListChange(event) {
   if (!id) return;
   const library = state.libraries.find((item) => item.id === id);
   if (!library) return;
+
+  // Template libraries cannot be activated as the working library
+  if (library.isTemplateLibrary) return;
 
   if (input.disabled) {
     state.libraries = state.libraries.map((item) => ({
@@ -900,6 +1210,27 @@ function handleLibraryListChange(event) {
 }
 
 function handleLibraryListClick(event) {
+  // Template toggle switch (checkbox)
+  const checkbox = event.target.closest(".library-template-toggle");
+  if (checkbox) {
+    const id = checkbox.dataset.id;
+    if (!id) return;
+    const library = state.libraries.find((item) => item.id === id);
+    if (!library) return;
+    const nowTemplate = checkbox.checked;
+    state.libraries = state.libraries.map((item) => ({
+      ...item,
+      isTemplateLibrary: item.id === id ? nowTemplate : (nowTemplate ? false : item.isTemplateLibrary),
+    }));
+    renderLibraries();
+    persistLibraries();
+    const msg = nowTemplate
+      ? `"${library.name}" set as template library.`
+      : "Template mode disabled.";
+    showToast(msg, "success");
+    return;
+  }
+
   const button = event.target.closest("button");
   if (!button) return;
   const id = button.dataset.id;
@@ -922,8 +1253,7 @@ function handleLibraryListClick(event) {
 }
 
 function submitImportLibrary() {
-  clearLibraryModalError();
-  const path = elements.libraryImportPath.trim();
+  const path = (elements.libraryImportPath || "").trim();
   if (!path) {
     setLibraryModalError("Please choose a file.");
     return;
@@ -949,7 +1279,6 @@ function submitImportLibrary() {
 }
 
 function submitCreateLibrary() {
-  clearLibraryModalError();
   clearLibraryCreateValidation();
   const name = elements.libraryCreateName.value.trim();
   const basePath = elements.libraryCreatePath.value.trim();
@@ -1002,6 +1331,7 @@ function upsertLibrary(record, activate = false) {
   const normalized = {
     ...record,
     active: activate ? true : Boolean(record.active),
+    isTemplateLibrary: Boolean(record.isTemplateLibrary),
     counts: {
       symbol: Number(record?.counts?.symbol) || 0,
       footprint: Number(record?.counts?.footprint) || 0,
@@ -1039,6 +1369,7 @@ function handleSettingsChange() {
   const projectRelativePath = elements.settingsProjectRelative.checked
     ? rawProjectPath
     : (state.settings.projectRelativePath || rawProjectPath);
+  const categorySettings = readCategoryTableState();
   const payload = {
     serverUrl: elements.settingsServer.value.trim(),
     overwriteFootprints: elements.settingsOverwrite.checked,
@@ -1046,9 +1377,11 @@ function handleSettingsChange() {
     debugLogs: elements.settingsDebug.checked,
     projectRelative: elements.settingsProjectRelative.checked,
     projectRelativePath,
+    categorySettings,
   };
   state.settings.projectRelative = payload.projectRelative;
   state.settings.projectRelativePath = projectRelativePath;
+  state.settings.categorySettings = categorySettings;
   saveUiPreferences();
   sendMessage("updateSettings", payload)
     .then((snapshot) => {
@@ -1110,9 +1443,6 @@ function setSettingsFeedback(message, cls) {
   showToast(message, variant, delay);
 }
 
-function clearLibraryModalError() {
-  return;
-}
 
 function clearLibraryCreateValidation() {
   elements.libraryCreateName?.classList.remove("is-invalid");
@@ -1140,39 +1470,6 @@ function setLibraryModalTab(mode) {
     }
     toggleLibraryProjectPath();
   }
-}
-
-function validateImportPath(path) {
-  if (!path) {
-    elements.libraryImportInfo.textContent = "";
-    elements.libraryImportInfo.className = "form-text";
-    return;
-  }
-  if (!path.toLowerCase().endsWith(".kicad_sym")) {
-    elements.libraryImportInfo.textContent = "Please select a .kicad_sym file.";
-    elements.libraryImportInfo.className = "form-text text-danger";
-    return;
-  }
-  elements.libraryImportInfo.textContent = "Checking path…";
-  elements.libraryImportInfo.className = "form-text text-muted";
-  sendMessage("validateLibrary", { path })
-    .then((result) => {
-      const counts = result.counts || {};
-      const parts = [];
-      parts.push(`Symbol (${counts.symbol ?? (result.assets?.symbol ? 1 : 0)})`);
-      parts.push(`Footprint (${counts.footprint ?? 0})`);
-      parts.push(`3D (${counts.model ?? 0})`);
-      const libraryName = deriveLibraryName(path);
-      const assetsLabel = parts.join(" · ");
-      elements.libraryImportInfo.textContent = libraryName
-        ? `${libraryName} – ${assetsLabel}`
-        : assetsLabel;
-      elements.libraryImportInfo.className = "form-text text-muted";
-    })
-    .catch((error) => {
-      elements.libraryImportInfo.textContent = error.message || "Not a valid library.";
-      elements.libraryImportInfo.className = "form-text text-danger";
-    });
 }
 
 function openDirectoryPicker({ mode, onSelect, applyLabel, initialPath }) {

@@ -1,5 +1,44 @@
 "use strict";
 
+// Normalize common LCSC parameter label variations to consistent KiCad field names
+const LCSC_PARAMS_MAP = {
+  "Power(Watts)": "Power",
+  "Rated Power": "Power",
+  "Power Dissipation": "Power",
+  "Rated Power (Watts)": "Power",
+  "Tolerance (±)": "Tolerance",
+  "Resistance Tolerance": "Tolerance",
+  "Capacitance Tolerance": "Tolerance",
+  "Temperature Coefficient": "Temp. Coefficient",
+  "Operating Temperature": "Operating Temp.",
+  "Storage Temperature": "Storage Temp.",
+  "Voltage Rating - DC": "Voltage Rating",
+  "Voltage - Rated": "Voltage Rating",
+  "Voltage Rating DC": "Voltage Rating",
+  "Rated Voltage": "Voltage Rating",
+  "Voltage Rating (Max)": "Voltage Rating",
+  "DC Resistance (DCR) (Max)": "DCR",
+  "DC Resistance": "DCR",
+  "Saturation Current (Isat)": "Sat. Current",
+  "Saturation Current": "Sat. Current",
+  "Self Resonant Frequency": "Self Res. Freq.",
+  "Manufacturer Part Number": "MPN",
+  "Mounting Type": "Mounting",
+};
+
+function mapParamKey(key) {
+  return LCSC_PARAMS_MAP[key] ?? key;
+}
+
+function normalizeSymbolValue(value, valueParam) {
+  if (!value || typeof value !== "string") return value;
+  // Resistor values: strip the Ohm symbol — "10kΩ" → "10k", "1MΩ" → "1M"
+  if (valueParam === "Resistance") {
+    return value.replace(/Ω/g, "").trim();
+  }
+  return value;
+}
+
 const NOTIFICATION_ICON =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAGXRFWHRTb2Z0d2FyZQBwYWludC5uZXQgNC4wLjE0Qe6JAAABGklEQVR4Xu2WQQ6DMAxF//+n7XCSdCoLMeMmprQ44tgSyq1qV0lhd6WHe/mPHDx48ODBg1/TjAaA1kW5Hn2BEFgC51W1sDRtCEALMxYBN8gFMUpjYAGheR2vHZkTorhTF1Q8YlgHFAMWG4eXeXvQy64X+RFI48s9jlEpDgsvA0ApHHLHp7J8FwS+QJaAZVTdiJgQ0C1MUgZ2FneBOBCACiUh4Kwog16iqWAZsCJVx9Se/QEjMqYkhZYl0g9DBGHgp6MkdSEnFG4W82l9JO66DC9HqOBeYg7cFsyiHZVBL+QP281hoz3trp6wVXoW+Lc93mE5fEAqwfM434SGNNbFx+LgdrOrV8J9u7t+kJT4S1x+zAFmY3/5lD0s5iWWQbGWVS6nK/O0c9kwwYMGDx48ePAgP8HHlTC/gtzpL5AAAAAElFTkSuQmCC";
 
@@ -19,6 +58,11 @@ const DEFAULT_STATE = {
   projectRelative: false,
   projectRelativePath: "",
   libraryTotals: { symbols: 0, footprints: 0, models: 0 },
+  categorySettings: {
+    Resistors: { hidePinNumbers: true, hidePinNames: true, valueParam: "Resistance", templateName: "R" },
+    Capacitors: { hidePinNumbers: true, hidePinNames: true, valueParam: "Capacitance", templateName: "C" },
+    Inductors: { hidePinNumbers: true, hidePinNames: true, valueParam: "Inductance", templateName: "L" },
+  },
 };
 
 let state = {
@@ -27,6 +71,8 @@ let state = {
   jobs: {},
   selectedLibraryPath: "",
   selectedLibraryName: "",
+  templateLibraryPath: null,
+  templateSymbols: [],
 };
 
 const jobPollers = new Map();
@@ -375,6 +421,10 @@ function normalizeLibraryRecord(raw) {
     modelPath,
     missing: Boolean(raw.missing),
     lastValidation: raw.lastValidation || null,
+    // Auto-detect template: explicit stored value wins; new records with "template" in name default to true
+    isTemplateLibrary: raw.isTemplateLibrary !== undefined
+      ? Boolean(raw.isTemplateLibrary)
+      : /template/i.test(name || ""),
   };
 }
 
@@ -405,14 +455,18 @@ async function init() {
       libraries: storedLibraries,
       jobHistory: stored.jobHistory || [],
       jobMeta: stored.jobMeta || {},
-      selectedLibraryPath: stored.selectedLibraryPath || stored.defaultLibraryPath || "",
-      selectedLibraryName: stored.selectedLibraryName || stored.defaultLibraryName || "",
+      selectedLibraryPath: stored.selectedLibraryPath || "",
+      selectedLibraryName: stored.selectedLibraryName || "",
       overwriteFootprints: normalizeBoolean(stored.overwriteFootprints),
       overwriteModels: normalizeBoolean(stored.overwriteModels),
       debugLogs: normalizeBoolean(stored.debugLogs),
       projectRelative: normalizeBoolean(stored.projectRelative),
       projectRelativePath: normalizeProjectRelativePath(stored.projectRelativePath),
       libraryTotals: stored.libraryTotals || { symbols: 0, footprints: 0, models: 0 },
+      categorySettings:
+        stored.categorySettings && typeof stored.categorySettings === "object"
+          ? { ...DEFAULT_STATE.categorySettings, ...stored.categorySettings }
+          : { ...DEFAULT_STATE.categorySettings },
     };
     recalcLibraryTotals();
     await ensureSelectedLibrary(true);
@@ -573,7 +627,7 @@ async function inventoryLibraries() {
 function upsertLibraryRecord(record) {
   const normalized = normalizeLibraryRecord(record);
   if (!normalized) {
-    throw new Error("Ungültiger Bibliothekseintrag");
+    throw new Error("Invalid library entry.");
   }
   const index = state.libraries.findIndex((item) => item.id === normalized.id || item.path === normalized.path);
   if (index >= 0) {
@@ -599,6 +653,32 @@ function upsertLibraryRecord(record) {
   return normalized;
 }
 
+function getTemplateLibraryPath() {
+  const lib = state.libraries.find((l) => l.isTemplateLibrary);
+  return lib ? (lib.symbolPath || lib.path || null) : null;
+}
+
+async function refreshTemplateStatus() {
+  const libPath = getTemplateLibraryPath();
+  state.templateLibraryPath = libPath || null;
+  if (!libPath) {
+    state.templateSymbols = [];
+    broadcastState();
+    return;
+  }
+  try {
+    const response = await apiFetch(`templates/symbols?lib_path=${encodeURIComponent(libPath)}`, { method: "GET" });
+    const data = await response.json();
+    state.templateSymbols = Array.isArray(data.symbols) ? data.symbols : [];
+    broadcastState();
+  } catch (error) {
+    state.templateSymbols = [];
+    if (state.debugLogs) {
+      console.warn("Template symbols refresh failed", error);
+    }
+  }
+}
+
 async function checkHealth() {
   try {
     await apiFetch("health", { method: "GET" });
@@ -607,6 +687,13 @@ async function checkHealth() {
       await inventoryLibraries();
     } catch (error) {
       console.warn("Library inventory failed during health check", error);
+    }
+    try {
+      await refreshTemplateStatus();
+    } catch (error) {
+      if (state.debugLogs) {
+        console.warn("Template status refresh failed during health check", error);
+      }
     }
   } catch (error) {
     state.connected = false;
@@ -721,7 +808,7 @@ function notifyJobResult(job) {
   if (!state.notificationsEnabled) {
     return;
   }
-  const statusLabel = job.status === "completed" ? "Konvertierung abgeschlossen" : "Konvertierung fehlgeschlagen";
+  const statusLabel = job.status === "completed" ? "Conversion completed" : "Conversion failed";
   const messageParts = [];
   if (job.libraryName) {
     messageParts.push(job.libraryName);
@@ -752,8 +839,6 @@ function snapshotState() {
     serverUrl: state.serverUrl,
     libraries: state.libraries.map((library) => ({ ...library })),
     libraryTotals: { ...state.libraryTotals },
-    defaultLibraryPath: state.defaultLibraryPath,
-    defaultLibraryName: state.defaultLibraryName,
     selectedLibraryPath: state.selectedLibraryPath,
     selectedLibraryName: state.selectedLibraryName,
     notificationsEnabled: state.notificationsEnabled,
@@ -762,6 +847,9 @@ function snapshotState() {
     debugLogs: state.debugLogs,
     projectRelative: state.projectRelative,
     projectRelativePath: state.projectRelativePath,
+    categorySettings: { ...state.categorySettings },
+    templateSymbols: (state.templateSymbols || []).slice(),
+    templateLibraryPath: state.templateLibraryPath || null,
     jobs: jobsArray,
     jobHistory: historyArray,
   };
@@ -784,23 +872,20 @@ async function persistState(keys) {
 
 async function submitJob(payload) {
   const providedPrefix = normalizePath(payload.libraryPath || "");
-  const fallbackBase = normalizePath(
-    state.selectedLibraryPath || state.defaultLibraryPath || "",
-  );
+  const fallbackBase = normalizePath(state.selectedLibraryPath || "");
   let targetPath = providedPrefix || fallbackBase;
   if (!targetPath) {
     await ensureSelectedLibrary();
-    const ensuredBase = normalizePath(state.selectedLibraryPath || state.defaultLibraryPath || "");
+    const ensuredBase = normalizePath(state.selectedLibraryPath || "");
     targetPath = providedPrefix || ensuredBase;
     if (!targetPath) {
-      throw new Error("Kein Bibliothekspfad ausgewählt.");
+      throw new Error("No library path selected.");
     }
   }
 
   let libraryName = sanitizeLibraryName(
     payload.libraryName
       || state.selectedLibraryName
-      || state.defaultLibraryName
       || deriveLibraryNameFromPath(providedPrefix || fallbackBase)
       || "easyeda2kicad",
   );
@@ -809,6 +894,30 @@ async function submitJob(payload) {
   }
 
   const libraryPrefix = providedPrefix || buildLibraryPrefix(targetPath, libraryName);
+
+  const catConfig = (payload.category && state.categorySettings?.[payload.category])
+    ? state.categorySettings[payload.category]
+    : {};
+  const hidePinNumbers = catConfig.hidePinNumbers ?? false;
+  const hidePinNames = catConfig.hidePinNames ?? false;
+  const valueParam = catConfig.valueParam ?? null;
+  const symbolValueOverride = (valueParam && payload.params && payload.params[valueParam])
+    ? normalizeSymbolValue(payload.params[valueParam], valueParam)
+    : null;
+
+  // Apply mapper to normalize LCSC param label variations, exclude the valueParam key
+  const rawParams = (payload.params && typeof payload.params === "object")
+    ? Object.fromEntries(
+        Object.entries(payload.params)
+          .filter(([k, v]) => k !== valueParam && v != null && v !== "")
+          .map(([k, v]) => [mapParamKey(k), v])
+      )
+    : {};
+  // Inject the package/size (e.g. "0603") as a dedicated "Package" property
+  if (payload.componentPackage) {
+    rawParams["Package"] = payload.componentPackage;
+  }
+  const symbolParams = Object.keys(rawParams).length > 0 ? rawParams : null;
 
   const body = {
     lcsc_id: payload.lcscId,
@@ -821,6 +930,15 @@ async function submitJob(payload) {
     project_relative: Boolean(payload.projectRelative),
     project_relative_path: normalizeProjectRelativePath(payload.projectRelativePath),
     model_path: typeof payload.modelPath === "string" ? payload.modelPath : "",
+    hide_pin_numbers: hidePinNumbers,
+    hide_pin_names: hidePinNames,
+    ...(symbolValueOverride ? { symbol_value_override: symbolValueOverride } : {}),
+    ...(symbolParams && Object.keys(symbolParams).length > 0 ? { symbol_params: symbolParams } : {}),
+    ...(payload.description ? { symbol_description: payload.description } : {}),
+    ...(payload.datasheetUrl ? { symbol_datasheet_url: payload.datasheetUrl } : {}),
+    use_template: Boolean(payload.useTemplate),
+    ...(payload.templateName ? { template_name: payload.templateName } : {}),
+    ...(payload.useTemplate && getTemplateLibraryPath() ? { template_lib_path: getTemplateLibraryPath() } : {}),
   };
 
   const response = await apiFetch("tasks", {
@@ -854,10 +972,10 @@ async function handleCreateLibrary(payload = {}) {
   const rawName = typeof payload.name === "string" ? payload.name : "";
   const name = sanitizeLibraryName(rawName) || deriveLibraryNameFromPath(basePath);
   if (!basePath) {
-    throw new Error("Bitte einen gültigen Basisordner wählen.");
+    throw new Error("Please select a valid base folder.");
   }
   if (!name) {
-    throw new Error("Bitte einen Bibliotheksnamen festlegen.");
+    throw new Error("Please provide a library name.");
   }
   const scaffold = await scaffoldLibraryOnServer({
     base_path: basePath,
@@ -914,21 +1032,21 @@ async function handleImportLibrary(payload = {}) {
   const rawPath = typeof payload.path === "string" ? payload.path : "";
   const symbolPath = normalizePath(rawPath);
   if (!symbolPath) {
-    throw new Error("Bitte eine Bibliotheksdatei wählen.");
+    throw new Error("Please select a library file.");
   }
   if (!symbolPath.toLowerCase().endsWith(".kicad_sym")) {
-    throw new Error("Es muss eine .kicad_sym Datei ausgewählt werden.");
+    throw new Error("Please select a .kicad_sym file.");
   }
 
   const validation = await validateLibraryOnServer(symbolPath);
   if (!validation.exists || !validation.assets?.symbol) {
-    throw new Error("Die ausgewählte Datei ist keine gültige Bibliothek.");
+    throw new Error("The selected file is not a valid library.");
   }
 
   const resolvedSymbol = normalizePath(validation.resolved_path || symbolPath);
   const name = sanitizeLibraryName(deriveLibraryNameFromPath(resolvedSymbol));
   if (!name) {
-    throw new Error("Bibliotheksname konnte nicht ermittelt werden.");
+    throw new Error("Could not determine library name.");
   }
 
   const now = new Date().toISOString();
@@ -984,7 +1102,7 @@ async function handleValidateLibrary(payload = {}) {
   const rawPath = typeof payload.path === "string" ? payload.path : "";
   const prefix = normalizePath(rawPath);
   if (!prefix) {
-    throw new Error("Bitte einen Pfad angeben.");
+    throw new Error("Please provide a path.");
   }
   return validateLibraryOnServer(prefix);
 }
@@ -1058,6 +1176,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         if (typeof message.projectRelativePath === "string") {
           state.projectRelativePath = normalizeProjectRelativePath(message.projectRelativePath);
         }
+        if (message.categorySettings && typeof message.categorySettings === "object") {
+          state.categorySettings = { ...message.categorySettings };
+        }
         await persistState([
           "serverUrl",
           "overwriteFootprints",
@@ -1065,23 +1186,25 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           "debugLogs",
           "projectRelative",
           "projectRelativePath",
+          "categorySettings",
         ]);
         checkHealth();
         return snapshotState();
       case "updateLibraries":
         if (Array.isArray(message.libraries)) {
+          const prevTemplatePath = getTemplateLibraryPath();
           state.libraries = message.libraries
             .map(normalizeLibraryRecord)
             .filter((library) => library);
           recalcLibraryTotals();
           await ensureSelectedLibrary();
           await persistState(["libraries", "libraryTotals"]);
+          const newTemplatePath = getTemplateLibraryPath();
+          if (state.connected && newTemplatePath !== prevTemplatePath) {
+            refreshTemplateStatus().catch(() => {});
+          }
         }
         return snapshotState();
-      case "checkLibraryMigration":
-        return checkSingleLibraryMigrationNeeded();
-      case "performLibraryMigration":
-        return performSingleLibraryMigration();
       case "validateLibraryDirectory":
         return await validateLibraryDirectory(message.path);
       case "setSelectedLibrary":
@@ -1092,8 +1215,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         }
         let sanitizedName = sanitizeLibraryName(requestedName);
         if (!sanitizedName) {
-          sanitizedName = sanitizeLibraryName(state.defaultLibraryName)
-            || deriveLibraryNameFromPath(state.selectedLibraryPath)
+          sanitizedName = deriveLibraryNameFromPath(state.selectedLibraryPath)
             || "easyeda2kicad";
         }
         state.selectedLibraryName = sanitizedName;
@@ -1112,21 +1234,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         }
         const lcscId = (message.lcscId || "").trim().toUpperCase();
         if (!lcscId || !lcscId.startsWith("C")) {
-          throw new Error("Ungültige LCSC ID.");
+          throw new Error("Invalid LCSC ID.");
         }
-        let basePath = normalizePath(state.selectedLibraryPath || state.defaultLibraryPath || "");
+        let basePath = normalizePath(state.selectedLibraryPath || "");
         if (!basePath) {
           await ensureSelectedLibrary();
-          basePath = normalizePath(state.selectedLibraryPath || state.defaultLibraryPath || "");
+          basePath = normalizePath(state.selectedLibraryPath || "");
         }
         if (!basePath) {
-          throw new Error("Bitte zuerst einen Bibliothekspfad in der Extension auswählen.");
+          throw new Error("Please select a library path in the extension first.");
         }
 
         const libraryName = sanitizeLibraryName(
-          state.selectedLibraryName
-            || state.defaultLibraryName
-            || lcscId,
+          state.selectedLibraryName || lcscId,
         );
 
         const selectedLibrary = getSelectedLibraryRecord();
@@ -1152,6 +1272,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           projectRelative,
           projectRelativePath,
           modelPath,
+          category: typeof message.category === "string" ? message.category : null,
+          componentPackage: typeof message.componentPackage === "string" ? message.componentPackage : null,
+          params: message.params && typeof message.params === "object" ? message.params : {},
+          description: typeof message.description === "string" ? message.description : null,
+          datasheetUrl: typeof message.datasheetUrl === "string" ? message.datasheetUrl : null,
+          useTemplate: Boolean(message.useTemplate),
+          templateName: typeof message.templateName === "string" ? message.templateName : null,
         };
 
         const summary = await submitJob(payload);
@@ -1165,7 +1292,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case "getJobStatus": {
         const jobId = message.jobId;
         if (!jobId) {
-          throw new Error("jobId fehlt");
+          throw new Error("Missing jobId");
         }
         const job = state.jobs[jobId];
         if (job) {
@@ -1177,7 +1304,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         }
         const history = state.jobHistory.find((entry) => entry.id === jobId);
         if (!history) {
-          throw new Error("Job nicht gefunden");
+          throw new Error("Job not found.");
         }
         return {
           ...history,
@@ -1194,7 +1321,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         }
         const lcscId = (message.lcscId || "").trim().toUpperCase();
         if (!lcscId || !lcscId.startsWith("C")) {
-          throw new Error("Ungültige LCSC ID.");
+          throw new Error("Invalid LCSC ID.");
         }
         const activeJob = Object.values(state.jobs || {}).find((job) => job.lcscId === lcscId);
         if (activeJob) {
@@ -1216,7 +1343,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
         const selectedLibrary = getSelectedLibraryRecord();
         const libraryPrefix = normalizePath(
-          deriveLibraryPrefix(selectedLibrary) || state.selectedLibraryPath || state.defaultLibraryPath || ""
+          deriveLibraryPrefix(selectedLibrary) || state.selectedLibraryPath || ""
         );
         if (!libraryPrefix) {
           throw new Error("Please select a library in the extension.");
@@ -1279,7 +1406,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
         const selectedLibrary = getSelectedLibraryRecord();
         const libraryPrefix = normalizePath(
-          deriveLibraryPrefix(selectedLibrary) || state.selectedLibraryPath || state.defaultLibraryPath || ""
+          deriveLibraryPrefix(selectedLibrary) || state.selectedLibraryPath || ""
         );
         if (!libraryPrefix) {
           throw new Error("Please select a library in the extension.");
@@ -1358,6 +1485,34 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
         return { results };
       }
+      case "checkCategoryKnown": {
+        const cat = typeof message.category === "string" ? message.category.trim() : "";
+        return { known: Boolean(cat && state.categorySettings && cat in state.categorySettings) };
+      }
+      case "getCategorySettings": {
+        const cat = typeof message.category === "string" ? message.category.trim() : "";
+        if (!cat) return null;
+        return state.categorySettings?.[cat] ?? null;
+      }
+      case "saveCategorySettings": {
+        const cat = typeof message.category === "string" ? message.category.trim() : "";
+        if (!cat) throw new Error("Category name required.");
+        const cfg = message.config && typeof message.config === "object" ? message.config : {};
+        state.categorySettings = {
+          ...state.categorySettings,
+          [cat]: {
+            hidePinNumbers: Boolean(cfg.hidePinNumbers),
+            hidePinNames: Boolean(cfg.hidePinNames),
+            valueParam: typeof cfg.valueParam === "string" ? cfg.valueParam.trim() || null : null,
+          },
+        };
+        await persistState(["categorySettings"]);
+        broadcastState();
+        return state.categorySettings[cat];
+      }
+      case "getTemplateStatus":
+        // Return dict format {symbolName: true} for backward compat with contentScript
+        return Object.fromEntries((state.templateSymbols || []).map((n) => [n, true]));
       case "submitJob":
         return submitJob(message.payload);
       case "fs:listRoots":
@@ -1400,60 +1555,6 @@ self.addEventListener("activate", (event) => {
 chrome.runtime.onStartup.addListener(() => {
   ensureInitialized();
 });
-
-// Library Management Helper Functions
-function checkSingleLibraryMigrationNeeded() {
-  // Check if we have old single-library settings but no new library array
-  const hasOldSettings = (state.selectedLibraryPath || state.defaultLibraryPath) && 
-                         state.libraries.length === 0;
-  return hasOldSettings && (state.selectedLibraryPath || state.defaultLibraryPath) !== "";
-}
-
-function performSingleLibraryMigration() {
-  if (!checkSingleLibraryMigrationNeeded()) {
-    return null;
-  }
-  
-  const path = state.selectedLibraryPath || state.defaultLibraryPath || "";
-  const name = state.selectedLibraryName || 
-               state.defaultLibraryName || 
-               deriveLibraryNameFromPath(path) || 
-               "easyeda2kicad";
-  
-  const migratedLibrary = {
-    id: createLibraryId(),
-    name: sanitizeLibraryName(name),
-    path: normalizePath(path),
-    resolvedPrefix: normalizePath(path),
-    basePath: "",
-    active: true,
-    assets: { symbol: false, footprint: false, model: false },
-    warnings: [],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    projectId: "default",
-  };
-
-  // Clear old settings
-  state.selectedLibraryPath = "";
-  state.selectedLibraryName = "";
-  state.defaultLibraryPath = "";
-  state.defaultLibraryName = "";
-  
-  // Add to new libraries array
-  state.libraries = [normalizeLibraryRecord(migratedLibrary)].filter(Boolean);
-  
-  // Persist the changes
-  persistState([
-    "libraries", 
-    "selectedLibraryPath", 
-    "selectedLibraryName", 
-    "defaultLibraryPath", 
-    "defaultLibraryName"
-  ]);
-  
-  return migratedLibrary;
-}
 
 async function validateLibraryDirectory(path) {
   try {
