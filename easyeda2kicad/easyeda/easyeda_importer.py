@@ -174,8 +174,9 @@ class EasyedaSymbolImporter:
 
 
 class EasyedaFootprintImporter:
-    def __init__(self, easyeda_cp_cad_data: dict):
+    def __init__(self, easyeda_cp_cad_data: dict, api=None):
         self.input = easyeda_cp_cad_data
+        self.api = api
         self.output = self.extract_easyeda_data(
             ee_data_str=self.input["packageDetail"]["dataStr"],
             ee_data_info=self.input["packageDetail"]["dataStr"]["head"]["c_para"],
@@ -248,7 +249,7 @@ class EasyedaFootprintImporter:
                 new_footprint.texts.append(ee_text)
             elif ee_designator == "SVGNODE":
                 new_footprint.model_3d = Easyeda3dModelImporter(
-                    easyeda_cp_cad_data=[line], download_raw_3d_model=True
+                    easyeda_cp_cad_data=[line], download_raw_3d_model=True, api=self.api
                 ).output
 
             elif ee_designator == "SOLIDREGION":
@@ -263,9 +264,10 @@ class EasyedaFootprintImporter:
 
 
 class Easyeda3dModelImporter:
-    def __init__(self, easyeda_cp_cad_data, download_raw_3d_model: bool):
+    def __init__(self, easyeda_cp_cad_data, download_raw_3d_model: bool, api=None):
         self.input = easyeda_cp_cad_data
         self.download_raw_3d_model = download_raw_3d_model
+        self.api = api
         self.output = self.create_3d_model()
 
     def create_3d_model(self) -> Union[Ee3dModel, None]:
@@ -278,8 +280,9 @@ class Easyeda3dModelImporter:
         if model_3d_info := self.get_3d_model_info(ee_data=ee_data):
             model_3d: Ee3dModel = self.parse_3d_model_info(info=model_3d_info)
             if self.download_raw_3d_model:
-                model_3d.raw_obj = EasyedaApi().get_raw_3d_model_obj(uuid=model_3d.uuid)
-                model_3d.step = EasyedaApi().get_step_3d_model(uuid=model_3d.uuid)
+                api = self.api if self.api is not None else EasyedaApi()
+                model_3d.raw_obj = api.get_raw_3d_model_obj(uuid=model_3d.uuid)
+                model_3d.step = api.get_step_3d_model(uuid=model_3d.uuid)
                 metrics = compute_obj_center(model_3d.raw_obj)
                 if metrics is not None:
                     model_3d.center = metrics[:3]
