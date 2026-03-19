@@ -5,15 +5,20 @@ Merges LCSC component metadata into a user-defined KiCad template symbol,
 preserving the template's graphical elements (pins, body shape) and all
 property positions / font sizes / visibility — only field *values* are updated.
 
-Any LCSC fields absent from the template are appended as hidden properties.
+Pin table is driven by the EasyEDA model: missing pins are added at (0,0),
+template-only pins are removed, so the final symbol always matches EasyEDA pin set.
 """
 from __future__ import annotations
 
+import logging
 import re
+import textwrap
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from easyeda2kicad.kicad.parameters_kicad_symbol import KiSymbolPin
     from easyeda2kicad.kicad.parameters_kicad_symbol import KiSymbolInfo
 
 TEMPLATE_LIB_FILENAME = "Templates.kicad_sym"
@@ -65,6 +70,42 @@ def _replace_property_value(text: str, prop_name: str, new_value: str) -> str:
     safe = str(new_value).replace('"', "'")
     pattern = r'(\(property\s+"' + re.escape(prop_name) + r'"\s+)"[^"]*"'
     return re.sub(pattern, r'\g<1>"' + safe + '"', text)
+
+
+def _find_pin_blocks(text: str) -> list[tuple[str, str, int, int]]:
+    """
+    Find all (pin ...) blocks in a KiCad symbol string.
+    Returns list of (block_text, pin_number, start_index, end_index).
+    """
+    result: list[tuple[str, str, int, int]] = []
+    i = 0
+    pattern = re.compile(r'\(\s*pin\s+')
+    while True:
+        m = pattern.search(text, i)
+        if not m:
+            break
+        start = m.start()
+        block, end = _collect_sexpr_block(text, start)
+        num_m = re.search(r'\(\s*number\s+"([^"]*)"', block)
+        pin_number = num_m.group(1) if num_m else ""
+        result.append((block, pin_number, start, end))
+        i = end
+    return result
+
+
+def _find_primary_unit_pins_region(text: str) -> tuple[int, int] | None:
+    """
+    Find the span of the first graphical unit (symbol "Name_0_1" or similar)
+    that contains pins. Returns (unit_start, unit_end) for the inner unit block,
+    or None if no such unit found.
+    """
+    # Match (symbol "Anything_0_1" or (symbol "Anything_1_1" etc.
+    m = re.search(r'\(\s*symbol\s+"[^"]+_\d+_\d+"', text)
+    if not m:
+        return None
+    unit_start = m.start()
+    _, unit_end = _collect_sexpr_block(text, unit_start)
+    return (unit_start, unit_end)
 
 
 class TemplateMerger:
@@ -122,11 +163,92 @@ class TemplateMerger:
             f"\t\t)"
         )
 
+    def _merge_pin_table(
+        self, symbol_str: str, source_pins: list["KiSymbolPin"]
+    ) -> tuple[str, int, int, int]:
+        """
+        Make symbol pin table match EasyEDA: add missing pins at (0,0), remove
+        template-only pins. Returns (new_symbol_str, kept_count, added_count, removed_count).
+        """
+        from easyeda2kicad.kicad.parameters_kicad_symbol import KiSymbolPin
+
+        source_by_number: dict[str, KiSymbolPin] = {}
+        for p in source_pins:
+            num = getattr(p, "number", None)
+            if num is not None and str(num).strip():
+                source_by_number[str(num).strip()] = p
+        source_numbers = set(source_by_number)
+
+        pin_blocks = _find_pin_blocks(symbol_str)
+        template_numbers = {num for _, num, _, _ in pin_blocks}
+
+        to_remove = template_numbers - source_numbers
+        to_add_numbers = source_numbers - template_numbers
+        def _pin_sort_key(n: str):
+            try:
+                return (0, int(n))
+            except ValueError:
+                return (1, n)
+        to_add = [source_by_number[n] for n in sorted(to_add_numbers, key=_pin_sort_key)]
+
+        # Remove template-only pins (from end to start so indices stay valid)
+        remove_set = set(to_remove)
+        for block, num, start, end in reversed(pin_blocks):
+            if num in remove_set:
+                symbol_str = symbol_str[:start] + symbol_str[end:]
+        kept = len(pin_blocks) - len(to_remove)
+
+        # Insert new pins into the primary unit (or after last pin if flat structure)
+        if to_add:
+            region = _find_primary_unit_pins_region(symbol_str)
+            insert_global: int | None = None
+            if region is not None:
+                unit_start, unit_end = region
+                unit_content = symbol_str[unit_start:unit_end]
+                last_pin = list(_find_pin_blocks(unit_content))
+                if last_pin:
+                    _, _, _, last_end = last_pin[-1]
+                    insert_global = unit_start + last_end
+                else:
+                    insert_global = unit_start + (unit_content.find("\n") + 1 if "\n" in unit_content else 0)
+            if insert_global is None:
+                # Flat template: insert after last (pin ...) in whole symbol
+                all_pins = _find_pin_blocks(symbol_str)
+                if all_pins:
+                    _, _, _, insert_global = all_pins[-1]
+                else:
+                    logging.warning("Template has no (symbol \"Name_0_1\" ...) and no pins; cannot add pins.")
+                    insert_global = None
+
+            if insert_global is not None:
+                indent_str = "\t\t\t"
+                new_pin_lines = []
+                for pin in to_add:
+                    pin_at_origin = replace(pin, pos_x=0, pos_y=0)
+                    raw = pin_at_origin.export_v6().strip()
+                    new_pin_lines.append(textwrap.indent(raw, indent_str))
+                insertion = "\n" + "\n".join(new_pin_lines) + "\n"
+                symbol_str = symbol_str[:insert_global] + insertion + symbol_str[insert_global:]
+
+        # Validate: final pin set must equal source
+        final_blocks = _find_pin_blocks(symbol_str)
+        final_numbers = {num for _, num, _, _ in final_blocks}
+        if final_numbers != source_numbers:
+            missing = source_numbers - final_numbers
+            extra = final_numbers - source_numbers
+            logging.warning(
+                "Pin merge validation: expected %s pins, got %s; missing %s; extra %s",
+                len(source_numbers), len(final_numbers), missing or "none", extra or "none",
+            )
+
+        return symbol_str, kept, len(to_add), len(to_remove)
+
     def merge(
         self,
         template_sym_str: str,
         template_name: str,
         ki_info: "KiSymbolInfo",
+        source_pins: list["KiSymbolPin"] | None = None,
     ) -> str:
         from easyeda2kicad.kicad.parameters_kicad_symbol import sanitize_fields
 
@@ -176,14 +298,23 @@ class TemplateMerger:
                 if idx != -1:
                     result = result[:idx] + extra_block + result[idx:]
 
-        # -- 5. Rename sub-symbol blocks: TemplateName_N_M → ComponentName_N_M
+        # -- 5. Pin table: match EasyEDA exactly ---------------------------------
+        # Add missing EasyEDA pins at (0,0); remove template-only pins.
+        if source_pins is not None:
+            result, kept, added, removed = self._merge_pin_table(result, source_pins)
+            logging.info(
+                "Template pin merge: kept %s, added %s @ (0,0), removed %s.",
+                kept, added, removed,
+            )
+
+        # -- 6. Rename sub-symbol blocks: TemplateName_N_M → ComponentName_N_M
         result = re.sub(
             r'"' + re.escape(template_name) + r'(_\d+_\d+)"',
             f'"{component_name}\\1"',
             result,
         )
 
-        # -- 6. Rename the outer symbol declaration --------------------------
+        # -- 7. Rename the outer symbol declaration --------------------------
         result = re.sub(
             r'\(symbol\s+"' + re.escape(template_name) + r'"',
             f'(symbol "{component_name}"',
@@ -191,9 +322,9 @@ class TemplateMerger:
             count=1,
         )
 
-        # -- 7. Normalise tab indentation to 2-space (KiCad standard) --------
+        # -- 8. Normalise tab indentation to 2-space (KiCad standard) --------
         # Template files commonly use tabs; the library writer expects spaces.
         result = result.replace("\t", "  ")
 
-        # -- 8. Add leading newline expected by add_component_in_symbol_lib_file
+        # -- 9. Add leading newline expected by add_component_in_symbol_lib_file
         return "\n" + result.strip()
