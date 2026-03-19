@@ -59,9 +59,9 @@ const DEFAULT_STATE = {
   projectRelativePath: "",
   libraryTotals: { symbols: 0, footprints: 0, models: 0 },
   categorySettings: {
-    Resistors: { hidePinNumbers: true, hidePinNames: true, valueParam: "Resistance", templateName: "R" },
-    Capacitors: { hidePinNumbers: true, hidePinNames: true, valueParam: "Capacitance", templateName: "C" },
-    Inductors: { hidePinNumbers: true, hidePinNames: true, valueParam: "Inductance", templateName: "L" },
+    Resistors: { hidePinNumbers: true, hidePinNames: true, valueParam: "Resistance" },
+    Capacitors: { hidePinNumbers: true, hidePinNames: true, valueParam: "Capacitance" },
+    Inductors: { hidePinNumbers: true, hidePinNames: true, valueParam: "Inductance" },
   },
 };
 
@@ -73,6 +73,7 @@ let state = {
   selectedLibraryName: "",
   templateLibraryPath: null,
   templateSymbols: [],
+  templateSymbolsByLib: {},
 };
 
 const jobPollers = new Map();
@@ -658,24 +659,40 @@ function getTemplateLibraryPath() {
   return lib ? (lib.symbolPath || lib.path || null) : null;
 }
 
+function getTemplateLibraryPaths() {
+  return state.libraries
+    .filter((l) => l.isTemplateLibrary)
+    .map((l) => l.symbolPath || l.path || null)
+    .filter(Boolean);
+}
+
 async function refreshTemplateStatus() {
-  const libPath = getTemplateLibraryPath();
-  state.templateLibraryPath = libPath || null;
-  if (!libPath) {
-    state.templateSymbols = [];
+  const libPaths = getTemplateLibraryPaths();
+  state.templateLibraryPath = libPaths.length ? libPaths[0] : null;
+  state.templateSymbols = [];
+  state.templateSymbolsByLib = {};
+  if (!libPaths.length) {
     broadcastState();
     return;
   }
+  const allNames = new Set();
   try {
-    const response = await apiFetch(`templates/symbols?lib_path=${encodeURIComponent(libPath)}`, { method: "GET" });
-    const data = await response.json();
-    state.templateSymbols = Array.isArray(data.symbols) ? data.symbols : [];
+    for (const libPath of libPaths) {
+      const response = await apiFetch(`templates/symbols?lib_path=${encodeURIComponent(libPath)}`, { method: "GET" });
+      const data = await response.json();
+      const symbols = Array.isArray(data.symbols) ? data.symbols : [];
+      state.templateSymbolsByLib[libPath] = symbols;
+      symbols.forEach((name) => allNames.add(name));
+    }
+    state.templateSymbols = Array.from(allNames).sort();
     broadcastState();
   } catch (error) {
     state.templateSymbols = [];
+    state.templateSymbolsByLib = {};
     if (state.debugLogs) {
       console.warn("Template symbols refresh failed", error);
     }
+    broadcastState();
   }
 }
 
@@ -849,6 +866,7 @@ function snapshotState() {
     projectRelativePath: state.projectRelativePath,
     categorySettings: { ...state.categorySettings },
     templateSymbols: (state.templateSymbols || []).slice(),
+    templateSymbolsByLib: state.templateSymbolsByLib ? { ...state.templateSymbolsByLib } : {},
     templateLibraryPath: state.templateLibraryPath || null,
     jobs: jobsArray,
     jobHistory: historyArray,
@@ -895,9 +913,22 @@ async function submitJob(payload) {
 
   const libraryPrefix = providedPrefix || buildLibraryPrefix(targetPath, libraryName);
 
-  const catConfig = (payload.category && state.categorySettings?.[payload.category])
-    ? state.categorySettings[payload.category]
-    : {};
+  let catConfig = {};
+  const override = payload.categoryConfigOverride;
+  if (override && typeof override === "object") {
+    catConfig = {
+      hidePinNumbers: Boolean(override.hidePinNumbers),
+      hidePinNames: Boolean(override.hidePinNames),
+      valueParam:
+        typeof override.valueParam === "string"
+          ? override.valueParam.trim() || null
+          : override.valueParam != null
+            ? String(override.valueParam).trim() || null
+            : null,
+    };
+  } else if (payload.category && state.categorySettings?.[payload.category]) {
+    catConfig = state.categorySettings[payload.category];
+  }
   const hidePinNumbers = catConfig.hidePinNumbers ?? false;
   const hidePinNames = catConfig.hidePinNames ?? false;
   const valueParam = catConfig.valueParam ?? null;
@@ -938,7 +969,10 @@ async function submitJob(payload) {
     ...(payload.datasheetUrl ? { symbol_datasheet_url: payload.datasheetUrl } : {}),
     use_template: Boolean(payload.useTemplate),
     ...(payload.templateName ? { template_name: payload.templateName } : {}),
-    ...(payload.useTemplate && getTemplateLibraryPath() ? { template_lib_path: getTemplateLibraryPath() } : {}),
+    ...(payload.useTemplate && (payload.templateLibPath || getTemplateLibraryPath())
+      ? { template_lib_path: payload.templateLibPath || getTemplateLibraryPath() }
+      : {}),
+    force_template: Boolean(payload.forceTemplate),
   };
 
   const response = await apiFetch("tasks", {
@@ -1267,8 +1301,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           symbol: true,
           footprint: true,
           model: true,
-          overwrite: Boolean(state.overwriteFootprints),
-          overwrite_model: Boolean(state.overwriteModels),
+          overwrite: message.overwrite !== undefined ? Boolean(message.overwrite) : Boolean(state.overwriteFootprints),
+          overwrite_model: message.overwrite_model !== undefined ? Boolean(message.overwrite_model) : Boolean(state.overwriteModels),
           projectRelative,
           projectRelativePath,
           modelPath,
@@ -1279,6 +1313,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           datasheetUrl: typeof message.datasheetUrl === "string" ? message.datasheetUrl : null,
           useTemplate: Boolean(message.useTemplate),
           templateName: typeof message.templateName === "string" ? message.templateName : null,
+          templateLibPath: typeof message.templateLibPath === "string" ? message.templateLibPath : null,
+          forceTemplate: Boolean(message.forceTemplate),
+          categoryConfigOverride:
+            message.categoryConfigOverride && typeof message.categoryConfigOverride === "object"
+              ? message.categoryConfigOverride
+              : null,
         };
 
         const summary = await submitJob(payload);
@@ -1513,6 +1553,30 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case "getTemplateStatus":
         // Return dict format {symbolName: true} for backward compat with contentScript
         return Object.fromEntries((state.templateSymbols || []).map((n) => [n, true]));
+      case "templatesPinCheck": {
+        const lcscId = (message.lcscId || "").trim().toUpperCase();
+        const templateName = typeof message.templateName === "string" ? message.templateName.trim() : "";
+        const templateLibPath = typeof message.templateLibPath === "string" ? message.templateLibPath.trim() : "";
+        if (!lcscId || !lcscId.startsWith("C") || !templateName || !templateLibPath) {
+          throw new Error("templatesPinCheck requires lcscId, templateName, and templateLibPath.");
+        }
+        const url = buildUrl("templates/pin-check");
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            lcsc_id: lcscId,
+            template_name: templateName,
+            template_lib_path: templateLibPath,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const detail = Array.isArray(data.detail) ? data.detail.join(" ") : (data.detail || data.message || "Pin check failed.");
+          throw new Error(detail);
+        }
+        return data;
+      }
       case "submitJob":
         return submitJob(message.payload);
       case "fs:listRoots":
