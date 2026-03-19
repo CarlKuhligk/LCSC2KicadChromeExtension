@@ -24,7 +24,13 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from easyeda2kicad.helpers import extract_symbol_from_lib, list_symbols_in_lib
+from easyeda2kicad.easyeda.easyeda_api import EasyedaApi
+from easyeda2kicad.easyeda.easyeda_importer import EasyedaSymbolImporter
+from easyeda2kicad.helpers import (
+    count_pins_in_symbol_string,
+    extract_symbol_from_lib,
+    list_symbols_in_lib,
+)
 from easyeda2kicad.kicad.parameters_kicad_symbol import KicadVersion
 from easyeda2kicad.kicad.template_merger import KNOWN_TEMPLATE_NAMES
 from easyeda2kicad.service import (
@@ -101,6 +107,10 @@ class TaskCreatePayload(BaseModel):
     )
     template_lib_path: Optional[str] = Field(
         None, description="Full path to the .kicad_sym file that contains the template symbols."
+    )
+    force_template: bool = Field(
+        False,
+        description="If true, use only the template (no fallback to EasyEDA symbol on template failure).",
     )
 
     @field_validator("lcsc_id")
@@ -223,6 +233,18 @@ class ComponentBatchRequest(BaseModel):
 
 class ComponentBatchResponse(BaseModel):
     results: Dict[str, ComponentCheckResponse] = Field(default_factory=dict)
+
+
+class TemplatePinCheckPayload(BaseModel):
+    lcsc_id: str = Field(..., description="LCSC component ID (e.g. C12345).")
+    template_name: str = Field(..., description="Symbol name in the template library.")
+    template_lib_path: str = Field(..., description="Full path to the .kicad_sym template file.")
+
+
+class TemplatePinCheckResponse(BaseModel):
+    easyeda_pin_count: int
+    template_pin_count: int
+    match: bool
 
 
 def _normalize_library_prefix(base_path: str, library_name: str) -> Path:
@@ -1007,6 +1029,7 @@ def create_app(
                 use_template=payload.use_template,
                 template_name=payload.template_name,
                 template_lib_path=payload.template_lib_path,
+                force_template=payload.force_template,
             )
         except ConversionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1066,6 +1089,54 @@ def create_app(
     @router.post("/libraries/components", response_model=ComponentBatchResponse)
     async def libraries_components(payload: ComponentBatchRequest) -> ComponentBatchResponse:
         return _check_components_in_library(payload.path, payload.lcsc_ids)
+
+    @router.post("/templates/pin-check", response_model=TemplatePinCheckResponse)
+    async def templates_pin_check(payload: TemplatePinCheckPayload) -> TemplatePinCheckResponse:
+        """Return pin counts for EasyEDA symbol and template; match is True if equal."""
+        lcsc_id = payload.lcsc_id.strip().upper()
+        if not lcsc_id.startswith("C"):
+            raise HTTPException(status_code=400, detail="LCSC ID must start with 'C'.")
+        api = EasyedaApi()
+        cad_data = {}
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                cad_data = api.get_cad_data_of_component(lcsc_id=lcsc_id)
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                if attempt < 3:
+                    await asyncio.sleep(1)
+                else:
+                    break
+        if last_exc is not None:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to fetch EasyEDA data for {lcsc_id}: {last_exc}",
+            ) from last_exc
+        if not cad_data:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No CAD data for component {lcsc_id}.",
+            )
+        importer = EasyedaSymbolImporter(easyeda_cp_cad_data=cad_data)
+        primary_symbol = importer.get_symbol()
+        easyeda_pin_count = len(primary_symbol.pins)
+
+        template_str = extract_symbol_from_lib(payload.template_lib_path, payload.template_name)
+        if not template_str:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Template '{payload.template_name}' not found in {payload.template_lib_path}.",
+            )
+        template_pin_count = count_pins_in_symbol_string(template_str)
+        match = easyeda_pin_count == template_pin_count
+        return TemplatePinCheckResponse(
+            easyeda_pin_count=easyeda_pin_count,
+            template_pin_count=template_pin_count,
+            match=match,
+        )
 
     @router.get("/templates/symbols")
     async def templates_symbols(lib_path: str) -> Dict[str, Any]:
