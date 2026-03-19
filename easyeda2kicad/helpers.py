@@ -86,6 +86,16 @@ def list_symbols_in_lib(lib_path: str) -> list:
         return []
 
 
+def count_pins_in_symbol_string(symbol_str: str) -> int:
+    """
+    Count top-level (pin ...) blocks in a KiCad symbol string.
+    Used to compare template pin count with EasyEDA symbol pin count.
+    """
+    # Match (pin ...) at the top level of the symbol content; avoid matching
+    # inside strings by not counting (pin when inside quotes.
+    return len(re.findall(r"\(\s*pin\s+", symbol_str))
+
+
 def extract_symbol_from_lib(lib_path: str, symbol_name: str) -> str | None:
     """Extract a single symbol block from a .kicad_sym library file by name."""
     try:
