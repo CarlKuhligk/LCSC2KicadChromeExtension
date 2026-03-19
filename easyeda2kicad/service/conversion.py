@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
@@ -69,6 +70,7 @@ class ConversionRequest:
     use_template: bool = False
     template_name: Optional[str] = None
     template_lib_path: Optional[str] = None
+    force_template: bool = False
 
     def __post_init__(self) -> None:
         if not self.lcsc_id or not self.lcsc_id.startswith("C"):
@@ -201,6 +203,7 @@ def _export_symbol_from_template(
             template_sym_str=template_str,
             template_name=request.template_name,
             ki_info=ki_info,
+            source_pins=exporter.output.pins,
         )
     except Exception as exc:
         logging.error("TemplateMerger.merge() failed: %s", exc)
@@ -245,12 +248,31 @@ def run_conversion(
     library_name = output_path.name
 
     api = EasyedaApi()
-    try:
-        cad_data = api.get_cad_data_of_component(lcsc_id=request.lcsc_id)
-    except Exception as exc:  # pragma: no cover - network errors bubble up
+    cad_data = {}
+    last_exc: Exception | None = None
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            cad_data = api.get_cad_data_of_component(lcsc_id=request.lcsc_id)
+            last_exc = None
+            break
+        except Exception as exc:  # pragma: no cover - network errors bubble up
+            last_exc = exc
+            if attempt < max_attempts:
+                notify(
+                    ConversionStage.FETCHING,
+                    completed_steps,
+                    steps_total,
+                    f"Fetching component data from EasyEDA failed ({attempt}/{max_attempts}). Retrying…",
+                )
+                time.sleep(1)
+            else:
+                break
+
+    if last_exc is not None:
         raise ConversionError(
-            f"Failed to fetch data for {request.lcsc_id}: {exc}"
-        ) from exc
+            f"Failed to fetch data for {request.lcsc_id}: {last_exc}"
+        ) from last_exc
 
     if not cad_data:
         raise ConversionError(
@@ -268,6 +290,19 @@ def run_conversion(
     result = ConversionResult()
 
     easyeda_footprint = None
+
+    # Shared API for 3D model downloads with retry; on_retry updates status.
+    retry_ctx = {"stage": ConversionStage.EXPORT_MODEL, "steps": 0, "total": steps_total}
+
+    def _on_3d_retry(attempt: int, max_attempts: int) -> None:
+        notify(
+            retry_ctx["stage"],
+            retry_ctx["steps"],
+            retry_ctx["total"],
+            f"Fetching 3D model failed ({attempt}/{max_attempts}). Retrying…",
+        )
+
+    api_3d = EasyedaApi(on_retry=_on_3d_retry)
 
     if request.generate_symbol:
         notify(
@@ -314,11 +349,16 @@ def run_conversion(
                     library_name=library_name,
                 )
                 if not exported_symbol:
+                    if request.force_template:
+                        raise ConversionError(
+                            f"Template '{request.template_name}' not found or merge failed; "
+                            "force_template is set, cannot fall back to LCSC symbol."
+                        )
                     result.messages.append(
                         f"Template '{request.template_name}' not found; falling back to LCSC symbol."
                     )
 
-            # Fall back to LCSC export if template was not used or failed
+            # Fall back to LCSC export if template was not used or failed (and not force_template)
             if not exported_symbol:
                 exporter = ExporterSymbolKicad(
                     symbol=primary_symbol,
@@ -391,7 +431,8 @@ def run_conversion(
             steps_total,
             "Generating footprint.",
         )
-        importer = EasyedaFootprintImporter(easyeda_cp_cad_data=cad_data)
+        retry_ctx["stage"], retry_ctx["steps"] = ConversionStage.EXPORT_FOOTPRINT, completed_steps
+        importer = EasyedaFootprintImporter(easyeda_cp_cad_data=cad_data, api=api_3d)
         easyeda_footprint = importer.get_footprint()
 
         footprint_exists = _footprint_exists(
@@ -451,12 +492,13 @@ def run_conversion(
             steps_total,
             "Generating 3D model.",
         )
+        retry_ctx["stage"], retry_ctx["steps"] = ConversionStage.EXPORT_MODEL, completed_steps
         model_data = None
         if easyeda_footprint and easyeda_footprint.model_3d:
             model_data = easyeda_footprint.model_3d
         if model_data is None:
             model_data = Easyeda3dModelImporter(
-                easyeda_cp_cad_data=cad_data, download_raw_3d_model=True
+                easyeda_cp_cad_data=cad_data, download_raw_3d_model=True, api=api_3d
             ).output
 
         exporter = Exporter3dModelKicad(model_3d=model_data)
