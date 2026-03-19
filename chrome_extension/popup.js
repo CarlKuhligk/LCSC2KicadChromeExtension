@@ -906,65 +906,6 @@ function buildCategoryItem(category, cfg, openByDefault = false) {
   cbHideName.dataset.field = "hidePinNames";
   body.appendChild(makeCatSwitch("Hide pin names", cbHideName));
 
-  // Template select + status dot
-  const templateWrap = document.createElement("div");
-  templateWrap.style.cssText = "display:flex;align-items:center;gap:6px;flex:1;min-width:0;";
-
-  const templateSelect = document.createElement("select");
-  templateSelect.className = "form-select form-select-sm template-name-select";
-  templateSelect.dataset.field = "templateName";
-
-  const emptyOpt = document.createElement("option");
-  emptyOpt.value = "";
-  emptyOpt.textContent = "— none —";
-  templateSelect.appendChild(emptyOpt);
-
-  const configuredName = cfg.templateName || "";
-  const symbols = state.templateSymbols || [];
-  symbols.forEach((name) => {
-    const opt = document.createElement("option");
-    opt.value = name;
-    opt.textContent = name;
-    if (name === configuredName) opt.selected = true;
-    templateSelect.appendChild(opt);
-  });
-  if (configuredName && !symbols.includes(configuredName)) {
-    const opt = document.createElement("option");
-    opt.value = configuredName;
-    opt.textContent = `${configuredName} (not found)`;
-    opt.selected = true;
-    templateSelect.appendChild(opt);
-  }
-
-  const dot = document.createElement("span");
-  dot.className = "template-status-dot";
-  dot.style.cssText = "flex-shrink:0;font-size:12px;cursor:default;";
-  dot.textContent = "●";
-
-  function updateDot(name) {
-    if (!name) {
-      dot.style.color = "#9ca3af"; dot.title = "No template selected";
-    } else if ((state.templateSymbols || []).includes(name)) {
-      dot.style.color = "#22c55e"; dot.title = `Template '${name}' available`;
-    } else {
-      dot.style.color = "#ef4444";
-      dot.title = state.templateSymbols?.length
-        ? `Template '${name}' not found in template library`
-        : "No template library marked — go to Libraries tab";
-    }
-  }
-  updateDot(configuredName);
-
-  templateSelect.addEventListener("change", () => {
-    updateDot(templateSelect.value);
-    updateCatSummary(item);
-    saveCategoryTableState();
-  });
-
-  templateWrap.appendChild(templateSelect);
-  templateWrap.appendChild(dot);
-  body.appendChild(makeCatField("Template", templateWrap));
-
   // Wire up live-save on checkboxes / value input
   [cbHideNum, cbHideName].forEach((cb) => cb.addEventListener("change", () => {
     updateCatSummary(item);
@@ -1017,7 +958,6 @@ function updateCatSummary(item) {
   const valueParam = item.querySelector("input[data-field='valueParam']")?.value?.trim();
   const hideNum = item.querySelector("input[data-field='hidePinNumbers']")?.checked;
   const hideName = item.querySelector("input[data-field='hidePinNames']")?.checked;
-  const tmplName = item.querySelector("select[data-field='templateName']")?.value?.trim();
 
   if (valueParam) {
     const chip = document.createElement("span");
@@ -1031,10 +971,6 @@ function updateCatSummary(item) {
     chip.textContent = "Pins hidden";
     summaryRow.appendChild(chip);
   }
-
-  // Template: no chip — show via card border colour instead
-  const hasTemplate = Boolean(tmplName && (state.templateSymbols || []).includes(tmplName));
-  item.classList.toggle("has-template", hasTemplate);
 }
 
 function addCategoryRow() {
@@ -1054,7 +990,6 @@ function readCategoryTableState() {
       hidePinNumbers: Boolean(item.querySelector("input[data-field='hidePinNumbers']")?.checked),
       hidePinNames: Boolean(item.querySelector("input[data-field='hidePinNames']")?.checked),
       valueParam: item.querySelector("input[data-field='valueParam']")?.value?.trim() || null,
-      templateName: item.querySelector("select[data-field='templateName']")?.value?.trim() || null,
     };
   });
   return result;
