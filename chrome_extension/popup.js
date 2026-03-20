@@ -1,5 +1,15 @@
 "use strict";
 
+/** LCSC category path `A/B/C`. Keep in sync with background.js `normalizeCategoryPath`. */
+function normalizeCategoryPath(raw) {
+  if (raw == null || typeof raw !== "string") return "";
+  return raw
+    .split("/")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join("/");
+}
+
 function createSimpleBootstrap(scope) {
   const doc = scope.document;
   let activeModalCount = 0;
@@ -143,10 +153,12 @@ const globalScope = typeof window !== "undefined" ? window : globalThis;
 const bootstrap = globalScope.bootstrap || (globalScope.bootstrap = createSimpleBootstrap(globalScope));
 
 const UI_STORAGE_KEY = "popupUiState";
-const TAB_IDS = ["parts", "libraries", "settings"];
+const TAB_IDS = ["libraries", "settings"];
 
 const state = {
-  activeTab: "parts",
+  activeTab: "libraries",
+  /** @type {"light"|"dark"} */
+  uiTheme: "light",
   connected: false,
   connectionHint: null,
   libraries: [],
@@ -154,8 +166,6 @@ const state = {
   libraryFilter: "",
   selectedLibraryPath: "",
   selectedLibraryName: "",
-  jobs: {},
-  history: [],
   settings: {
     serverUrl: "http://localhost:8087",
     overwrite: false,
@@ -166,7 +176,6 @@ const state = {
     categorySettings: {},
   },
   templateSymbols: [],
-  lastJob: null,
   ready: false,
   picker: {
     mode: null,
@@ -186,6 +195,49 @@ const elements = {};
 const modals = {};
 let pickerManualTimer = null;
 let _lastCategorySettingsJson = null;
+/** @type {(() => void) | null} */
+let popupConfirmAcceptCallback = null;
+
+function popupConfirmEscHandler(event) {
+  if (event.key !== "Escape") return;
+  event.preventDefault();
+  event.stopPropagation();
+  closePopupConfirm();
+}
+
+/**
+ * @param {{ title: string, message: string, acceptLabel?: string, danger?: boolean, onAccept?: () => void }} opts
+ */
+function openPopupConfirm(opts) {
+  const overlay = elements.popupConfirmOverlay;
+  if (!overlay || !opts?.title) return;
+  popupConfirmAcceptCallback = typeof opts.onAccept === "function" ? opts.onAccept : null;
+  if (elements.popupConfirmTitle) elements.popupConfirmTitle.textContent = opts.title;
+  if (elements.popupConfirmMessage) elements.popupConfirmMessage.textContent = opts.message || "";
+  const acceptBtn = elements.popupConfirmAccept;
+  if (acceptBtn) {
+    acceptBtn.textContent = opts.acceptLabel || "Remove";
+    const danger = opts.danger !== false;
+    acceptBtn.className = danger ? "btn btn-danger btn-sm" : "btn btn-primary btn-sm";
+  }
+  overlay.hidden = false;
+  overlay.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+  document.body.style.minHeight = "536px";
+  document.addEventListener("keydown", popupConfirmEscHandler, true);
+  requestAnimationFrame(() => acceptBtn?.focus());
+}
+
+function closePopupConfirm() {
+  const overlay = elements.popupConfirmOverlay;
+  if (!overlay) return;
+  overlay.hidden = true;
+  overlay.setAttribute("aria-hidden", "true");
+  document.removeEventListener("keydown", popupConfirmEscHandler, true);
+  document.body.classList.remove("modal-open");
+  document.body.style.minHeight = null;
+  popupConfirmAcceptCallback = null;
+}
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -212,18 +264,6 @@ function cacheElements() {
   elements.connectionHint = document.getElementById("connection-hint");
   elements.headerActive = document.getElementById("header-active");
   elements.toastContainer = document.getElementById("toast-container");
-
-  // Parts tab
-  elements.partsForm = document.getElementById("parts-form");
-  elements.partsLcsc = document.getElementById("parts-lcsc");
-  elements.partsSubmit = document.getElementById("parts-submit");
-  elements.partsSymbol = document.getElementById("parts-symbol");
-  elements.partsFootprint = document.getElementById("parts-footprint");
-  elements.partsModel = document.getElementById("parts-model");
-  elements.partsFeedback = document.getElementById("parts-feedback");
-  elements.partsResult = document.getElementById("parts-result");
-  elements.partsResultDetails = document.getElementById("parts-result-details");
-  elements.partsOpenLibrary = document.getElementById("parts-open-library");
 
   // Libraries tab
   elements.libraryList = document.getElementById("library-list");
@@ -260,6 +300,7 @@ function cacheElements() {
   elements.settingsProjectRelativePath = document.getElementById("settings-project-relative-path");
   elements.settingsCategoryList = document.getElementById("settings-category-list");
   elements.settingsCategoryAdd = document.getElementById("settings-category-add");
+  elements.themeOptions = Array.from(document.querySelectorAll(".theme-option"));
 
   // Modals shared
   elements.libraryRequiredModal = document.getElementById("library-required-modal");
@@ -268,14 +309,32 @@ function cacheElements() {
   elements.pickerManual = document.getElementById("picker-manual");
   elements.pickerPathBreadcrumb = document.getElementById("picker-path-breadcrumb");
   elements.pickerList = document.getElementById("picker-list");
-  elements.pickerError = document.getElementById("picker-error");
   elements.pickerApply = document.getElementById("picker-apply");
+  elements.popupConfirmOverlay = document.getElementById("popup-confirm-overlay");
+  elements.popupConfirmTitle = document.getElementById("popup-confirm-title");
+  elements.popupConfirmMessage = document.getElementById("popup-confirm-message");
+  elements.popupConfirmAccept = document.getElementById("popup-confirm-accept");
+  elements.popupConfirmCancel = document.getElementById("popup-confirm-cancel");
 }
 
 function initModals() {
   modals.libraryRequired = elements.libraryRequiredModal ? new bootstrap.Modal(elements.libraryRequiredModal) : null;
   modals.library = elements.libraryModal ? new bootstrap.Modal(elements.libraryModal) : null;
   modals.picker = elements.pickerModal ? new bootstrap.Modal(elements.pickerModal) : null;
+
+  elements.popupConfirmAccept?.addEventListener("click", () => {
+    const fn = popupConfirmAcceptCallback;
+    closePopupConfirm();
+    if (typeof fn === "function") fn();
+  });
+
+  elements.popupConfirmCancel?.addEventListener("click", () => {
+    closePopupConfirm();
+  });
+
+  elements.popupConfirmOverlay?.addEventListener("click", (e) => {
+    if (e.target === elements.popupConfirmOverlay) closePopupConfirm();
+  });
 
   if (elements.libraryModal) {
     elements.libraryModal.addEventListener("hidden.bs.modal", () => {
@@ -302,24 +361,10 @@ function bindEvents() {
     button.addEventListener("click", () => setActiveTab(button.dataset.tab));
   });
 
-  elements.partsOpenLibrary?.addEventListener("click", () => {
-    if (modals.library) {
-      modals.library.show();
-      setLibraryModalTab("import");
-    } else {
-      setActiveTab("libraries");
-    }
-  });
-
-  elements.partsForm?.addEventListener("submit", handlePartsSubmit);
-  elements.partsLcsc?.addEventListener("blur", () => {
-    elements.partsLcsc.value = elements.partsLcsc.value.trim().toUpperCase();
-  });
-
   elements.pickerButtons.forEach((button) => {
     button.addEventListener("click", () => {
       if (!state.connected) {
-        showToast("Not available without backend.", "warning");
+        showToast("Connect to the backend first.", "warning");
         return;
       }
       const mode = button.dataset.picker;
@@ -368,6 +413,17 @@ function bindEvents() {
   elements.settingsTest?.addEventListener("click", testServerConnection);
   elements.settingsProjectRelative?.addEventListener("change", toggleSettingsProjectPath);
   elements.settingsCategoryAdd?.addEventListener("click", addCategoryRow);
+
+  elements.themeOptions?.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const value = btn.getAttribute("data-theme-value");
+      if (value !== "light" && value !== "dark") return;
+      state.uiTheme = value;
+      applyPopupTheme(value);
+      syncThemeSegmentButtons();
+      void saveUiPreferences();
+    });
+  });
 
   elements.pickerManual?.addEventListener("input", handlePickerManualInput);
   elements.pickerManual?.addEventListener("change", handlePickerManualChange);
@@ -418,19 +474,43 @@ function syncLibraryCreateDefaults() {
   }
 }
 
+function applyPopupTheme(theme) {
+  const t = theme === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme = t;
+}
+
+function syncThemeSegmentButtons() {
+  const t = state.uiTheme === "dark" ? "dark" : "light";
+  elements.themeOptions?.forEach((btn) => {
+    const v = btn.getAttribute("data-theme-value");
+    const on = v === t;
+    btn.classList.toggle("btn-primary", on);
+    btn.classList.toggle("btn-outline-primary", !on);
+  });
+}
+
 async function loadUiPreferences() {
   try {
     const stored = await chrome.storage.local.get(UI_STORAGE_KEY);
     const data = stored?.[UI_STORAGE_KEY];
-    if (data && typeof data === "object" && TAB_IDS.includes(data.activeTab)) {
-      state.activeTab = data.activeTab;
+    let tab = data?.activeTab;
+    if (tab === "parts") {
+      tab = "libraries";
+    }
+    if (data && typeof data === "object" && tab && TAB_IDS.includes(tab)) {
+      state.activeTab = tab;
     }
     if (data && typeof data.projectRelative === "boolean") {
       state.settings.projectRelative = data.projectRelative;
     }
+    if (data && (data.theme === "light" || data.theme === "dark")) {
+      state.uiTheme = data.theme;
+    }
   } catch (error) {
     console.warn("Failed to read UI preferences", error);
   }
+  applyPopupTheme(state.uiTheme);
+  syncThemeSegmentButtons();
   setActiveTab(state.activeTab, { silent: true });
 }
 
@@ -440,6 +520,7 @@ async function saveUiPreferences() {
       [UI_STORAGE_KEY]: {
         activeTab: state.activeTab,
         projectRelative: state.settings.projectRelative,
+        theme: state.uiTheme === "dark" ? "dark" : "light",
       },
     });
   } catch (error) {
@@ -482,9 +563,6 @@ function applyState(snapshot = {}) {
   };
   state.selectedLibraryPath = typeof snapshot.selectedLibraryPath === "string" ? snapshot.selectedLibraryPath : "";
   state.selectedLibraryName = typeof snapshot.selectedLibraryName === "string" ? snapshot.selectedLibraryName : "";
-  state.jobs = snapshot.jobs && typeof snapshot.jobs === "object" ? { ...snapshot.jobs } : {};
-  state.history = Array.isArray(snapshot.jobHistory) ? snapshot.jobHistory.slice() : [];
-  state.lastJob = state.history[0] || null;
 
   const serverUrl = typeof snapshot.serverUrl === "string" && snapshot.serverUrl.trim().length
     ? snapshot.serverUrl.trim()
@@ -510,7 +588,6 @@ function applyState(snapshot = {}) {
 
   renderConnectionStatus();
   renderLibraries();
-  renderPartsResult();
   renderSettings();
   syncLibraryCreateDefaults();
   updateBackendControls();
@@ -539,7 +616,7 @@ function updateBackendControls() {
   elements.pickerButtons.forEach((button) => {
     button.disabled = disabled;
     if (disabled) {
-      button.setAttribute("title", "Not available without backend.");
+      button.setAttribute("title", "Connect to the backend first.");
       button.setAttribute("aria-disabled", "true");
     } else {
       button.removeAttribute("title");
@@ -658,28 +735,52 @@ function renderLibraries() {
 
     const removeBtn = document.createElement("button");
     removeBtn.type = "button";
-    removeBtn.className = "btn btn-outline-danger library-remove";
+    removeBtn.className = "cat-remove library-remove";
+    removeBtn.innerHTML = "&times;";
     removeBtn.setAttribute("aria-label", `Remove library ${library.name || ""}`.trim());
-    removeBtn.innerHTML = `
-      <svg class="icon icon-trash" viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M9 3a1 1 0 0 0-1 1v1H5.5a1 1 0 0 0 0 2H6v11a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V7h.5a1 1 0 1 0 0-2H16V4a1 1 0 0 0-1-1H9Zm1 2h4v1h-4V5Zm-1 4a1 1 0 1 1 2 0v8a1 1 0 1 1-2 0V9Zm6-1a1 1 0 0 0-1 1v8a1 1 0 1 0 2 0V9a1 1 0 0 0-1-1Z" />
-      </svg>
-    `;
+    removeBtn.setAttribute("title", "Remove library");
     removeBtn.dataset.id = library.id;
     actionWrapper.appendChild(removeBtn);
 
     if (!library.isTemplateLibrary) {
-      const toggle = document.createElement("input");
-      toggle.type = "button";
-      toggle.className = "library-toggle";
-      toggle.disabled = Boolean(library.active || library.missing);
-      toggle.value = library.active ? "Active" : (library.missing ? "Missing" : "Activate");
-      toggle.dataset.id = library.id;
-      toggle.onclick = (event) => {
-        toggle.disabled = true;
-        handleLibraryListChange(event);
-      };
-      actionWrapper.appendChild(toggle);
+      if (library.active) {
+        const pill = document.createElement("span");
+        pill.className = "library-status-pill library-status-pill--active";
+        pill.setAttribute("role", "status");
+        pill.setAttribute("aria-label", "Active library");
+        const dot = document.createElement("span");
+        dot.className = "library-status-pill-dot badge-online";
+        dot.setAttribute("aria-hidden", "true");
+        pill.appendChild(dot);
+        pill.appendChild(document.createTextNode("Active"));
+        actionWrapper.appendChild(pill);
+      } else if (library.missing) {
+        const pill = document.createElement("span");
+        pill.className = "library-status-pill library-status-pill--missing";
+        pill.setAttribute("role", "status");
+        pill.setAttribute("aria-label", "Library missing on disk");
+        const dot = document.createElement("span");
+        dot.className = "library-status-pill-dot badge-offline";
+        dot.setAttribute("aria-hidden", "true");
+        pill.appendChild(dot);
+        pill.appendChild(document.createTextNode("Missing"));
+        actionWrapper.appendChild(pill);
+      } else {
+        const toggle = document.createElement("input");
+        toggle.type = "button";
+        toggle.className = "library-toggle library-status-pill--activate";
+        toggle.value = "Activate";
+        toggle.dataset.id = library.id;
+        toggle.setAttribute(
+          "aria-label",
+          `Activate library ${library.name || ""}`.trim(),
+        );
+        toggle.onclick = (event) => {
+          toggle.disabled = true;
+          handleLibraryListChange(event);
+        };
+        actionWrapper.appendChild(toggle);
+      }
     }
 
     titleRow.appendChild(actionWrapper);
@@ -744,49 +845,6 @@ function renderAssetBadge(label, active, count = 0) {
   return badge;
 }
 
-function renderPartsResult() {
-  if (!elements.partsResult) return;
-  const job = state.lastJob;
-  if (!job) {
-    elements.partsResult.hidden = true;
-    elements.partsResultDetails.innerHTML = "";
-    return;
-  }
-
-  elements.partsResult.hidden = false;
-  const outputs = [];
-  if (job.outputs?.symbol || job.result?.symbol_path) outputs.push("Symbol");
-  if (job.outputs?.footprint || job.result?.footprint_path) outputs.push("Footprint");
-  if (job.outputs?.model || hasModelPaths(job.result)) outputs.push("3D");
-
-  const rows = [
-    ["Status", (job.status || "").toUpperCase()],
-    ["LCSC", job.lcscId || job.lcsc_id || "–"],
-    ["Library", job.libraryName || "–"],
-    ["Path", job.libraryPath || job.output_path || "–"],
-    ["Outputs", outputs.length ? outputs.join(" · ") : "–"],
-    ["Message", job.message || job.error || "–"],
-  ];
-
-  elements.partsResultDetails.innerHTML = rows
-    .map(([key, value]) => `
-      <dt class="col-4">${key}</dt>
-      <dd class="col-8">${escapeHtml(value)}</dd>
-    `)
-    .join("");
-}
-
-function hasModelPaths(result) {
-  if (!result) return false;
-  if (Array.isArray(result.model_paths)) {
-    return result.model_paths.length > 0;
-  }
-  if (typeof result.model_paths === "object" && result.model_paths !== null) {
-    return Object.keys(result.model_paths).length > 0;
-  }
-  return Boolean(result.model_paths);
-}
-
 function renderSettings() {
   if (!elements.settingsServer) return;
   if (!elements.settingsServer.matches(":focus")) {
@@ -812,6 +870,16 @@ function renderCategoryTable() {
   elements.settingsCategoryList.innerHTML = "";
   Object.entries(cats).forEach(([category, cfg]) => {
     elements.settingsCategoryList.appendChild(buildCategoryItem(category, cfg));
+  });
+}
+
+/** After expanding a category row, scroll so the full block is visible inside #settings-card-body. */
+function scrollCategoryItemIntoView(item) {
+  if (!item) return;
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      item.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+    });
   });
 }
 
@@ -851,6 +919,7 @@ function buildCategoryItem(category, cfg, openByDefault = false) {
 
   const chevron = document.createElement("span");
   chevron.className = "cat-chevron";
+  chevron.setAttribute("aria-hidden", "true");
   chevron.textContent = "▾";
 
   const removeBtn = document.createElement("button");
@@ -858,10 +927,24 @@ function buildCategoryItem(category, cfg, openByDefault = false) {
   removeBtn.className = "cat-remove";
   removeBtn.innerHTML = "&times;";
   removeBtn.setAttribute("aria-label", `Remove ${category || "category"}`);
+  removeBtn.setAttribute("title", "Remove category");
   removeBtn.addEventListener("click", (e) => {
     e.stopPropagation();
-    item.remove();
-    saveCategoryTableState();
+    e.preventDefault();
+    const rawName = nameInput.value.trim();
+    openPopupConfirm({
+      title: "Remove category",
+      message: rawName
+        ? `Remove "${rawName}" and its saved Value parameter and pin options? This cannot be undone.`
+        : "Remove this empty category row? Unsaved details will be lost.",
+      acceptLabel: "Remove",
+      onAccept: () => {
+        if (item.isConnected) {
+          item.remove();
+          saveCategoryTableState();
+        }
+      },
+    });
   });
 
   headerRight.appendChild(chevron);
@@ -876,11 +959,14 @@ function buildCategoryItem(category, cfg, openByDefault = false) {
       nameInput.focus();
       return;
     }
-    const isOpen = item.dataset.open === "1";
-    item.dataset.open = isOpen ? "0" : "1";
-    body.hidden = isOpen;
-    chevron.style.transform = isOpen ? "" : "rotate(-90deg)";
-    if (!isOpen) requestAnimationFrame(() => nameInput.select());
+    const wasOpen = item.dataset.open === "1";
+    item.dataset.open = wasOpen ? "0" : "1";
+    body.hidden = wasOpen;
+    chevron.style.transform = wasOpen ? "" : "rotate(-90deg)";
+    if (!wasOpen) {
+      requestAnimationFrame(() => nameInput.select());
+      scrollCategoryItemIntoView(item);
+    }
   });
 
   // ── Body ────────────────────────────────────────────────────────────────
@@ -937,9 +1023,13 @@ function buildCategoryItem(category, cfg, openByDefault = false) {
 
 function makeCatField(label, control, hint = null) {
   const row = document.createElement("div");
-  row.className = "cat-field";
+  row.className = "cat-field cat-field-stack";
+  if (!control.id) {
+    control.id = `cat-field-${Math.random().toString(36).slice(2, 10)}`;
+  }
   const lbl = document.createElement("label");
   lbl.className = "cat-field-label";
+  lbl.htmlFor = control.id;
   lbl.textContent = label;
   if (hint) lbl.title = hint;
   row.appendChild(lbl);
@@ -989,13 +1079,16 @@ function addCategoryRow() {
   const item = buildCategoryItem("", { hidePinNumbers: false, hidePinNames: false, valueParam: "" }, true);
   elements.settingsCategoryList.appendChild(item);
   item.querySelector("input[data-field='category']")?.focus();
+  scrollCategoryItemIntoView(item);
 }
 
 function readCategoryTableState() {
   if (!elements.settingsCategoryList) return {};
   const result = {};
   Array.from(elements.settingsCategoryList.querySelectorAll(".cat-item")).forEach((item) => {
-    const category = item.querySelector("input[data-field='category']")?.value?.trim();
+    const category = normalizeCategoryPath(
+      item.querySelector("input[data-field='category']")?.value?.trim() || "",
+    );
     if (!category) return;
     result[category] = {
       hidePinNumbers: Boolean(item.querySelector("input[data-field='hidePinNumbers']")?.checked),
@@ -1017,8 +1110,11 @@ function saveCategoryTableState() {
 }
 
 function setActiveTab(tab, options = {}) {
+  if (tab === "parts") {
+    tab = "libraries";
+  }
   if (!TAB_IDS.includes(tab)) {
-    tab = "parts";
+    tab = "libraries";
   }
   state.activeTab = tab;
   elements.tabButtons.forEach((button) => {
@@ -1035,80 +1131,6 @@ function setActiveTab(tab, options = {}) {
   if (!options.silent) {
     saveUiPreferences();
   }
-}
-
-function handlePartsSubmit(event) {
-  event.preventDefault();
-  if (!elements.partsForm) return;
-
-  clearPartsFeedback();
-  const lcscRaw = elements.partsLcsc.value.trim().toUpperCase();
-  const outputs = {
-    symbol: elements.partsSymbol.checked,
-    footprint: elements.partsFootprint.checked,
-    model: elements.partsModel.checked,
-  };
-
-  const hasOutput = outputs.symbol || outputs.footprint || outputs.model;
-  if (!lcscRaw || !lcscRaw.startsWith("C")) {
-	showToast("Please provide a valid LCSC number (e.g. C8734)", "danger");
-    elements.partsLcsc.classList.add("is-invalid");
-    return;
-  }
-  elements.partsLcsc.classList.remove("is-invalid");
-
-  if (!hasOutput) {
-	showToast("Select at least one output (symbol, footprint or 3D).", "danger");
-    return;
-  }
-
-  const activeLibrary = getActiveLibrary();
-  if (!activeLibrary) {
-    modals.libraryRequired?.show();
-    return;
-  }
-
-  const libraryPrefix = getLibraryPrefix(activeLibrary);
-  if (!libraryPrefix) {
-    setPartsFeedback("Library path is invalid.", "danger");
-    return;
-  }
-
-  const payload = {
-    lcscId: lcscRaw,
-    libraryPath: libraryPrefix,
-    libraryName: activeLibrary.name,
-    symbol: outputs.symbol,
-    footprint: outputs.footprint,
-    model: outputs.model,
-    overwrite: state.settings.overwrite,
-    overwrite_model: state.settings.overwriteModel,
-    projectRelative: Boolean(activeLibrary?.projectRelative),
-    projectRelativePath: activeLibrary?.projectRelativePath || state.settings.projectRelativePath || "",
-    modelPath: activeLibrary?.modelPath || "",
-  };
-
-  elements.partsSubmit.disabled = true;
-
-  sendMessage("submitJob", { payload })
-    .then((summary) => {
-      state.lastJob = {
-        ...summary,
-        ...payload,
-        outputs,
-        status: summary.status || "queued",
-        lcscId: lcscRaw,
-      };
-      renderPartsResult();
-      setPartsFeedback(`${payload.lcscId} was sent to ${payload.libraryName}.`, "success");
-    })
-    .catch((error) => {
-      setPartsFeedback(error.message || "Download failed.", "danger");
-      showToast(error.message || "Download failed", "danger");
-    })
-    .finally(() => {
-      elements.partsSubmit.disabled = false;
-    });
 }
 
 function handleLibrarySearch(event) {
@@ -1184,17 +1206,28 @@ function handleLibraryListClick(event) {
   const library = state.libraries.find((item) => item.id === id);
   if (!library) return;
   if (button.classList.contains("library-remove")) {
-    if (!confirm(`Remove library "${library.name}"?`)) {
-      return;
-    }
-    state.libraries = state.libraries.filter((item) => item.id !== id);
-    if (!state.libraries.some((item) => item.active) && state.libraries.length) {
-      state.libraries[0].active = true;
-    }
-    syncSelectedLibrary();
-    renderLibraries();
-    persistLibraries();
-    showToast("Library removed", "success");
+    event.preventDefault();
+    const libId = id;
+    const libName = library.name || "Untitled library";
+    openPopupConfirm({
+      title: "Remove library",
+      message:
+        `Remove "${libName}" from this extension? Only the list entry is removed; files on disk are not deleted.`
+        + (library.active && state.libraries.filter((x) => x.id !== libId).length > 0
+          ? " Another library will become active if needed."
+          : ""),
+      acceptLabel: "Remove",
+      onAccept: () => {
+        state.libraries = state.libraries.filter((item) => item.id !== libId);
+        if (!state.libraries.some((item) => item.active) && state.libraries.length) {
+          state.libraries[0].active = true;
+        }
+        syncSelectedLibrary();
+        renderLibraries();
+        persistLibraries();
+        showToast("Library removed", "success");
+      },
+    });
   }
 }
 
@@ -1348,29 +1381,12 @@ function toggleSettingsProjectPath() {
 }
 
 function testServerConnection() {
-  setSettingsFeedback("Checking connection…", "text-muted");
+  setSettingsFeedback("Checking backend…", "text-muted");
   sendMessage("updateSettings", { serverUrl: elements.settingsServer.value.trim() })
     .then((status) => {
-		if(status.connected) setSettingsFeedback("Server reachable", "text-success");
-		else setSettingsFeedback("Server not reachable", "text-danger");
-	})
-}
-
-function clearPartsFeedback() {
-  if (elements.partsFeedback) {
-    elements.partsFeedback.innerHTML = "";
-    elements.partsFeedback.classList.add("d-none");
-  }
-}
-
-function setPartsFeedback(message, variant) {
-  if (!elements.partsFeedback) return;
-  const alert = document.createElement("div");
-  alert.className = `alert alert-${variant}`;
-  alert.textContent = message;
-  elements.partsFeedback.innerHTML = "";
-  elements.partsFeedback.appendChild(alert);
-  elements.partsFeedback.classList.remove("d-none");
+      if (status.connected) setSettingsFeedback("Backend reachable", "text-success");
+      else setSettingsFeedback("Backend not reachable", "text-danger");
+    });
 }
 
 function setSettingsFeedback(message, cls) {
@@ -1420,7 +1436,7 @@ function setLibraryModalTab(mode) {
 
 function openDirectoryPicker({ mode, onSelect, applyLabel, initialPath }) {
   if (!state.connected) {
-    showToast("Not available without backend.", "warning");
+    showToast("Connect to the backend first.", "warning");
     return;
   }
   state.picker.mode = mode;
@@ -1434,7 +1450,6 @@ function openDirectoryPicker({ mode, onSelect, applyLabel, initialPath }) {
   state.picker.breadcrumbs = [];
   elements.pickerModalTitle.innerHTML = mode === "import" ? "Select file" : "Select folder";
   elements.pickerManual.value = initialPath || "";
-  elements.pickerError.textContent = "";
   elements.pickerApply.textContent = applyLabel || "Select";
 
   loadRoots()
@@ -1461,7 +1476,7 @@ function openDirectoryPicker({ mode, onSelect, applyLabel, initialPath }) {
       return null;
     })
     .catch((error) => {
-      elements.pickerError.textContent = error.message || "Failed to load folders.";
+      showToast(error.message || "Failed to load folders.", "danger");
       renderPickerList([]);
       modals.picker?.show();
     });
@@ -1501,12 +1516,11 @@ function loadDirectory(path, options = {}) {
           .find((node) => node.dataset.path === state.picker.selectedPath);
         match?.classList.add("active");
       }
-      elements.pickerError.textContent = "";
       modals.picker?.show();
       return data;
     })
     .catch((error) => {
-      elements.pickerError.textContent = error.message || "Failed to load path.";
+      showToast(error.message || "Failed to load path.", "danger");
       renderPickerPathBreadcrumb();
       renderPickerList([]);
       modals.picker?.show();
@@ -1517,7 +1531,7 @@ function loadDirectory(path, options = {}) {
 function renderPickerPathBreadcrumb() {
   if (!elements.pickerPathBreadcrumb) return;
   const wrapper = document.createElement("div");
-  wrapper.className = "d-flex flex-wrap align-items-center gap-2";
+  wrapper.className = "picker-breadcrumb-row d-flex flex-wrap align-items-center gap-2";
   const crumbs = Array.isArray(state.picker.breadcrumbs) ? state.picker.breadcrumbs : [];
 
   if (!crumbs.length) {
@@ -1630,14 +1644,12 @@ function handlePickerListKeydown(event) {
 function scheduleManualPathLoad(path, { immediate = false } = {}) {
   clearTimeout(pickerManualTimer);
   if (!path) {
-    elements.pickerError.textContent = "";
     return;
   }
   const extension = state.picker.filterExtension ? state.picker.filterExtension.toLowerCase() : null;
   if (state.picker.requireFile && extension && path.toLowerCase().endsWith(extension)) {
     state.picker.selectedPath = path;
     state.picker.selectedType = "file";
-    elements.pickerError.textContent = "";
     return;
   }
   state.picker.selectedPath = "";
@@ -1683,13 +1695,14 @@ function selectPickerItem(item) {
 function applyPickerSelection() {
   const selected = state.picker.selectedPath || state.picker.currentPath;
   if (!selected) {
-    elements.pickerError.textContent = state.picker.requireFile
-      ? "Please select a file."
-      : "Please select a folder.";
+    showToast(
+      state.picker.requireFile ? "Please select a file." : "Please select a folder.",
+      "warning",
+    );
     return;
   }
   if (state.picker.requireFile && state.picker.selectedType !== "file") {
-    elements.pickerError.textContent = "Please choose a .kicad_sym file.";
+    showToast("Please choose a .kicad_sym file.", "warning");
     return;
   }
   state.picker.callback?.(selected);
@@ -1776,7 +1789,7 @@ function showToast(message, variant = "primary", delay = 4000) {
   toastElement.innerHTML = `
     <div class="d-flex">
       <div class="toast-body">${escapeHtml(message)}</div>
-      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+      <button type="button" class="btn-close me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
     </div>
   `;
   elements.toastContainer.appendChild(toastElement);

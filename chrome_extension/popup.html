@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 
 <head>
   <meta charset="UTF-8" />
@@ -17,84 +17,52 @@
         <h1 class="h5 mb-0">LCSC Parts</h1>
         <div class="header-active" id="header-active"></div>
       </div>
-      <span id="connection-status" class="badge rounded-pill text-bg-secondary" role="status" aria-live="polite">
-        <span>Server status:</span>
+      <span id="connection-status" role="status" aria-live="polite">
+        <span>Backend:</span>
         <span id="connection-status-dot"></span>
       </span>
     </header>
     <p id="connection-hint" class="small text-danger mb-2 d-none" role="alert"></p>
 
     <div class="tab-buttons" role="tablist" aria-label="Main navigation">
-      <button class="tab-button active" type="button" id="tab-button-parts" data-tab="parts"
-        aria-controls="tab-panel-parts" aria-selected="true">Get new part</button>
-      <button class="tab-button" type="button" id="tab-button-libraries" data-tab="libraries"
-        aria-controls="tab-panel-libraries" aria-selected="false">Library</button>
+      <button class="tab-button active" type="button" id="tab-button-libraries" data-tab="libraries"
+        aria-controls="tab-panel-libraries" aria-selected="true">Library</button>
       <button class="tab-button" type="button" id="tab-button-settings" data-tab="settings"
         aria-controls="tab-panel-settings" aria-selected="false">Settings</button>
     </div>
 
     <main class="pt-2">
-      <section id="tab-panel-parts" class="tab-panel active" role="tabpanel" aria-labelledby="tab-button-parts">
-        <div class="card mb-3">
-          <div class="card-body">
-            <form id="parts-form" class="row g-3" novalidate>
-              <div class="col-12">
-                <label for="parts-lcsc" class="form-label">LCSC Part number<span class="text-accent"> *</span></label>
-                <input id="parts-lcsc" type="text" class="form-control" placeholder="e.g. C8734" autocomplete="off"
-                  required />
-              </div>
-              <div class="col-12">
-                <div class="row gy-2 gx-3">
-                  <div class="col-12 col-sm-4">
-                    <div class="form-check form-switch">
-                      <input class="form-check-input" type="checkbox" role="switch" id="parts-symbol" checked />
-                      <label class="form-check-label" for="parts-symbol">Symbol</label>
-                    </div>
-                  </div>
-                  <div class="col-12 col-sm-4">
-                    <div class="form-check form-switch">
-                      <input class="form-check-input" type="checkbox" id="parts-footprint" checked />
-                      <label class="form-check-label" for="parts-footprint">Footprint</label>
-                    </div>
-                  </div>
-                  <div class="col-12 col-sm-4">
-                    <div class="form-check form-switch">
-                      <input class="form-check-input" type="checkbox" id="parts-model" checked />
-                      <label class="form-check-label" for="parts-model">3D Model</label>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div class="col-12">
-                <div id="parts-feedback" class="alert mb-0" role="status"></div>
-              </div>
-              <div class="col-12">
-                <button class="btn btn-primary w-100" type="submit" id="parts-submit">Download</button>
-              </div>
-            </form>
-          </div>
-        </div>
-
-      </section>
-
-      <section id="tab-panel-libraries" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-libraries">
+      <section id="tab-panel-libraries" class="tab-panel active" role="tabpanel" aria-labelledby="tab-button-libraries">
         <div class="card">
-          <div class="card-body">
-            <div class="d-flex flex-column gap-2">
-              <div class="d-flex align-items-center justify-content-between gap-2 flex-wrap">
-                <div class="position-relative">
-                  <span class="fw-semibold" style="position: relative; top: 1px;">Libraries</span>
-                  <button class="btn btn-sm btn-primary" type="button" id="library-add"
+          <div class="card-body" id="library-card-body">
+            <div class="library-panel-section">
+              <div class="library-panel-toolbar">
+                <div class="library-toolbar-grid">
+                  <div class="library-title-block">
+                    <h3 class="library-section-title" id="libraries-heading">Libraries</h3>
+                    <button type="button" class="settings-section-info" id="library-info-libraries"
+                      aria-label="More about Libraries"
+                      title="Libraries are KiCad symbol/footprint/3D collections on disk. Set one active for imports from LCSC. Use Add to create or import a library folder; search filters the list. Counts show how many assets are indexed.">
+                      <svg class="settings-section-info-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"
+                        focusable="false">
+                        <path fill-rule="evenodd" clip-rule="evenodd"
+                          d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" />
+                      </svg>
+                    </button>
+                  </div>
+                  <button class="btn btn-sm btn-primary library-add-btn" type="button" id="library-add"
                     aria-haspopup="dialog">Add</button>
+                  <div class="library-search-wrap">
+                    <input id="library-search" type="text" class="form-control form-control-sm" placeholder="Search libraries…"
+                      aria-label="Search libraries" />
+                  </div>
                 </div>
-                <div class="d-flex align-items-center gap-2 library-tools">
-                  <input id="library-search" type="text" class="form-control" placeholder="Search…"
-                    aria-label="Search libraries" />
-                </div>
+                <div class="library-summary small text-muted" id="library-summary"></div>
               </div>
-              <div class="library-summary small text-muted" id="library-summary"></div>
+              <div class="library-list-wrap">
+                <div id="library-list" class="list-group"></div>
+              </div>
             </div>
-            <div id="library-list" class="list-group"></div>
           </div>
         </div>
       </section>
@@ -102,57 +70,126 @@
       <section id="tab-panel-settings" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-settings">
         <div class="card">
           <div class="card-body" id="settings-card-body">
-            <form id="settings-form" class="row g-3" novalidate>
-              <div class="col-12">
-                <label for="settings-server" class="form-label">Server URL</label>
-                <div class="input-group">
-                  <input id="settings-server" type="text" class="form-control" placeholder="http://localhost:8087" />
-                  <button class="btn btn-primary" type="button" id="settings-test">Test</button>
+            <form id="settings-form" class="settings-form" novalidate>
+              <section class="settings-section" aria-labelledby="settings-heading-backend">
+                <div class="settings-section-title-row">
+                  <h3 class="settings-section-title" id="settings-heading-backend">Backend</h3>
+                  <button type="button" class="settings-section-info" id="settings-info-backend"
+                    aria-label="More about Backend connection"
+                    title="Enter the base URL of the easyeda2kicad API (same host and port as when you run run_server.py). The extension talks to it over HTTP and WebSocket to run conversions and list libraries.">
+                    <svg class="settings-section-info-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"
+                      focusable="false">
+                      <path fill-rule="evenodd" clip-rule="evenodd"
+                        d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" />
+                    </svg>
+                  </button>
                 </div>
-              </div>
-              <div class="col-12">
-                <div class="form-check form-switch">
-                  <input class="form-check-input" type="checkbox" id="settings-overwrite" />
-                  <label class="form-check-label" for="settings-overwrite">Overwrite footprints &amp; symbols by
-                    default</label>
-                </div>
-              </div>
-              <div class="col-12">
-                <div class="form-check form-switch">
-                  <input class="form-check-input" type="checkbox" id="settings-overwrite-model" />
-                  <label class="form-check-label" for="settings-overwrite-model">Overwrite 3D models by default</label>
-                </div>
-              </div>
-              <div class="col-12">
-                <div class="form-check form-switch">
-                  <input class="form-check-input" type="checkbox" id="settings-debug" />
-                  <label class="form-check-label" for="settings-debug">Enable debug logging</label>
-                </div>
-              </div>
-              <div class="col-12">
-                <div class="form-check form-switch">
-                  <input class="form-check-input" type="checkbox" id="settings-project-relative" />
-                  <label class="form-check-label" for="settings-project-relative">Project relative 3D paths by
-                    default</label>
-                </div>
-                <div class="mt-2" id="settings-project-relative-path-group" hidden>
-                  <label class="form-label" for="settings-project-relative-path">Default project relative 3D base
-                    path</label>
-                  <div class="input-group">
-                    <span class="input-group-text">${KIPRJMOD}</span>
-                    <input class="form-control" id="settings-project-relative-path" type="text"
-                      placeholder="../../library" />
+                <div class="row g-3 settings-section-body">
+                  <div class="col-12">
+                    <label for="settings-server" class="form-label">API base URL</label>
+                    <div class="input-group">
+                      <input id="settings-server" type="text" class="form-control" placeholder="http://localhost:8087" />
+                      <button class="btn btn-primary" type="button" id="settings-test">Test</button>
+                    </div>
                   </div>
                 </div>
-              </div>
-              <div class="col-12">
-                <hr class="my-1" />
-                <div class="d-flex align-items-center justify-content-between mb-2 mt-2">
-                  <span class="fw-semibold small">Symbol settings per category</span>
-                  <button type="button" class="btn btn-sm btn-outline-primary" id="settings-category-add">+ Add</button>
+              </section>
+
+              <section class="settings-section" aria-labelledby="settings-heading-appearance">
+                <div class="settings-section-title-row">
+                  <h3 class="settings-section-title" id="settings-heading-appearance">Appearance</h3>
+                  <button type="button" class="settings-section-info" id="settings-info-appearance"
+                    aria-label="More about Appearance"
+                    title="Chooses light (LCSC-like) or dark styling for this popup only. Your choice is saved in Chrome local storage and does not change LCSC pages or the in-page importer panels.">
+                    <svg class="settings-section-info-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"
+                      focusable="false">
+                      <path fill-rule="evenodd" clip-rule="evenodd"
+                        d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" />
+                    </svg>
+                  </button>
                 </div>
-                <div id="settings-category-list"></div>
-              </div>
+                <div class="row g-3 settings-section-body">
+                  <div class="col-12">
+                    <span class="form-label d-block">Color theme</span>
+                    <div class="d-flex gap-2 w-100 theme-segment" role="group" aria-label="Color theme">
+                      <button type="button" class="btn btn-sm btn-primary theme-option" id="settings-theme-light"
+                        data-theme-value="light">Light</button>
+                      <button type="button" class="btn btn-sm btn-outline-primary theme-option" id="settings-theme-dark"
+                        data-theme-value="dark">Dark</button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section class="settings-section" aria-labelledby="settings-heading-import">
+                <div class="settings-section-title-row">
+                  <h3 class="settings-section-title" id="settings-heading-import">Import defaults</h3>
+                  <button type="button" class="settings-section-info" id="settings-info-import"
+                    aria-label="More about Import defaults"
+                    title="Defaults apply when importing parts from LCSC into KiCad unless you change them in the page workflow. Overwrite controls replace existing symbol, footprint, or 3D files. Debug logging adds verbose messages from the backend and extension. Project-relative 3D paths write model references relative to your board using the KiCad project variable prefix shown below.">
+                    <svg class="settings-section-info-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"
+                      focusable="false">
+                      <path fill-rule="evenodd" clip-rule="evenodd"
+                        d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" />
+                    </svg>
+                  </button>
+                </div>
+                <div class="row g-3 settings-section-body">
+                  <div class="col-12">
+                    <div class="form-check form-switch">
+                      <input class="form-check-input" type="checkbox" id="settings-overwrite" />
+                      <label class="form-check-label" for="settings-overwrite">Overwrite footprints &amp; symbols by
+                        default</label>
+                    </div>
+                    <div class="form-check form-switch">
+                      <input class="form-check-input" type="checkbox" id="settings-overwrite-model" />
+                      <label class="form-check-label" for="settings-overwrite-model">Overwrite 3D models by default</label>
+                    </div>
+                    <div class="form-check form-switch">
+                      <input class="form-check-input" type="checkbox" id="settings-debug" />
+                      <label class="form-check-label" for="settings-debug">Enable debug logging</label>
+                    </div>
+                    <div class="form-check form-switch">
+                      <input class="form-check-input" type="checkbox" id="settings-project-relative" />
+                      <label class="form-check-label" for="settings-project-relative">Project relative 3D paths by
+                        default</label>
+                    </div>
+                    <div class="settings-subfield" id="settings-project-relative-path-group" hidden>
+                      <label class="form-label settings-subfield-label" for="settings-project-relative-path"
+                        title="Folder relative to the KiCad project (${KIPRJMOD}) for 3D model paths.">3D base path</label>
+                      <div class="input-group input-group-sm settings-subfield-input">
+                        <span class="input-group-text">${KIPRJMOD}</span>
+                        <input class="form-control" id="settings-project-relative-path" type="text"
+                          placeholder="../../library" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section class="settings-section" aria-labelledby="settings-heading-categories">
+                <div class="settings-category-toolbar library-toolbar-grid">
+                  <div class="library-title-block">
+                    <h3 class="settings-section-title" id="settings-heading-categories">Categories &amp; templates</h3>
+                    <button type="button" class="settings-section-info" id="settings-info-categories"
+                      aria-label="More about Categories and templates"
+                      title="Each row key is the full LCSC category path (e.g. Passives/Resistors/SMD), or a legacy short name matching the 2nd segment. If several rows match a product, the deepest path wins. Map Value from LCSC metadata, hide pin numbers/names, and pick a template symbol from a template library. Changes save as you edit.">
+                      <svg class="settings-section-info-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"
+                        focusable="false">
+                        <path fill-rule="evenodd" clip-rule="evenodd"
+                          d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" />
+                      </svg>
+                    </button>
+                  </div>
+                  <button type="button" class="btn btn-sm btn-primary library-add-btn" id="settings-category-add"
+                    aria-label="Add category">Add</button>
+                </div>
+                <div class="row g-3 settings-section-body">
+                  <div class="col-12">
+                    <div id="settings-category-list"></div>
+                  </div>
+                </div>
+              </section>
             </form>
           </div>
         </div>
@@ -167,10 +204,10 @@
     <div class="modal-dialog modal-dialog-centered">
       <div class="modal-content">
         <div class="modal-header">
-          <h2 class="modal-title h5" id="library-required-title">Library required</h2>
+          <h2 class="modal-title" id="library-required-title">Library required</h2>
         </div>
         <div class="modal-body">
-          Please activate or create a library before starting a download.
+          <p class="mb-0 small text-muted">Activate or create a library before importing parts from the LCSC page.</p>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
@@ -185,12 +222,12 @@
     <div class="modal-dialog modal-dialog-scrollable modal-lg">
       <div class="modal-content">
         <div class="modal-header">
-          <h2 class="modal-title h5" id="library-modal-title">Add library</h2>
+          <h2 class="modal-title" id="library-modal-title">Add library</h2>
         </div>
         <div class="modal-body">
           <div class="tab-content">
             <div class="tab-pane fade show active" id="library-modal-create" role="tabpanel">
-              <form id="library-create-form" class="row g-3" novalidate>
+              <form id="library-create-form" class="row g-3 modal-library-form" novalidate>
                 <div class="col-12">
                   <label for="library-create-name" class="form-label">Library name<span class="text-accent">
                       *</span></label>
@@ -224,11 +261,12 @@
                     <input class="form-check-input" type="checkbox" id="library-create-project" checked />
                     <label class="form-check-label" for="library-create-project">Project relative 3D paths</label>
                   </div>
-                  <div class="mt-2" id="library-create-project-path-group" hidden>
-                    <label class="form-label" for="library-create-project-path">Project relative 3D base path</label>
-                    <div class="input-group">
+                  <div class="settings-subfield" id="library-create-project-path-group" hidden>
+                    <label class="form-label settings-subfield-label" for="library-create-project-path"
+                      title="Folder relative to the KiCad project (${KIPRJMOD}) for 3D model paths.">3D base path</label>
+                    <div class="input-group input-group-sm settings-subfield-input">
                       <span class="input-group-text">${KIPRJMOD}</span>
-                      <input id="library-create-project-path" type="text" class="form-control"
+                      <input class="form-control" id="library-create-project-path" type="text"
                         placeholder="../../library" />
                     </div>
                   </div>
@@ -249,22 +287,44 @@
   </div>
 
   <div class="modal fade" id="picker-modal" tabindex="-1" aria-labelledby="picker-modal-title" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-scrollable">
+    <div class="modal-dialog modal-dialog-scrollable modal-lg">
       <div class="modal-content">
         <div class="modal-header">
-          <h2 class="modal-title h5" id="picker-modal-title">Select folder</h2>
+          <h2 class="modal-title" id="picker-modal-title">Select folder</h2>
         </div>
-        <div class="modal-body">
-          <label for="picker-manual" class="form-label">Path</label>
-          <input type="text" id="picker-manual" class="form-control mb-2" placeholder="Enter path manually" />
-          <div id="picker-path-breadcrumb" class="d-flex flex-wrap gap-2 mb-3"></div>
-          <ul class="list-group" id="picker-list" tabindex="0"></ul>
-          <div class="text-danger small mt-1 mb-1" id="picker-error" role="alert"></div>
+        <div class="modal-body picker-modal-body">
+          <section class="picker-section picker-section-path" aria-labelledby="picker-path-label">
+            <label class="form-label picker-section-label" id="picker-path-label" for="picker-manual">Path</label>
+            <input type="text" id="picker-manual" class="form-control form-control-sm" placeholder="Enter path manually" />
+          </section>
+          <section class="picker-section picker-section-breadcrumb" aria-label="Path segments">
+            <div class="picker-section-label">Location</div>
+            <div id="picker-path-breadcrumb" class="picker-breadcrumb-slot"></div>
+          </section>
+          <section class="picker-section picker-section-list" aria-label="Folders and files">
+            <div class="picker-section-label">Contents</div>
+            <div class="picker-list-frame">
+              <ul class="list-group list-group-flush picker-list-inner" id="picker-list" tabindex="0"></ul>
+            </div>
+          </section>
         </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-          <button type="button" class="btn btn-primary" id="picker-apply">Select</button>
+        <div class="modal-footer picker-modal-footer" role="group" aria-label="Folder picker actions">
+          <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-sm btn-primary" id="picker-apply">Select</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Shared in-popup confirm (categories, libraries, etc.) -->
+  <div id="popup-confirm-overlay" class="popup-confirm-overlay" hidden aria-hidden="true">
+    <div class="popup-confirm-panel" role="alertdialog" aria-modal="true" aria-labelledby="popup-confirm-title"
+      aria-describedby="popup-confirm-message">
+      <h2 class="popup-confirm-title" id="popup-confirm-title"></h2>
+      <p class="popup-confirm-text mb-0" id="popup-confirm-message"></p>
+      <div class="popup-confirm-actions">
+        <button type="button" class="btn btn-secondary btn-sm" id="popup-confirm-cancel">Cancel</button>
+        <button type="button" class="btn btn-danger btn-sm" id="popup-confirm-accept">Remove</button>
       </div>
     </div>
   </div>
