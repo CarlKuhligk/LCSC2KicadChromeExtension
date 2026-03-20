@@ -148,6 +148,7 @@ const TAB_IDS = ["parts", "libraries", "settings"];
 const state = {
   activeTab: "parts",
   connected: false,
+  connectionHint: null,
   libraries: [],
   libraryTotals: { symbols: 0, footprints: 0, models: 0 },
   libraryFilter: "",
@@ -208,6 +209,7 @@ function cacheElements() {
   }, {});
   elements.connectionStatus = document.getElementById("connection-status");
   elements.connectionStatusDot = document.getElementById("connection-status-dot");
+  elements.connectionHint = document.getElementById("connection-hint");
   elements.headerActive = document.getElementById("header-active");
   elements.toastContainer = document.getElementById("toast-container");
 
@@ -520,6 +522,15 @@ function renderConnectionStatus() {
   if (!elements.connectionStatus) return;
   elements.connectionStatusDot.classList.toggle("badge-online", state.connected);
   elements.connectionStatusDot.classList.toggle("badge-offline", !state.connected);
+  if (elements.connectionHint) {
+    if (!state.connected && state.connectionHint) {
+      elements.connectionHint.textContent = state.connectionHint;
+      elements.connectionHint.classList.remove("d-none");
+    } else {
+      elements.connectionHint.textContent = "";
+      elements.connectionHint.classList.add("d-none");
+    }
+  }
 }
 
 function updateBackendControls() {
