@@ -1,14 +1,15 @@
 .card-header:first-child {
-  border-radius: 0.95rem 0.95rem 0 0;
+  border-radius: var(--card-radius) var(--card-radius) 0 0;
 }
 
 .card>.list-group:last-child {
-  border-bottom-left-radius: 0.95rem;
-  border-bottom-right-radius: 0.95rem;
+  border-bottom-left-radius: var(--card-radius);
+  border-bottom-right-radius: var(--card-radius);
 }
 
 
 :root {
+  --card-radius: 0.9rem;
   --surface-base: rgba(15, 23, 42, 0.92);
   --surface-raised: rgba(30, 41, 59, 0.85);
   --surface-border: rgba(148, 163, 184, 0.108);
@@ -23,6 +24,19 @@
   --accent-strong-transparenter: #2564eb3e;
   --danger: #f87171;
   --shadow-soft: 0 20px 45px rgba(2, 6, 23, 0.55);
+  /* Semantic accents (replace scattered #38… / rgba duplicates) */
+  --accent-subtle: rgba(56, 189, 248, 0.12);
+  --accent-muted: rgba(56, 189, 248, 0.07);
+  --accent-border: rgba(56, 189, 248, 0.22);
+  --accent-border-strong: rgba(56, 189, 248, 0.25);
+  --accent-hover-bg: rgba(56, 189, 248, 0.18);
+  --accent-hover-border: rgba(56, 189, 248, 0.35);
+  --accent-row-hover: rgba(56, 189, 248, 0.06);
+  --accent-control-on: #38bff891;
+  --input-bg: #38a8f817;
+  --scrollbar-track: #38bff832;
+  --scrollbar-thumb-hover: #38bff893;
+  --connection-strip-bg: #38bff820;
 }
 
 html,
@@ -44,16 +58,16 @@ body {
 
 ::-webkit-scrollbar-track {
   border-radius: 4px;
-  background: #38bff832;
+  background: var(--scrollbar-track);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #38bff850;
+  background: var(--accent-transparent);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #38bff893;
+  background: var(--scrollbar-thumb-hover);
 }
 
 #app {
@@ -76,13 +90,13 @@ body {
 }
 
 .card {
-  border-radius: 0.95rem;
+  border-radius: var(--card-radius);
   overflow: hidden;
 }
 
 .card-body {
   background: var(--surface-raised);
-  border-radius: 0 0 0.95rem 0.95rem;
+  border-radius: 0 0 var(--card-radius) var(--card-radius);
 }
 
 .card .form-control,
@@ -95,7 +109,7 @@ body {
 .modal-content .form-check-input,
 .modal-content .form-control:focus,
 .modal-content .form-select:focus {
-  background-color: #38a8f817;
+  background-color: var(--input-bg);
   border: 0;
   color: var(--text-primary);
   box-shadow: none;
@@ -142,11 +156,8 @@ input[type=checkbox]:checked {
   background: rgba(2, 6, 23, 0.88);
 }
 
+.card .form-control::placeholder,
 .modal-content .form-control::placeholder {
-  color: var(--text-muted);
-}
-
-.card .form-control::placeholder {
   color: var(--text-muted);
 }
 
@@ -189,12 +200,12 @@ input[type=checkbox]:checked {
 }
 
 .form-check-input:checked {
-  background-color: #38bff891;
+  background-color: var(--accent-control-on);
 }
 
 #connection-status {
   padding: 8px 10px;
-  background-color: #38bff820 !important;
+  background-color: var(--connection-strip-bg) !important;
   display: flex;
   gap: 5px;
 }
@@ -277,7 +288,7 @@ input[type=checkbox]:checked {
 #settings-card-body {
   max-height: 460px;
   overflow-y: auto;
-  border-radius: 0 0 0.95rem 0.95rem;
+  border-radius: 0 0 var(--card-radius) var(--card-radius);
 }
 
 #settings-category-table-wrap {
@@ -691,8 +702,8 @@ hr {
 
 #picker-list .list-group-item:hover,
 #picker-list .list-group-item:focus {
-  background: rgba(56, 189, 248, 0.18);
-  border-color: rgba(56, 189, 248, 0.35);
+  background: var(--accent-hover-bg);
+  border-color: var(--accent-hover-border);
 }
 
 #picker-error {
@@ -815,8 +826,8 @@ button.btn-close {
 
 /* Show a visible editing field when expanded */
 .cat-item[data-open="1"] .cat-name-input {
-  background: rgba(56, 189, 248, 0.07);
-  border: 1px solid rgba(56, 189, 248, 0.22);
+  background: var(--accent-muted);
+  border: 1px solid var(--accent-border);
   border-radius: 5px;
   padding: 2px 7px;
   margin-left: -7px;
@@ -914,7 +925,7 @@ button.btn-close {
 }
 
 .cat-switch-row .cat-switch:checked {
-  background-color: #38bff891;
+  background-color: var(--accent-control-on);
 }
 
 .cat-switch-label {
@@ -944,7 +955,7 @@ button.btn-close {
 
 .cat-body .form-control:focus,
 .cat-body select.template-name-select:focus {
-  background-color: rgba(56,189,248,0.12);
+  background-color: var(--accent-subtle);
   box-shadow: none;
   color: var(--text-primary);
 }
