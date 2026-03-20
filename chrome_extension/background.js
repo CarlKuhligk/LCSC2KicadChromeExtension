@@ -39,6 +39,72 @@ function normalizeSymbolValue(value, valueParam) {
   return value;
 }
 
+/** LCSC category breadcrumb → canonical `A/B/C`. Keep in sync with contentScript `normalizeCategoryPath`. */
+function normalizeCategoryPath(raw) {
+  if (raw == null || typeof raw !== "string") return "";
+  return raw
+    .split("/")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join("/");
+}
+
+/**
+ * Deepest match: longest stored key K with pagePath === K or pagePath.startsWith(K + "/").
+ * Legacy: slashless keys match the old 2nd segment (index 1), like built-in Resistors/Capacitors.
+ */
+function resolveCategorySettings(pagePathRaw, categorySettings) {
+  const pagePath = normalizeCategoryPath(pagePathRaw);
+  if (!pagePath || !categorySettings || typeof categorySettings !== "object") {
+    return null;
+  }
+
+  const entries = Object.entries(categorySettings).filter(
+    ([k, v]) => k && v && typeof v === "object",
+  );
+
+  let bestKey = null;
+  let bestLen = -1;
+
+  const bumpPrefixWinner = (storageKey, kNorm) => {
+    if (!kNorm || kNorm.length <= bestLen) return;
+    bestLen = kNorm.length;
+    bestKey = storageKey;
+  };
+
+  for (const [keyRaw] of entries) {
+    const K = normalizeCategoryPath(keyRaw);
+    if (!K) continue;
+    if (pagePath === K || pagePath.startsWith(`${K}/`)) {
+      bumpPrefixWinner(keyRaw, K);
+    }
+  }
+
+  if (bestKey != null) {
+    return { key: bestKey, config: categorySettings[bestKey] };
+  }
+
+  const segments = pagePath.split("/");
+  if (segments.length >= 2) {
+    const seg1 = segments[1];
+    bestLen = -1;
+    bestKey = null;
+    for (const [keyRaw] of entries) {
+      const K = normalizeCategoryPath(keyRaw);
+      if (!K || K.includes("/")) continue;
+      if (seg1 === K) {
+        bumpPrefixWinner(keyRaw, K);
+      }
+    }
+  }
+
+  if (bestKey != null) {
+    return { key: bestKey, config: categorySettings[bestKey] };
+  }
+
+  return null;
+}
+
 const HISTORY_LIMIT = 30;
 /** Tabs whose URL starts with one of these receive `stateUpdate` / `jobTerminal` (matches host_permissions). */
 const LCSC_PAGE_URL_PREFIXES = ["https://www.lcsc.com", "https://lcsc.com"];
@@ -734,11 +800,11 @@ function connectExtensionSocket() {
     state.connected = false;
     if (extConnectIntent) {
       state.connectionHint =
-        "Cannot reach the easyeda2kicad server (connection refused or closed). Start the API or check Server URL in Settings.";
+        "Cannot reach the backend (connection refused or closed). Start the easyeda2kicad API or check Backend URL in Settings.";
       if (!extWsUnreachableNotified) {
         extWsUnreachableNotified = true;
         console.info(
-          "[KiCad Parts Importer] Backend WebSocket unreachable — start the easyeda2kicad API or fix the Server URL. "
+          "[KiCad Parts Importer] Backend WebSocket unreachable — start the easyeda2kicad API or fix the Backend URL. "
             + "(Chrome may still log net::ERR_CONNECTION_REFUSED for each reconnect attempt.)",
         );
       }
@@ -1340,8 +1406,11 @@ async function submitJob(payload) {
             ? String(override.valueParam).trim() || null
             : null,
     };
-  } else if (payload.category && state.categorySettings?.[payload.category]) {
-    catConfig = state.categorySettings[payload.category];
+  } else if (payload.category) {
+    const resolved = resolveCategorySettings(payload.category, state.categorySettings);
+    if (resolved) {
+      catConfig = resolved.config;
+    }
   }
   const hidePinNumbers = catConfig.hidePinNumbers ?? false;
   const hidePinNames = catConfig.hidePinNames ?? false;
@@ -1909,15 +1978,20 @@ const RUNTIME_MESSAGE_HANDLERS = {
   },
   checkCategoryKnown: async (message) => {
     const cat = typeof message.category === "string" ? message.category.trim() : "";
-    return { known: Boolean(cat && state.categorySettings && cat in state.categorySettings) };
+    const pagePath = normalizeCategoryPath(cat);
+    return {
+      known: Boolean(pagePath && resolveCategorySettings(pagePath, state.categorySettings)),
+    };
   },
   getCategorySettings: async (message) => {
     const cat = typeof message.category === "string" ? message.category.trim() : "";
-    if (!cat) return null;
-    return state.categorySettings?.[cat] ?? null;
+    const pagePath = normalizeCategoryPath(cat);
+    if (!pagePath) return null;
+    const resolved = resolveCategorySettings(pagePath, state.categorySettings);
+    return resolved ? resolved.config : null;
   },
   saveCategorySettings: async (message) => {
-    const cat = typeof message.category === "string" ? message.category.trim() : "";
+    const cat = normalizeCategoryPath(typeof message.category === "string" ? message.category : "");
     if (!cat) throw new Error("Category name required.");
     const cfg = message.config && typeof message.config === "object" ? message.config : {};
     state.categorySettings = {
