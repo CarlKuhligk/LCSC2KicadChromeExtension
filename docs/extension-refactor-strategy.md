@@ -85,4 +85,5 @@ After refactors touching the extension:
 ## Related
 
 - [README.md](../README.md) — Development section links here.
+- [extension-popup-theme-plan.md](extension-popup-theme-plan.md) — LCSC-aligned popup light/dark UI (tokens from `styles/` reference).
 - Server tests: `python -m pytest tests/test_api_server.py` when changing `easyeda2kicad/api/server.py`.

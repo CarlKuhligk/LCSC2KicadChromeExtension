@@ -1,3 +1,6 @@
+# Saved LCSC page assets (local UI reference only)
+styles/
+
 # Local dir
 output_lib/*
 scripts/*
