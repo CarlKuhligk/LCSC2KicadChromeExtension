@@ -2,6 +2,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 from fastapi.testclient import TestClient
 
@@ -20,51 +21,62 @@ def _dummy_runner(
     return result
 
 
+def _ws_rpc(ws, req_id: str, method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    ws.send_json({"id": req_id, "method": method, "params": params or {}})
+    while True:
+        msg = ws.receive_json()
+        if msg.get("id") == req_id:
+            if msg.get("error"):
+                raise AssertionError(msg["error"])
+            return msg["result"]
+        # Ignore task_update pushes while waiting for RPC reply
+        if msg.get("type") == "task_update":
+            continue
+
+
 class TaskApiTest(unittest.TestCase):
     def test_enqueue_and_complete(self) -> None:
         app = create_app(conversion_runner=_dummy_runner)
-        with TestClient(app) as client:
-            response = client.post(
-                "/tasks",
-                json={
-                    "lcsc_id": "C1234",
-                    "output_path": "./tmp/testlib",
-                    "symbol": True,
-                },
+        with TestClient(app) as client, client.websocket_connect("/ws/extension") as ws:
+            ws.send_json(
+                {
+                    "id": "1",
+                    "method": "enqueue_task",
+                    "params": {
+                        "lcsc_id": "C1234",
+                        "output_path": "./tmp/testlib",
+                        "symbol": True,
+                    },
+                }
             )
-            self.assertEqual(response.status_code, 202)
-            task_id = response.json()["id"]
-
-            detail = None
-            for _ in range(20):
-                time.sleep(0.05)
-                detail = client.get(f"/tasks/{task_id}")
-                if detail.json()["status"] == "completed":
-                    break
-
+            task_id: Optional[str] = None
+            detail: Optional[dict] = None
+            deadline = time.time() + 5.0
+            while time.time() < deadline and (not task_id or not detail):
+                msg = ws.receive_json()
+                if msg.get("id") == "1":
+                    task_id = msg["result"]["id"]
+                if msg.get("type") == "task_update" and msg.get("payload", {}).get("status") == "completed":
+                    detail = msg["payload"]
+            self.assertIsNotNone(task_id)
             self.assertIsNotNone(detail)
-            self.assertEqual(detail.json()["status"], "completed")
+            assert detail is not None
+            self.assertEqual(detail["status"], "completed")
             expected_path = str(Path("./tmp/testlib").resolve())
-            self.assertEqual(detail.json()["result"]["symbol_path"], expected_path)
+            self.assertEqual(detail["result"]["symbol_path"], expected_path)
 
     def test_filesystem_helpers(self) -> None:
         app = create_app(conversion_runner=_dummy_runner)
-        with TestClient(app) as client:
-            roots = client.get("/fs/roots")
-            self.assertEqual(roots.status_code, 200)
-            data = roots.json()
+        with TestClient(app) as client, client.websocket_connect("/ws/extension") as ws:
+            data = _ws_rpc(ws, "a", "fs_roots")
             self.assertIsInstance(data, list)
             self.assertGreater(len(data), 0)
 
             first_root = data[0]["path"]
-            listing = client.get("/fs/list", params={"path": first_root})
-            self.assertEqual(listing.status_code, 200)
-            listing_data = listing.json()
+            listing_data = _ws_rpc(ws, "b", "fs_list", {"path": first_root})
             self.assertEqual(listing_data["path"], str(Path(first_root).resolve()))
 
-            check = client.post("/fs/check", json={"path": first_root})
-            self.assertEqual(check.status_code, 200)
-            check_data = check.json()
+            check_data = _ws_rpc(ws, "c", "fs_check", {"path": first_root})
             self.assertTrue(check_data["resolved"])
 
     def test_overwrite_model_forwarded(self) -> None:
@@ -80,29 +92,32 @@ class TaskApiTest(unittest.TestCase):
             return result
 
         app = create_app(conversion_runner=runner)
-        with TestClient(app) as client:
-            response = client.post(
-                "/tasks",
-                json={
-                    "lcsc_id": "C5678",
-                    "output_path": "./tmp/testlib",
-                    "symbol": True,
-                    "model": True,
-                    "overwrite_model": True,
-                },
+        with TestClient(app) as client, client.websocket_connect("/ws/extension") as ws:
+            ws.send_json(
+                {
+                    "id": "1",
+                    "method": "enqueue_task",
+                    "params": {
+                        "lcsc_id": "C5678",
+                        "output_path": "./tmp/testlib",
+                        "symbol": True,
+                        "model": True,
+                        "overwrite_model": True,
+                    },
+                }
             )
-            self.assertEqual(response.status_code, 202)
-            task_id = response.json()["id"]
-            for _ in range(20):
-                time.sleep(0.05)
-                detail = client.get(f"/tasks/{task_id}")
-                if detail.json()["status"] == "completed":
+            deadline = time.time() + 5.0
+            while time.time() < deadline:
+                msg = ws.receive_json()
+                if msg.get("type") == "task_update" and msg.get("payload", {}).get("status") == "completed":
                     break
             self.assertTrue(captured.get("overwrite_model"))
 
     def test_library_scaffold_and_validate(self) -> None:
         app = create_app(conversion_runner=_dummy_runner)
-        with tempfile.TemporaryDirectory() as tmpdir, TestClient(app) as client:
+        with tempfile.TemporaryDirectory() as tmpdir, TestClient(app) as client, client.websocket_connect(
+            "/ws/extension"
+        ) as ws:
             payload = {
                 "base_path": tmpdir,
                 "library_name": "TestLib",
@@ -110,18 +125,12 @@ class TaskApiTest(unittest.TestCase):
                 "footprint": True,
                 "model": True,
             }
-            response = client.post("/libraries/scaffold", json=payload)
-            self.assertEqual(response.status_code, 201)
-            data = response.json()
+            data = _ws_rpc(ws, "s", "libraries_scaffold", payload)
             self.assertTrue(Path(data["symbol_path"]).is_file())
             self.assertTrue(Path(data["footprint_dir"]).is_dir())
             self.assertTrue(Path(data["model_dir"]).is_dir())
 
-            validate = client.post(
-                "/libraries/validate", json={"path": data["resolved_library_prefix"]}
-            )
-            self.assertEqual(validate.status_code, 200)
-            validation = validate.json()
+            validation = _ws_rpc(ws, "v1", "libraries_validate", {"path": data["resolved_library_prefix"]})
             self.assertTrue(validation["exists"])
             self.assertTrue(validation["is_dir"])
             self.assertTrue(validation["assets"]["symbol"])
@@ -131,12 +140,11 @@ class TaskApiTest(unittest.TestCase):
             self.assertIsInstance(validation["counts"].get("footprint"), int)
             self.assertIsInstance(validation["counts"].get("model"), int)
 
-            validate_file = client.post(
-                "/libraries/validate", json={"path": data["symbol_path"]}
+            validation_file = _ws_rpc(ws, "v2", "libraries_validate", {"path": data["symbol_path"]})
+            self.assertEqual(
+                Path(validation_file["resolved_path"]).resolve(),
+                Path(data["symbol_path"]).resolve(),
             )
-            self.assertEqual(validate_file.status_code, 200)
-            validation_file = validate_file.json()
-            self.assertEqual(Path(validation_file["resolved_path"]).resolve(), Path(data["symbol_path"]).resolve())
             self.assertTrue(validation_file["exists"])
             self.assertFalse(validation_file["is_dir"])
             self.assertTrue(validation_file["assets"]["symbol"])
@@ -144,7 +152,9 @@ class TaskApiTest(unittest.TestCase):
 
     def test_symbol_counts_multiple_entries(self) -> None:
         app = create_app(conversion_runner=_dummy_runner)
-        with tempfile.TemporaryDirectory() as tmpdir, TestClient(app) as client:
+        with tempfile.TemporaryDirectory() as tmpdir, TestClient(app) as client, client.websocket_connect(
+            "/ws/extension"
+        ) as ws:
             sym_path = Path(tmpdir) / "multi.kicad_sym"
             sym_path.write_text(
                 """
@@ -156,8 +166,6 @@ class TaskApiTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            response = client.post("/libraries/validate", json={"path": str(sym_path)})
-            self.assertEqual(response.status_code, 200)
-            data = response.json()
+            data = _ws_rpc(ws, "v", "libraries_validate", {"path": str(sym_path)})
             self.assertTrue(data["assets"]["symbol"])
             self.assertEqual(data["counts"].get("symbol"), 2)

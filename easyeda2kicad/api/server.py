@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import os
 import re
 import uuid
-from collections import defaultdict, deque
+from collections import deque
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -12,17 +14,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    FastAPI,
-    HTTPException,
-    WebSocket,
-    WebSocketDisconnect,
-    status,
-)
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator, model_validator
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from easyeda2kicad.easyeda.easyeda_api import EasyedaApi
 from easyeda2kicad.easyeda.easyeda_importer import EasyedaSymbolImporter
@@ -40,6 +33,18 @@ from easyeda2kicad.service import (
     ConversionStage,
     run_conversion,
 )
+
+log = logging.getLogger(__name__)
+_WS_JOB_TRACE = os.environ.get("EASYEDA2KICAD_WS_JOB_TRACE", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+
+def _job_trace(msg: str) -> None:
+    if _WS_JOB_TRACE:
+        log.info("[ws-job] %s", msg)
 
 
 class TaskStatus(str, Enum):
@@ -245,6 +250,62 @@ class TemplatePinCheckResponse(BaseModel):
     easyeda_pin_count: int
     template_pin_count: int
     match: bool
+
+
+async def run_templates_pin_check(payload: TemplatePinCheckPayload) -> TemplatePinCheckResponse:
+    """Shared by REST and WebSocket extension API."""
+    lcsc_id = payload.lcsc_id.strip().upper()
+    if not lcsc_id.startswith("C"):
+        raise HTTPException(status_code=400, detail="LCSC ID must start with 'C'.")
+    api = EasyedaApi()
+    cad_data: Dict[str, Any] = {}
+    last_exc: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            cad_data = api.get_cad_data_of_component(lcsc_id=lcsc_id)
+            last_exc = None
+            break
+        except Exception as exc:
+            last_exc = exc
+            if attempt < 3:
+                await asyncio.sleep(1)
+            else:
+                break
+    if last_exc is not None:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to fetch EasyEDA data for {lcsc_id}: {last_exc}",
+        ) from last_exc
+    if not cad_data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No CAD data for component {lcsc_id}.",
+        )
+    importer = EasyedaSymbolImporter(easyeda_cp_cad_data=cad_data)
+    primary_symbol = importer.get_symbol()
+    easyeda_pin_count = len(primary_symbol.pins)
+
+    template_str = extract_symbol_from_lib(payload.template_lib_path, payload.template_name)
+    if not template_str:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Template '{payload.template_name}' not found in {payload.template_lib_path}.",
+        )
+    template_pin_count = count_pins_in_symbol_string(template_str)
+    match = easyeda_pin_count == template_pin_count
+    return TemplatePinCheckResponse(
+        easyeda_pin_count=easyeda_pin_count,
+        template_pin_count=template_pin_count,
+        match=match,
+    )
+
+
+@dataclass
+class ExtensionClient:
+    """Chrome extension multiplexed WS: subscribed task_ids receive task_update pushes."""
+
+    ws: WebSocket
+    task_ids: Set[str] = field(default_factory=set)
 
 
 def _normalize_library_prefix(base_path: str, library_name: str) -> Path:
@@ -808,11 +869,13 @@ def create_app(
     conversion_runner: Callable[[ConversionRequest, Optional[Callable]], ConversionResult]
     = run_conversion,
 ) -> FastAPI:
-    router = APIRouter()
     app = FastAPI(
         title="easyeda2kicad API",
-        description="REST/WebSocket interface for easyeda2kicad conversions.",
+        description="WebSocket-only API. Connect to /ws/extension (JSON-RPC + task_update pushes).",
         version="0.1.0",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
 
     app.state.conversion_runner = conversion_runner
@@ -820,15 +883,8 @@ def create_app(
     app.state.pending: Deque[str] = deque()
     app.state.tasks: Dict[str, TaskRecord] = {}
     app.state.task_lock = asyncio.Lock()
-    app.state.subscribers: Dict[str, Set[WebSocket]] = defaultdict(set)
+    app.state.extension_clients: List[ExtensionClient] = []
     app.state.worker_task: Optional[asyncio.Task[Any]] = None
-
-    async def get_task(task_id: str) -> TaskRecord:
-        async with app.state.task_lock:
-            record = app.state.tasks.get(task_id)
-        if not record:
-            raise HTTPException(status_code=404, detail="Task not found.")
-        return record
 
     def queue_position(task_id: str) -> Optional[int]:
         try:
@@ -864,22 +920,31 @@ def create_app(
     async def broadcast(task_id: str) -> None:
         async with app.state.task_lock:
             record = app.state.tasks.get(task_id)
-            subscribers = list(app.state.subscribers.get(task_id, set()))
         if not record:
             return
-        payload = as_summary(record).model_dump()
-        disconnects: List[WebSocket] = []
-        for websocket in subscribers:
+
+        ext_body = as_detail(record).model_dump(mode="json")
+        ext_msg = {"type": "task_update", "task_id": task_id, "payload": ext_body}
+        stale_clients: List[ExtensionClient] = []
+        push_n = 0
+        for client in list(app.state.extension_clients):
+            if task_id not in client.task_ids:
+                continue
             try:
-                await websocket.send_json(payload)
-            except WebSocketDisconnect:
-                disconnects.append(websocket)
-            except RuntimeError:
-                disconnects.append(websocket)
-        if disconnects:
-            async with app.state.task_lock:
-                for websocket in disconnects:
-                    app.state.subscribers[task_id].discard(websocket)
+                await client.ws.send_json(ext_msg)
+                push_n += 1
+            except (WebSocketDisconnect, RuntimeError):
+                stale_clients.append(client)
+            except Exception:
+                stale_clients.append(client)
+        if _WS_JOB_TRACE:
+            _job_trace(
+                f"broadcast task={task_id} status={record.status} progress={record.progress} "
+                f"pushes_ok={push_n} extension_clients={len(app.state.extension_clients)}"
+            )
+        for client in stale_clients:
+            with suppress(ValueError):
+                app.state.extension_clients.remove(client)
 
     async def broadcast_queue_changes() -> None:
         async with app.state.task_lock:
@@ -919,12 +984,21 @@ def create_app(
         loop = asyncio.get_running_loop()
         while True:
             task = await app.state.queue.get()
+            pending_head = app.state.pending[0] if app.state.pending else None
             async with app.state.task_lock:
+                head_ok = bool(
+                    app.state.pending and app.state.pending[0] == task.id
+                )
                 if app.state.pending and app.state.pending[0] == task.id:
                     app.state.pending.popleft()
                 task.status = TaskStatus.RUNNING
                 task.started_at = datetime.now(UTC)
                 task.updated_at = task.started_at
+            if _WS_JOB_TRACE:
+                _job_trace(
+                    f"worker RUNNING task={task.id} pending_head_was={pending_head!r} "
+                    f"popped_head_match={head_ok}"
+                )
             await broadcast(task.id)
             await broadcast_queue_changes()
 
@@ -940,6 +1014,8 @@ def create_app(
                     app.state.conversion_runner, task.request, progress_callback
                 )
             except Exception as exc:  # pragma: no cover - defensive catch
+                if _WS_JOB_TRACE:
+                    _job_trace(f"worker FAILED task={task.id} err={exc!r}")
                 async with app.state.task_lock:
                     task.status = TaskStatus.FAILED
                     task.error = str(exc)
@@ -957,6 +1033,8 @@ def create_app(
                     )
                 await broadcast(task.id)
             else:
+                if _WS_JOB_TRACE:
+                    _job_trace(f"worker COMPLETED task={task.id}")
                 async with app.state.task_lock:
                     task.status = TaskStatus.COMPLETED
                     task.result = result
@@ -1002,10 +1080,11 @@ def create_app(
     app.state.start_worker = start_worker
     app.state.stop_worker = stop_worker
 
-    @router.post(
-        "/tasks", status_code=status.HTTP_202_ACCEPTED, response_model=TaskSummary
-    )
-    async def enqueue_task(payload: TaskCreatePayload) -> TaskSummary:
+    async def enqueue_conversion_payload(
+        payload: TaskCreatePayload,
+        *,
+        extension_client: Optional[ExtensionClient] = None,
+    ) -> TaskSummary:
         version = KicadVersion.v6 if payload.kicad_version == "v6" else KicadVersion.v5
         try:
             request = ConversionRequest(
@@ -1042,146 +1121,174 @@ def create_app(
             app.state.pending.append(task_id)
             await app.state.queue.put(record)
 
+        if extension_client is not None:
+            extension_client.task_ids.add(task_id)
+
         await broadcast_queue_changes()
         await broadcast(task_id)
 
+        if _WS_JOB_TRACE:
+            sub_n = sum(1 for c in app.state.extension_clients if task_id in c.task_ids)
+            _job_trace(
+                f"enqueue task={task_id} lcsc={payload.lcsc_id} status={record.status} "
+                f"queue_size≈{app.state.queue.qsize()} pending={len(app.state.pending)} "
+                f"subscribers_this_task={sub_n}"
+            )
+
         return as_summary(record)
 
-    @router.get("/tasks", response_model=List[TaskSummary])
-    async def list_tasks() -> List[TaskSummary]:
-        async with app.state.task_lock:
-            records = list(app.state.tasks.values())
-        return [as_summary(record) for record in records]
+    def _extension_ws_http_message(exc: HTTPException) -> str:
+        detail = exc.detail
+        if isinstance(detail, list):
+            return " ".join(str(x) for x in detail)
+        return str(detail)
 
-    @router.get("/fs/roots")
-    async def fs_roots() -> List[dict[str, str]]:
-        return _fs_roots()
-
-    @router.get("/fs/list")
-    async def fs_list(path: str) -> Dict[str, Any]:
-        return _fs_list_directory(path)
-
-    @router.post("/fs/check")
-    async def fs_check(payload: PathRequest) -> Dict[str, Any]:
-        return _fs_check(payload.path)
-
-    @router.post(
-        "/libraries/scaffold", response_model=LibraryScaffoldResponse, status_code=status.HTTP_201_CREATED
-    )
-    async def libraries_scaffold(payload: LibraryScaffoldRequest) -> LibraryScaffoldResponse:
-        prefix, created, paths = _scaffold_library(payload)
-        return LibraryScaffoldResponse(
-            resolved_library_prefix=str(prefix),
-            symbol_path=paths.get("symbol"),
-            footprint_dir=paths.get("footprint"),
-            model_dir=paths.get("model"),
-            created=created,
-        )
-
-    @router.post("/libraries/validate", response_model=LibraryValidateResponse)
-    async def libraries_validate(payload: LibraryValidateRequest) -> LibraryValidateResponse:
-        return _inspect_library(payload.path)
-
-    @router.post("/libraries/component", response_model=ComponentCheckResponse)
-    async def libraries_component(payload: ComponentCheckRequest) -> ComponentCheckResponse:
-        return _check_component_in_library(payload.path, payload.lcsc_id)
-
-    @router.post("/libraries/components", response_model=ComponentBatchResponse)
-    async def libraries_components(payload: ComponentBatchRequest) -> ComponentBatchResponse:
-        return _check_components_in_library(payload.path, payload.lcsc_ids)
-
-    @router.post("/templates/pin-check", response_model=TemplatePinCheckResponse)
-    async def templates_pin_check(payload: TemplatePinCheckPayload) -> TemplatePinCheckResponse:
-        """Return pin counts for EasyEDA symbol and template; match is True if equal."""
-        lcsc_id = payload.lcsc_id.strip().upper()
-        if not lcsc_id.startswith("C"):
-            raise HTTPException(status_code=400, detail="LCSC ID must start with 'C'.")
-        api = EasyedaApi()
-        cad_data = {}
-        last_exc: Exception | None = None
-        for attempt in range(1, 4):
-            try:
-                cad_data = api.get_cad_data_of_component(lcsc_id=lcsc_id)
-                last_exc = None
-                break
-            except Exception as exc:
-                last_exc = exc
-                if attempt < 3:
-                    await asyncio.sleep(1)
-                else:
-                    break
-        if last_exc is not None:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Failed to fetch EasyEDA data for {lcsc_id}: {last_exc}",
-            ) from last_exc
-        if not cad_data:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No CAD data for component {lcsc_id}.",
-            )
-        importer = EasyedaSymbolImporter(easyeda_cp_cad_data=cad_data)
-        primary_symbol = importer.get_symbol()
-        easyeda_pin_count = len(primary_symbol.pins)
-
-        template_str = extract_symbol_from_lib(payload.template_lib_path, payload.template_name)
-        if not template_str:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Template '{payload.template_name}' not found in {payload.template_lib_path}.",
-            )
-        template_pin_count = count_pins_in_symbol_string(template_str)
-        match = easyeda_pin_count == template_pin_count
-        return TemplatePinCheckResponse(
-            easyeda_pin_count=easyeda_pin_count,
-            template_pin_count=template_pin_count,
-            match=match,
-        )
-
-    @router.get("/templates/symbols")
-    async def templates_symbols(lib_path: str) -> Dict[str, Any]:
-        """Return all top-level symbol names in a .kicad_sym template library."""
-        symbols = list_symbols_in_lib(lib_path)
-        return {"symbols": symbols}
-
-    @router.get("/templates/check")
-    async def templates_check(lib_path: str) -> Dict[str, bool]:
-        """
-        Check which of the known template names exist in the given .kicad_sym file.
-        lib_path should point directly to the template library file.
-        """
-        symbols_set = set(list_symbols_in_lib(lib_path))
-        return {name: name in symbols_set for name in KNOWN_TEMPLATE_NAMES}
-
-    @router.get("/tasks/{task_id}", response_model=TaskDetail)
-    async def retrieve_task(task: TaskRecord = Depends(get_task)) -> TaskDetail:
-        return as_detail(task)
-
-    @router.get("/health")
-    async def health() -> JSONResponse:
-        return JSONResponse({"status": "ok"})
-
-    @app.websocket("/ws/tasks/{task_id}")
-    async def task_updates(websocket: WebSocket, task_id: str) -> None:
+    @app.websocket("/ws/extension")
+    async def extension_updates(websocket: WebSocket) -> None:
+        """Multiplexed JSON-RPC + server push (task_update) for the Chrome extension."""
         await websocket.accept()
-        async with app.state.task_lock:
-            record = app.state.tasks.get(task_id)
-            if not record:
-                await websocket.send_json({"error": "Task not found."})
-                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-                return
-            app.state.subscribers[task_id].add(websocket)
-        await broadcast(task_id)
+        client = ExtensionClient(ws=websocket)
+        app.state.extension_clients.append(client)
+
+        async def handle_call(req_id: Any, method: str, params: Any) -> None:
+            if not isinstance(params, dict):
+                params = {}
+            result: Any = None
+
+            if method == "ping":
+                result = {"pong": True}
+            elif method == "health":
+                result = {"status": "ok", "protocol": 1}
+            elif method == "list_tasks":
+                async with app.state.task_lock:
+                    records = list(app.state.tasks.values())
+                result = [as_summary(r).model_dump(mode="json") for r in records]
+            elif method == "get_task_detail":
+                tid = str(params.get("task_id") or "")
+                if not tid:
+                    raise HTTPException(status_code=400, detail="task_id required.")
+                async with app.state.task_lock:
+                    rec = app.state.tasks.get(tid)
+                if not rec:
+                    raise HTTPException(status_code=404, detail="Task not found.")
+                result = as_detail(rec).model_dump(mode="json")
+            elif method == "subscribe_task":
+                tid = str(params.get("task_id") or "")
+                if not tid:
+                    raise HTTPException(status_code=400, detail="task_id required.")
+                async with app.state.task_lock:
+                    if tid not in app.state.tasks:
+                        raise HTTPException(status_code=404, detail="Task not found.")
+                client.task_ids.add(tid)
+                await broadcast(tid)
+                result = {"subscribed": True, "task_id": tid}
+            elif method == "enqueue_task":
+                payload = TaskCreatePayload.model_validate(params)
+                summary = await enqueue_conversion_payload(
+                    payload, extension_client=client
+                )
+                # Worker may advance status before we await send_json; re-read so the
+                # RPC payload is not a stale QUEUED snapshot that races task_update.
+                async with app.state.task_lock:
+                    rec = app.state.tasks.get(summary.id)
+                if rec:
+                    result = as_summary(rec).model_dump(mode="json")
+                else:
+                    result = summary.model_dump(mode="json")
+                if _WS_JOB_TRACE:
+                    _job_trace(
+                        f"enqueue_task RPC reply task={result.get('id')} "
+                        f"status={result.get('status')} progress={result.get('progress')}"
+                    )
+            elif method == "libraries_scaffold":
+                p = LibraryScaffoldRequest.model_validate(params)
+                prefix, created, paths = _scaffold_library(p)
+                result = LibraryScaffoldResponse(
+                    resolved_library_prefix=str(prefix),
+                    symbol_path=paths.get("symbol"),
+                    footprint_dir=paths.get("footprint"),
+                    model_dir=paths.get("model"),
+                    created=created,
+                ).model_dump(mode="json")
+            elif method == "libraries_validate":
+                p = LibraryValidateRequest.model_validate(params)
+                result = _inspect_library(p.path).model_dump(mode="json")
+            elif method == "libraries_component":
+                p = ComponentCheckRequest.model_validate(params)
+                result = _check_component_in_library(p.path, p.lcsc_id).model_dump(mode="json")
+            elif method == "libraries_components":
+                p = ComponentBatchRequest.model_validate(params)
+                result = _check_components_in_library(p.path, p.lcsc_ids).model_dump(mode="json")
+            elif method == "fs_roots":
+                result = _fs_roots()
+            elif method == "fs_list":
+                path = str(params.get("path") or "")
+                if not path:
+                    raise HTTPException(status_code=400, detail="path required.")
+                result = _fs_list_directory(path)
+            elif method == "fs_check":
+                path = str(params.get("path") or "")
+                if not path:
+                    raise HTTPException(status_code=400, detail="path required.")
+                result = _fs_check(path)
+            elif method == "templates_symbols":
+                lib_path = str(params.get("lib_path") or "")
+                if not lib_path:
+                    raise HTTPException(status_code=400, detail="lib_path required.")
+                symbols = list_symbols_in_lib(lib_path)
+                result = {"symbols": symbols}
+            elif method == "templates_check":
+                lib_path = str(params.get("lib_path") or "")
+                if not lib_path:
+                    raise HTTPException(status_code=400, detail="lib_path required.")
+                symbols_set = set(list_symbols_in_lib(lib_path))
+                result = {name: name in symbols_set for name in KNOWN_TEMPLATE_NAMES}
+            elif method == "templates_pin_check":
+                p = TemplatePinCheckPayload.model_validate(params)
+                result = (await run_templates_pin_check(p)).model_dump(mode="json")
+            else:
+                raise HTTPException(status_code=400, detail=f"Unknown method: {method}")
+
+            await websocket.send_json({"id": req_id, "result": result})
+
         try:
             while True:
-                await websocket.receive_text()
+                raw = await websocket.receive_text()
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                req_id = msg.get("id")
+                method = msg.get("method")
+                if not method or not isinstance(method, str):
+                    continue
+                params = msg.get("params")
+                try:
+                    await handle_call(req_id, method, params)
+                except HTTPException as exc:
+                    await websocket.send_json(
+                        {
+                            "id": req_id,
+                            "error": {
+                                "message": _extension_ws_http_message(exc),
+                                "code": exc.status_code,
+                            },
+                        }
+                    )
+                except ValidationError as exc:
+                    await websocket.send_json(
+                        {
+                            "id": req_id,
+                            "error": {"message": str(exc), "code": 400},
+                        }
+                    )
         except WebSocketDisconnect:
             pass
         finally:
-            async with app.state.task_lock:
-                app.state.subscribers[task_id].discard(websocket)
-
-    app.include_router(router)
+            with suppress(ValueError):
+                app.state.extension_clients.remove(client)
 
     return app
 

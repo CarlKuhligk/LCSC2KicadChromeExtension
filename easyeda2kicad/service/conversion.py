@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -89,6 +91,107 @@ class ConversionResult:
     model_paths: Dict[str, str] = field(default_factory=dict)
     messages: List[str] = field(default_factory=list)
 
+
+_SEGMENT_STAGE = {
+    "fetch": ConversionStage.FETCHING,
+    "symbol": ConversionStage.EXPORT_SYMBOL,
+    "footprint": ConversionStage.EXPORT_FOOTPRINT,
+    "model": ConversionStage.EXPORT_MODEL,
+}
+
+
+def _segment_weights(request: ConversionRequest) -> List[tuple[str, float]]:
+    """Equal share per enabled segment (e.g. 4 steps → 25% each on the overall bar)."""
+    parts: List[tuple[str, float]] = [("fetch", 1.0)]
+    if request.generate_symbol:
+        parts.append(("symbol", 1.0))
+    if request.generate_footprint:
+        parts.append(("footprint", 1.0))
+    if request.generate_model:
+        parts.append(("model", 1.0))
+    n = len(parts)
+    w = 1.0 / n
+    return [(name, w) for name, _ in parts]
+
+
+def _cad_fetch_with_pulsing_progress(
+    prog: "_ConversionProgress",
+    api: EasyedaApi,
+    lcsc_id: str,
+) -> dict:
+    """
+    While the blocking EasyEDA HTTP call runs, emit rising progress within the fetch
+    segment (maps sub-progress ~0–100% of that step onto the global bar).
+    """
+    stop = threading.Event()
+    last_f = [0.20]
+
+    def pulse_loop() -> None:
+        t0 = time.monotonic()
+        while not stop.is_set():
+            elapsed = time.monotonic() - t0
+            f = min(0.97, 0.22 + 0.75 * (1.0 - math.exp(-elapsed / 1.4)))
+            if f > last_f[0] + 0.01:
+                last_f[0] = f
+                prog.emit(
+                    "fetch",
+                    f,
+                    "Downloading CAD data (in progress)…",
+                )
+            if stop.wait(0.35):
+                break
+
+    th = threading.Thread(
+        target=pulse_loop,
+        daemon=True,
+        name="easyeda2kicad-fetch-progress",
+    )
+    th.start()
+    try:
+        return api.get_cad_data_of_component(lcsc_id=lcsc_id)
+    finally:
+        stop.set()
+        th.join(timeout=1.5)
+
+
+class _ConversionProgress:
+    """Sub-step progress mapped to overall 0–99% (100 reserved for COMPLETED)."""
+
+    __slots__ = ("_cb", "_start", "_span", "_step_no", "_n_steps")
+
+    def __init__(self, request: ConversionRequest, progress_cb: Optional[ProgressCallback]):
+        self._cb = progress_cb
+        segs = _segment_weights(request)
+        self._span = {n: w for n, w in segs}
+        acc = 0.0
+        self._start = {}
+        for name, w in segs:
+            self._start[name] = acc
+            acc += w
+        order = [n for n, _ in segs]
+        self._n_steps = len(order)
+        self._step_no = {name: i + 1 for i, name in enumerate(order)}
+
+    def emit(self, segment: str, frac: float, message: str) -> None:
+        if not self._cb:
+            return
+        frac = max(0.0, min(1.0, frac))
+        base = self._start.get(segment, 0.0)
+        span = self._span.get(segment, 0.0)
+        pct = int(round(100 * (base + span * frac)))
+        pct = max(0, min(99, pct))
+        step = self._step_no.get(segment, 0)
+        labeled = (
+            f"[{step}/{self._n_steps}] {message}"
+            if step and self._n_steps
+            else message
+        )
+        self._cb(_SEGMENT_STAGE[segment], pct, labeled)
+
+    def emit_finalizing(self, message: str) -> None:
+        if not self._cb:
+            return
+        self._cb(ConversionStage.FINALISING, 99, message)
 
 
 def _ensure_output_scaffold(
@@ -218,34 +321,16 @@ def run_conversion(
 
     Raises ConversionError on failure.
     """
+    prog = _ConversionProgress(request, progress_cb)
 
-    def notify(stage: ConversionStage, steps_done: int, total_steps: int, message: str):
-        if not progress_cb:
-            return
-        percent = int((steps_done / total_steps) * 100) if total_steps else 0
-        percent = max(0, min(100, percent))
-        progress_cb(stage, percent, message)
-
-    steps_total = 1  # Fetching counts as one step
-    if request.generate_symbol:
-        steps_total += 1
-    if request.generate_footprint:
-        steps_total += 1
-    if request.generate_model:
-        steps_total += 1
-
-    completed_steps = 0
-    notify(
-        ConversionStage.FETCHING,
-        completed_steps,
-        steps_total,
-        "Fetching component data from EasyEDA.",
-    )
+    prog.emit("fetch", 0.0, "Requesting component data from EasyEDA…")
 
     output_path, footprint_dir, symbol_ext = _ensure_output_scaffold(request)
     symbol_file = output_path.with_suffix(f".{symbol_ext}")
     model_dir = output_path.with_suffix(".3dshapes")
     library_name = output_path.name
+
+    prog.emit("fetch", 0.08, "Library folders ready.")
 
     api = EasyedaApi()
     cad_data = {}
@@ -253,17 +338,17 @@ def run_conversion(
     max_attempts = 3
     for attempt in range(1, max_attempts + 1):
         try:
-            cad_data = api.get_cad_data_of_component(lcsc_id=request.lcsc_id)
+            prog.emit("fetch", 0.12, "Connecting to EasyEDA…")
+            cad_data = _cad_fetch_with_pulsing_progress(prog, api, request.lcsc_id)
             last_exc = None
             break
         except Exception as exc:  # pragma: no cover - network errors bubble up
             last_exc = exc
             if attempt < max_attempts:
-                notify(
-                    ConversionStage.FETCHING,
-                    completed_steps,
-                    steps_total,
-                    f"Fetching component data from EasyEDA failed ({attempt}/{max_attempts}). Retrying…",
+                prog.emit(
+                    "fetch",
+                    min(0.88, 0.18 + 0.22 * attempt),
+                    f"CAD request failed ({attempt}/{max_attempts}). Retrying…",
                 )
                 time.sleep(1)
             else:
@@ -279,38 +364,27 @@ def run_conversion(
             f"No CAD data received for component {request.lcsc_id}."
         )
 
-    completed_steps += 1
-    notify(
-        ConversionStage.FETCHING,
-        completed_steps,
-        steps_total,
-        "Component data downloaded.",
-    )
+    prog.emit("fetch", 1.0, "CAD data received.")
 
     result = ConversionResult()
 
     easyeda_footprint = None
 
-    # Shared API for 3D model downloads with retry; on_retry updates status.
-    retry_ctx = {"stage": ConversionStage.EXPORT_MODEL, "steps": 0, "total": steps_total}
+    _retry_seg = {"seg": "model"}
+    if request.generate_footprint:
+        _retry_seg["seg"] = "footprint"
 
     def _on_3d_retry(attempt: int, max_attempts: int) -> None:
-        notify(
-            retry_ctx["stage"],
-            retry_ctx["steps"],
-            retry_ctx["total"],
-            f"Fetching 3D model failed ({attempt}/{max_attempts}). Retrying…",
+        prog.emit(
+            _retry_seg["seg"],
+            0.42,
+            f"Download failed ({attempt}/{max_attempts}). Retrying…",
         )
 
     api_3d = EasyedaApi(on_retry=_on_3d_retry)
 
     if request.generate_symbol:
-        notify(
-            ConversionStage.EXPORT_SYMBOL,
-            completed_steps,
-            steps_total,
-            "Generating symbol.",
-        )
+        prog.emit("symbol", 0.0, "Parsing EasyEDA symbol…")
         importer = EasyedaSymbolImporter(easyeda_cp_cad_data=cad_data)
         primary_symbol: EeSymbol = importer.get_symbol()
 
@@ -328,6 +402,8 @@ def run_conversion(
                 sub_importer = EasyedaSymbolImporter(easyeda_cp_cad_data=subpart_data)
                 sub_symbols.append(sub_importer.get_symbol())
 
+        prog.emit("symbol", 0.18, "Resolving pins, graphics, and sub-units…")
+
         sanitized_name = sanitize_fields(primary_symbol.info.name)
         existing = id_already_in_symbol_lib(
             lib_path=str(symbol_file),
@@ -340,9 +416,15 @@ def run_conversion(
             result.messages.append(
                 f"Symbol '{primary_symbol.info.name}' already exists – not overwritten."
             )
+            prog.emit("symbol", 0.55, "Symbol already in library — skipping write.")
         else:
             # Try template path first
             if request.use_template and request.template_name:
+                prog.emit(
+                    "symbol",
+                    0.32,
+                    f"Merging template symbol '{request.template_name}'…",
+                )
                 exported_symbol = _export_symbol_from_template(
                     request=request,
                     primary_symbol=primary_symbol,
@@ -360,6 +442,7 @@ def run_conversion(
 
             # Fall back to LCSC export if template was not used or failed (and not force_template)
             if not exported_symbol:
+                prog.emit("symbol", 0.48, "Rendering EasyEDA shapes for KiCad symbol…")
                 exporter = ExporterSymbolKicad(
                     symbol=primary_symbol,
                     kicad_version=request.kicad_version,
@@ -389,6 +472,7 @@ def run_conversion(
 
             # Write symbol to library (applies to both template and LCSC paths)
             if exported_symbol:
+                prog.emit("symbol", 0.78, "Writing symbol into .kicad_sym…")
                 if existing:
                     update_component_in_symbol_lib_file(
                         lib_path=str(symbol_file),
@@ -415,25 +499,16 @@ def run_conversion(
                         " additional units."
                     )
 
-        completed_steps += 1
-        notify(
-            ConversionStage.EXPORT_SYMBOL,
-            completed_steps,
-            steps_total,
-            "Symbol export completed.",
-        )
+        prog.emit("symbol", 1.0, "Symbol export completed.")
         result.symbol_path = str(symbol_file)
 
     if request.generate_footprint:
-        notify(
-            ConversionStage.EXPORT_FOOTPRINT,
-            completed_steps,
-            steps_total,
-            "Generating footprint.",
-        )
-        retry_ctx["stage"], retry_ctx["steps"] = ConversionStage.EXPORT_FOOTPRINT, completed_steps
+        _retry_seg["seg"] = "footprint"
+        prog.emit("footprint", 0.0, "Parsing EasyEDA footprint…")
         importer = EasyedaFootprintImporter(easyeda_cp_cad_data=cad_data, api=api_3d)
         easyeda_footprint = importer.get_footprint()
+
+        prog.emit("footprint", 0.38, "Building KiCad footprint geometry…")
 
         footprint_exists = _footprint_exists(
             footprint_dir, easyeda_footprint.info.name
@@ -468,7 +543,9 @@ def run_conversion(
             result.messages.append(
                 f"Footprint '{easyeda_footprint.info.name}' already exists – not overwritten."
             )
+            prog.emit("footprint", 0.72, "Footprint already in library — skipping write.")
         else:
+            prog.emit("footprint", 0.62, "Writing .kicad_mod file…")
             ki_footprint = ExporterFootprintKicad(footprint=easyeda_footprint)
             ki_footprint.export(
                 footprint_full_path=os.path.join(footprint_dir, footprint_filename),
@@ -476,31 +553,23 @@ def run_conversion(
                 model_3d_path_is_explicit=model_path_is_explicit,
             )
 
-        completed_steps += 1
-        notify(
-            ConversionStage.EXPORT_FOOTPRINT,
-            completed_steps,
-            steps_total,
-            "Footprint export completed.",
-        )
+        prog.emit("footprint", 1.0, "Footprint export completed.")
         result.footprint_path = os.path.join(footprint_dir, footprint_filename)
 
     if request.generate_model:
-        notify(
-            ConversionStage.EXPORT_MODEL,
-            completed_steps,
-            steps_total,
-            "Generating 3D model.",
-        )
-        retry_ctx["stage"], retry_ctx["steps"] = ConversionStage.EXPORT_MODEL, completed_steps
+        _retry_seg["seg"] = "model"
+        prog.emit("model", 0.0, "Preparing 3D model…")
         model_data = None
         if easyeda_footprint and easyeda_footprint.model_3d:
             model_data = easyeda_footprint.model_3d
+            prog.emit("model", 0.2, "Using 3D data from footprint…")
         if model_data is None:
+            prog.emit("model", 0.32, "Downloading 3D package from EasyEDA…")
             model_data = Easyeda3dModelImporter(
                 easyeda_cp_cad_data=cad_data, download_raw_3d_model=True, api=api_3d
             ).output
 
+        prog.emit("model", 0.48, "Converting mesh to KiCad 3D package…")
         exporter = Exporter3dModelKicad(model_3d=model_data)
 
         base_name = (
@@ -519,6 +588,7 @@ def run_conversion(
         existing_step = step_path.exists()
 
         if overwrite_model or (not existing_wrl or not existing_step):
+            prog.emit("model", 0.68, "Writing .wrl and .step files…")
             exporter.export(lib_path=str(output_path))
             if exporter.output:
                 result.model_paths["wrl"] = str(wrl_path)
@@ -532,25 +602,16 @@ def run_conversion(
             result.messages.append(
                 "3D model already exists – not overwritten."
             )
+            prog.emit("model", 0.85, "Reusing existing 3D files…")
 
         if not result.model_paths:
             result.messages.append("No 3D model available.")
 
-        completed_steps += 1
-        notify(
-            ConversionStage.EXPORT_MODEL,
-            completed_steps,
-            steps_total,
-            "3D model export completed.",
-        )
+        prog.emit("model", 1.0, "3D model export completed.")
 
-    notify(
-        ConversionStage.FINALISING,
-        completed_steps,
-        steps_total,
-        "Finalising conversion.",
-    )
+    prog.emit_finalizing("Finalising conversion…")
 
-    notify(ConversionStage.COMPLETED, steps_total, steps_total, "Conversion finished.")
+    if progress_cb:
+        progress_cb(ConversionStage.COMPLETED, 100, "Conversion finished.")
 
     return result
