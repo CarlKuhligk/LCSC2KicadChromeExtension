@@ -39,16 +39,15 @@ function normalizeSymbolValue(value, valueParam) {
   return value;
 }
 
-const NOTIFICATION_ICON =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAGXRFWHRTb2Z0d2FyZQBwYWludC5uZXQgNC4wLjE0Qe6JAAABGklEQVR4Xu2WQQ6DMAxF//+n7XCSdCoLMeMmprQ44tgSyq1qV0lhd6WHe/mPHDx48ODBg1/TjAaA1kW5Hn2BEFgC51W1sDRtCEALMxYBN8gFMUpjYAGheR2vHZkTorhTF1Q8YlgHFAMWG4eXeXvQy64X+RFI48s9jlEpDgsvA0ApHHLHp7J8FwS+QJaAZVTdiJgQ0C1MUgZ2FneBOBCACiUh4Kwog16iqWAZsCJVx9Se/QEjMqYkhZYl0g9DBGHgp6MkdSEnFG4W82l9JO66DC9HqOBeYg7cFsyiHZVBL+QP281hoz3trp6wVXoW+Lc93mE5fEAqwfM434SGNNbFx+LgdrOrV8J9u7t+kJT4S1x+zAFmY3/5lD0s5iWWQbGWVS6nK/O0c9kwwYMGDx48ePAgP8HHlTC/gtzpL5AAAAAElFTkSuQmCC";
-
 const HISTORY_LIMIT = 30;
-const POLL_INTERVAL = 4000;
+/** Tabs whose URL starts with one of these receive `stateUpdate` / `jobTerminal` (matches host_permissions). */
+const LCSC_PAGE_URL_PREFIXES = ["https://www.lcsc.com", "https://lcsc.com"];
 const HEALTH_INTERVAL = 3000;
+const EXT_RECONNECT_MAX_MS = 30000;
+const EXT_RECONNECT_INITIAL_MS = 800;
 
 const DEFAULT_STATE = {
   serverUrl: "http://localhost:8087",
-  notificationsEnabled: true,
   libraries: [],
   jobHistory: [],
   jobMeta: {},
@@ -68,6 +67,8 @@ const DEFAULT_STATE = {
 let state = {
   ...DEFAULT_STATE,
   connected: false,
+  /** Short message for popup when the API WebSocket is down; cleared on connect. */
+  connectionHint: null,
   jobs: {},
   selectedLibraryPath: "",
   selectedLibraryName: "",
@@ -76,9 +77,45 @@ let state = {
   templateSymbolsByLib: {},
 };
 
-const jobPollers = new Map();
 let healthTimer = null;
 let initialized = false;
+
+// =============================================================================
+// Extension WebSocket client (`/ws/extension`) — JSON-RPC, task_update pushes
+// =============================================================================
+
+/** Multiplexed backend WebSocket (`/ws/extension`) — no HTTP polling. */
+let extWs = null;
+const extPending = new Map();
+let extRpcSeq = 0;
+let extConnectIntent = true;
+let extReconnectTimer = null;
+let extReconnectDelayMs = EXT_RECONNECT_INITIAL_MS;
+/** Avoid duplicate finalize when multiple terminal pushes arrive. */
+const extensionTerminalHandled = new Set();
+/** Log one friendly explanation per offline stint (Chrome still logs net::ERR_* per attempt). */
+let extWsUnreachableNotified = false;
+
+/**
+ * When false, `[KPI jobs]` logs only run if Settings → Debug logs is enabled.
+ * Set to true temporarily for deep job/WebSocket tracing without opening the popup.
+ */
+const KPI_JOB_TRACE = false;
+
+/** Conversion / WebSocket trace (service worker console). Filter: `[KPI jobs]` */
+function kpiJobLog(...args) {
+  if (!KPI_JOB_TRACE && !state.debugLogs) {
+    return;
+  }
+  console.log("[KPI jobs]", ...args);
+}
+
+/** Verbose RPC/payload logging when Settings → Debug logs is on. */
+function kpiJobVerbose(...args) {
+  if (state.debugLogs) {
+    console.log("[KPI jobs verbose]", ...args);
+  }
+}
 
 function normalizeBoolean(value, fallback = false) {
   if (typeof value === "boolean") {
@@ -267,6 +304,43 @@ function hasModelOutput(result) {
   return Boolean(modelPaths);
 }
 
+/** Some serializers use PascalCase; normalize onto `result` for the rest of the extension. */
+function normalizeWsTaskRow(row) {
+  if (!row || typeof row !== "object") {
+    return row;
+  }
+  if (row.result == null && row.Result != null) {
+    row.result = row.Result;
+  }
+  return row;
+}
+
+/** Normalize API/WS result shape (snake_case, camelCase, or JSON string). */
+function coerceConversionResult(raw) {
+  if (raw == null || raw === "") {
+    return null;
+  }
+  if (typeof raw === "string") {
+    try {
+      return coerceConversionResult(JSON.parse(raw));
+    } catch {
+      return null;
+    }
+  }
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  const o = raw;
+  const mp = o.model_paths ?? o.modelPaths;
+  return {
+    symbol_path: o.symbol_path ?? o.symbolPath ?? null,
+    footprint_path: o.footprint_path ?? o.footprintPath ?? null,
+    model_paths:
+      mp && typeof mp === "object" && !Array.isArray(mp) ? mp : {},
+    messages: Array.isArray(o.messages) ? o.messages : [],
+  };
+}
+
 function analyzeJobOutputs(job = {}) {
   const requested = {
     symbol: Boolean(job.outputs && job.outputs.symbol),
@@ -274,7 +348,13 @@ function analyzeJobOutputs(job = {}) {
     model: Boolean(job.outputs && job.outputs.model),
   };
 
-  const result = job.result || {};
+  const raw =
+    job.result != null && job.result !== ""
+      ? job.result
+      : job.Result != null && job.Result !== ""
+        ? job.Result
+        : null;
+  const result = coerceConversionResult(raw) || {};
   const actual = {
     symbol: Boolean(result.symbol_path),
     footprint: Boolean(result.footprint_path),
@@ -475,13 +555,8 @@ async function init() {
     console.warn("Failed to load stored state", error);
   }
 
-  await checkHealth();
-  try {
-    await inventoryLibraries();
-  } catch (error) {
-    console.warn("Failed to inventory libraries", error);
-  }
-  await syncExistingTasks();
+  extConnectIntent = true;
+  connectExtensionSocket();
   startHealthMonitor();
   broadcastState();
 }
@@ -499,53 +574,234 @@ function buildUrl(path) {
   return new URL(cleanedPath, normalized).toString();
 }
 
-async function apiFetch(path, options = {}) {
-  const url = buildUrl(path);
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`API request failed (${response.status}): ${text || response.statusText}`);
+function extensionWsUrl() {
+  const base = state.serverUrl || DEFAULT_STATE.serverUrl;
+  let u;
+  try {
+    u = new URL(base);
+  } catch {
+    u = new URL(DEFAULT_STATE.serverUrl);
   }
-  return response;
+  const wsProto = u.protocol === "https:" ? "wss:" : "ws:";
+  return `${wsProto}//${u.host}/ws/extension`;
+}
+
+function closeExtensionSocket() {
+  if (extReconnectTimer) {
+    clearTimeout(extReconnectTimer);
+    extReconnectTimer = null;
+  }
+  if (extWs) {
+    try {
+      extWs.onclose = null;
+      extWs.close();
+    } catch (_) {
+      /* ignore */
+    }
+    extWs = null;
+  }
+  extPending.forEach(({ reject }) => {
+    try {
+      reject(new Error("WebSocket closed."));
+    } catch (_) {
+      /* ignore */
+    }
+  });
+  extPending.clear();
+}
+
+function scheduleExtensionReconnect() {
+  if (!extConnectIntent) {
+    return;
+  }
+  if (extReconnectTimer) {
+    return;
+  }
+  extReconnectTimer = setTimeout(() => {
+    extReconnectTimer = null;
+    connectExtensionSocket();
+  }, extReconnectDelayMs);
+  extReconnectDelayMs = Math.min(extReconnectDelayMs * 2, EXT_RECONNECT_MAX_MS);
+}
+
+/** Schedule reconnect only if idle (not already connecting and no timer). Avoids piling new sockets on the 3s health tick. */
+function scheduleExtensionReconnectIfIdle() {
+  if (!extConnectIntent) {
+    return;
+  }
+  if (extWs && (extWs.readyState === WebSocket.OPEN || extWs.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+  if (extReconnectTimer) {
+    return;
+  }
+  scheduleExtensionReconnect();
+}
+
+// --- connect / reconnect / onmessage routing ---
+function connectExtensionSocket() {
+  if (!extConnectIntent) {
+    return;
+  }
+  if (extWs && (extWs.readyState === WebSocket.OPEN || extWs.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+  closeExtensionSocket();
+  const url = extensionWsUrl();
+  let ws;
+  try {
+    ws = new WebSocket(url);
+  } catch (e) {
+    state.connected = false;
+    updateBadge();
+    broadcastState();
+    scheduleExtensionReconnect();
+    return;
+  }
+  extWs = ws;
+
+  ws.onopen = async () => {
+    extReconnectDelayMs = EXT_RECONNECT_INITIAL_MS;
+    extWsUnreachableNotified = false;
+    state.connectionHint = null;
+    state.connected = true;
+    updateBadge();
+    broadcastState();
+    try {
+      await sendExtensionRpc("ping", {}, 5000);
+    } catch (e) {
+      if (state.debugLogs) {
+        console.warn("extension WS ping after open failed", e);
+      }
+    }
+    try {
+      await inventoryLibraries();
+    } catch (error) {
+      console.warn("Library inventory failed after WS connect", error);
+    }
+    try {
+      await refreshTemplateStatus();
+    } catch (error) {
+      if (state.debugLogs) {
+        console.warn("Template status refresh failed after WS connect", error);
+      }
+    }
+    try {
+      await syncExistingTasks();
+    } catch (error) {
+      console.warn("syncExistingTasks failed after WS connect", error);
+    }
+    broadcastState();
+  };
+
+  ws.onmessage = (ev) => {
+    let msg;
+    try {
+      msg = JSON.parse(ev.data);
+    } catch {
+      return;
+    }
+    if (msg == null || typeof msg !== "object") {
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(msg, "id") && extPending.has(msg.id)) {
+      const pending = extPending.get(msg.id);
+      extPending.delete(msg.id);
+      clearTimeout(pending.timer);
+      if (msg.error) {
+        const errText = msg.error.message || "RPC error";
+        kpiJobLog("← RPC error", msg.id, errText);
+        pending.reject(new Error(errText));
+      } else {
+        kpiJobVerbose("← RPC ok", msg.id, msg.result);
+        pending.resolve(msg.result);
+      }
+      return;
+    }
+    if (msg.type === "task_update" && msg.task_id && msg.payload) {
+      void handleExtensionTaskPush(msg.task_id, msg.payload);
+      return;
+    }
+    kpiJobVerbose("ws inbound (ignored shape)", Object.keys(msg));
+  };
+
+  ws.onerror = () => {
+    /* onclose will run */
+  };
+
+  ws.onclose = () => {
+    extWs = null;
+    state.connected = false;
+    if (extConnectIntent) {
+      state.connectionHint =
+        "Cannot reach the easyeda2kicad server (connection refused or closed). Start the API or check Server URL in Settings.";
+      if (!extWsUnreachableNotified) {
+        extWsUnreachableNotified = true;
+        console.info(
+          "[KiCad Parts Importer] Backend WebSocket unreachable — start the easyeda2kicad API or fix the Server URL. "
+            + "(Chrome may still log net::ERR_CONNECTION_REFUSED for each reconnect attempt.)",
+        );
+      }
+    }
+    extPending.forEach(({ reject, timer }) => {
+      clearTimeout(timer);
+      try {
+        reject(new Error("WebSocket closed."));
+      } catch (_) {
+        /* ignore */
+      }
+    });
+    extPending.clear();
+    updateBadge();
+    broadcastState();
+    scheduleExtensionReconnect();
+  };
+}
+
+function sendExtensionRpc(method, params, timeoutMs = 45000) {
+  return new Promise((resolve, reject) => {
+    if (!extWs || extWs.readyState !== WebSocket.OPEN) {
+      kpiJobLog("sendExtensionRpc: socket not open", method, {
+        readyState: extWs ? extWs.readyState : null,
+      });
+      reject(new Error("Backend not connected."));
+      return;
+    }
+    const id = `r-${Date.now()}-${++extRpcSeq}`;
+    kpiJobVerbose("→ RPC", method, "id=", id, params);
+    const timer = setTimeout(() => {
+      if (extPending.has(id)) {
+        extPending.delete(id);
+        kpiJobLog("sendExtensionRpc: timeout", method, id, timeoutMs);
+        reject(new Error("Request timeout."));
+      }
+    }, timeoutMs);
+    extPending.set(id, { resolve, reject, timer });
+    try {
+      extWs.send(JSON.stringify({ id, method, params: params || {} }));
+    } catch (e) {
+      clearTimeout(timer);
+      extPending.delete(id);
+      kpiJobLog("sendExtensionRpc: send failed", method, e);
+      reject(e);
+    }
+  });
 }
 
 async function scaffoldLibraryOnServer(payload) {
-  const response = await apiFetch("libraries/scaffold", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-  return response.json();
+  return sendExtensionRpc("libraries_scaffold", payload, 120000);
 }
 
 async function validateLibraryOnServer(path) {
-  const response = await apiFetch("libraries/validate", {
-    method: "POST",
-    body: JSON.stringify({ path }),
-  });
-  return response.json();
+  return sendExtensionRpc("libraries_validate", { path }, 60000);
 }
 
 async function checkComponentOnServer(path, lcscId) {
-  const response = await apiFetch("libraries/component", {
-    method: "POST",
-    body: JSON.stringify({ path, lcsc_id: lcscId }),
-  });
-  return response.json();
-}
-
-async function checkComponentsOnServer(path, lcscIds) {
-  const response = await apiFetch("libraries/components", {
-    method: "POST",
-    body: JSON.stringify({ path, lcsc_ids: lcscIds }),
-  });
-  return response.json();
+  return sendExtensionRpc(
+    "libraries_component",
+    { path, lcsc_id: lcscId },
+    60000,
+  );
 }
 
 async function refreshLibraryCountsForPrefix(prefix) {
@@ -678,8 +934,11 @@ async function refreshTemplateStatus() {
   const allNames = new Set();
   try {
     for (const libPath of libPaths) {
-      const response = await apiFetch(`templates/symbols?lib_path=${encodeURIComponent(libPath)}`, { method: "GET" });
-      const data = await response.json();
+      const data = await sendExtensionRpc(
+        "templates_symbols",
+        { lib_path: libPath },
+        60000,
+      );
       const symbols = Array.isArray(data.symbols) ? data.symbols : [];
       state.templateSymbolsByLib[libPath] = symbols;
       symbols.forEach((name) => allNames.add(name));
@@ -698,7 +957,25 @@ async function refreshTemplateStatus() {
 
 async function checkHealth() {
   try {
-    await apiFetch("health", { method: "GET" });
+    if (!extWs || extWs.readyState !== WebSocket.OPEN) {
+      connectExtensionSocket();
+      await new Promise((resolve, reject) => {
+        const deadline = Date.now() + 8000;
+        const tick = () => {
+          if (extWs && extWs.readyState === WebSocket.OPEN) {
+            resolve();
+            return;
+          }
+          if (Date.now() > deadline) {
+            reject(new Error("WebSocket connect timeout"));
+            return;
+          }
+          setTimeout(tick, 80);
+        };
+        tick();
+      });
+    }
+    await sendExtensionRpc("health", {}, 5000);
     state.connected = true;
     try {
       await inventoryLibraries();
@@ -732,86 +1009,187 @@ function startHealthMonitor() {
     clearInterval(healthTimer);
   }
   healthTimer = setInterval(() => {
-    checkHealth();
+    (async () => {
+      try {
+        if (extWs && extWs.readyState === WebSocket.OPEN) {
+          await sendExtensionRpc("ping", {}, 5000);
+          if (!state.connected) {
+            state.connected = true;
+            updateBadge();
+            broadcastState();
+          }
+        } else {
+          state.connected = false;
+          updateBadge();
+          broadcastState();
+          scheduleExtensionReconnectIfIdle();
+        }
+      } catch {
+        state.connected = false;
+        updateBadge();
+        broadcastState();
+        scheduleExtensionReconnectIfIdle();
+      }
+    })();
   }, HEALTH_INTERVAL);
 }
 
 async function syncExistingTasks() {
-  if (!state.connected) {
+  if (!extWs || extWs.readyState !== WebSocket.OPEN) {
+    kpiJobVerbose("syncExistingTasks: skip (socket not open)");
     return;
   }
   try {
-    const response = await apiFetch("tasks");
-    const tasks = await response.json();
+    const tasks = await sendExtensionRpc("list_tasks", {}, 30000);
+    if (!Array.isArray(tasks)) {
+      kpiJobLog("syncExistingTasks: list_tasks not an array", typeof tasks);
+      return;
+    }
+    const preservedBefore = { ...state.jobs };
     const active = {};
 
-    tasks.forEach((task) => {
+    for (const task of tasks) {
       const meta = state.jobMeta[task.id] || {};
-      const merged = { ...task, ...meta };
+      const merged = { ...meta, ...task };
       if (task.status === "completed" || task.status === "failed") {
-        addHistoryEntry(merged);
+        addHistoryEntry({ ...merged, log: task.log || [] });
       } else {
+        try {
+          await sendExtensionRpc("subscribe_task", { task_id: task.id }, 15000);
+        } catch (e) {
+          console.warn("subscribe_task failed", task.id, e);
+        }
         active[task.id] = merged;
-        scheduleJobPoll(task.id, 500);
       }
-    });
+    }
+
+    const dropped = Object.keys(preservedBefore).filter((id) => !active[id]);
+    if (dropped.length) {
+      kpiJobLog("syncExistingTasks: replacing jobs; dropped ids (were in UI, not in list_tasks)", dropped);
+    }
+    kpiJobVerbose("syncExistingTasks: active job ids", Object.keys(active), "count=", tasks.length);
 
     state.jobs = active;
     broadcastState();
   } catch (error) {
     console.warn("syncExistingTasks failed", error);
+    kpiJobLog("syncExistingTasks failed (detail)", error?.message || error);
   }
 }
 
-function scheduleJobPoll(id, delay = POLL_INTERVAL) {
-  if (jobPollers.has(id)) {
-    clearTimeout(jobPollers.get(id));
+function conversionResultLooksEmpty(coerced) {
+  if (!coerced || typeof coerced !== "object") {
+    return true;
   }
-  const timer = setTimeout(() => pollJob(id), delay);
-  jobPollers.set(id, timer);
+  return (
+    !coerced.symbol_path
+    && !coerced.footprint_path
+    && !hasModelOutput(coerced)
+  );
 }
 
-async function pollJob(id) {
-  try {
-    const response = await apiFetch(`tasks/${id}`);
-    const detail = await response.json();
-    const meta = state.jobMeta[id] || {};
-    const merged = { ...detail, ...meta };
-
-    if (detail.status === "completed" || detail.status === "failed") {
-      if (jobPollers.has(id)) {
-        clearTimeout(jobPollers.get(id));
-        jobPollers.delete(id);
+async function finalizeTerminalJob(id, merged, log) {
+  if (extensionTerminalHandled.has(id)) {
+    kpiJobVerbose("finalizeTerminalJob skip (duplicate push)", id);
+    return;
+  }
+  extensionTerminalHandled.add(id);
+  kpiJobLog("job finalized", id, merged.status);
+  setTimeout(() => extensionTerminalHandled.delete(id), 300000);
+  normalizeWsTaskRow(merged);
+  let coercedResult = coerceConversionResult(
+    merged.result != null ? merged.result : merged.Result,
+  );
+  if (
+    merged.status === "completed"
+    && conversionResultLooksEmpty(coercedResult)
+    && extWs
+    && extWs.readyState === WebSocket.OPEN
+  ) {
+    try {
+      const detail = await sendExtensionRpc("get_task_detail", { task_id: id }, 30000);
+      normalizeWsTaskRow(detail);
+      const fromDetail = coerceConversionResult(detail?.result ?? detail?.Result);
+      if (fromDetail && !conversionResultLooksEmpty(fromDetail)) {
+        coercedResult = fromDetail;
+        merged.result = fromDetail;
       }
-      delete state.jobs[id];
-      addHistoryEntry({ ...merged, log: detail.log || [] });
-      if (state.jobMeta[id]) {
-        delete state.jobMeta[id];
-        await persistState(["jobMeta"]);
-      }
-      notifyJobResult(merged);
-      if (detail.status === "completed") {
-        const targetPrefix = merged.libraryPath
-          || merged.libraryPrefix
-          || stripLibrarySuffix(normalizePath(merged.result?.symbol_path || ""));
-        if (targetPrefix) {
-          try {
-            await refreshLibraryCountsForPrefix(targetPrefix);
-          } catch (error) {
-            console.warn("Failed to update library inventory", error);
-          }
-        }
-      }
-    } else {
-      state.jobs[id] = merged;
-      scheduleJobPoll(id);
+    } catch (e) {
+      kpiJobVerbose("get_task_detail fallback after empty result", e);
     }
-
-    broadcastState();
-  } catch (error) {
-    console.warn(`pollJob failed for ${id}`, error);
-    scheduleJobPoll(id, POLL_INTERVAL * 2);
   }
+  const terminalJob = {
+    ...merged,
+    result: coercedResult,
+    log: log || [],
+    outputAnalysis: analyzeJobOutputs({
+      ...merged,
+      result: coercedResult,
+    }),
+  };
+  let terminalPlain = terminalJob;
+  try {
+    terminalPlain = JSON.parse(JSON.stringify(terminalJob));
+  } catch (_) {
+    /* keep reference if log/result is not serializable */
+  }
+  delete state.jobs[id];
+  addHistoryEntry(terminalPlain);
+  if (state.jobMeta[id]) {
+    delete state.jobMeta[id];
+    await persistState(["jobMeta"]);
+  }
+  broadcastToLcscContentTabs({
+    type: "jobTerminal",
+    jobId: id,
+    job: terminalPlain,
+  });
+  if (merged.status === "completed") {
+    const targetPrefix = merged.libraryPath
+      || merged.libraryPrefix
+      || stripLibrarySuffix(normalizePath(coercedResult?.symbol_path || ""));
+    if (targetPrefix) {
+      try {
+        await refreshLibraryCountsForPrefix(targetPrefix);
+      } catch (error) {
+        console.warn("Failed to update library inventory", error);
+      }
+    }
+  }
+  broadcastState();
+}
+
+async function handleExtensionTaskPush(taskId, payload) {
+  const meta = state.jobMeta[taskId] || {};
+  /* meta first so server payload wins (avoids jobMeta accidentally shadowing result/status). */
+  const merged = normalizeWsTaskRow({ ...meta, ...payload });
+  if (merged.progress != null) {
+    const np = Number(merged.progress);
+    if (Number.isFinite(np)) merged.progress = np;
+  }
+  const st = String(payload.status || "").toLowerCase();
+  kpiJobLog("task_update", {
+    taskId,
+    status: payload.status,
+    progress: payload.progress,
+    message: payload.message,
+    queue_position: payload.queue_position,
+    hasMeta: Boolean(meta.lcscId),
+  });
+  if (st === "completed" || st === "failed") {
+    await finalizeTerminalJob(taskId, merged, payload.log || []);
+    return;
+  }
+  const prev = state.jobs[taskId];
+  const dSt = st;
+  const pSt = prev ? String(prev.status || "").toLowerCase() : "";
+  if (prev && pSt === "running" && dSt === "queued") {
+    kpiJobLog("task_update ignored (would downgrade running→queued)", taskId);
+    broadcastState();
+    return;
+  }
+  state.jobs[taskId] = merged;
+  broadcastState();
 }
 
 function addHistoryEntry(entry) {
@@ -821,44 +1199,17 @@ function addHistoryEntry(entry) {
   persistState(["jobHistory"]);
 }
 
-function notifyJobResult(job) {
-  if (!state.notificationsEnabled) {
-    return;
-  }
-  const statusLabel = job.status === "completed" ? "Conversion completed" : "Conversion failed";
-  const messageParts = [];
-  if (job.libraryName) {
-    messageParts.push(job.libraryName);
-  }
-  if (job.libraryPath) {
-    messageParts.push(job.libraryPath);
-  }
-  if (job.lcscId) {
-    messageParts.push(job.lcscId);
-  }
-  const message = messageParts.join(" – ") || job.id;
-
-  chrome.notifications
-    .create({
-      type: "basic",
-      iconUrl: NOTIFICATION_ICON,
-      title: statusLabel,
-      message,
-    })
-    .catch((error) => console.warn("Failed to create notification", error));
-}
-
 function snapshotState() {
   const jobsArray = Object.values(state.jobs || {}).map((job) => ({ ...job }));
   const historyArray = (state.jobHistory || []).map((item) => ({ ...item }));
   return {
     connected: state.connected,
+    connectionHint: state.connectionHint || null,
     serverUrl: state.serverUrl,
     libraries: state.libraries.map((library) => ({ ...library })),
     libraryTotals: { ...state.libraryTotals },
     selectedLibraryPath: state.selectedLibraryPath,
     selectedLibraryName: state.selectedLibraryName,
-    notificationsEnabled: state.notificationsEnabled,
     overwriteFootprints: state.overwriteFootprints,
     overwriteModels: state.overwriteModels,
     debugLogs: state.debugLogs,
@@ -873,11 +1224,42 @@ function snapshotState() {
   };
 }
 
+/**
+ * Content scripts do not receive chrome.runtime.sendMessage from the service worker.
+ * Use tabs.sendMessage on LCSC tabs (host_permissions allow reading matching tab URLs).
+ */
+function broadcastToLcscContentTabs(message) {
+  try {
+    chrome.tabs.query({}, (tabs) => {
+      if (chrome.runtime.lastError || !tabs?.length) {
+        return;
+      }
+      for (const tab of tabs) {
+        const tid = tab.id;
+        const u = tab.url || tab.pendingUrl || "";
+        if (tid == null) {
+          continue;
+        }
+        if (!LCSC_PAGE_URL_PREFIXES.some((prefix) => u.startsWith(prefix))) {
+          continue;
+        }
+        chrome.tabs.sendMessage(tid, message, () => {
+          void chrome.runtime.lastError;
+        });
+      }
+    });
+  } catch (_) {
+    /* ignore */
+  }
+}
+
 function broadcastState() {
   const snapshot = snapshotState();
-  chrome.runtime.sendMessage({ type: "stateUpdate", state: snapshot }).catch(() => {
-    /* no listeners */
+  const msg = { type: "stateUpdate", state: snapshot };
+  chrome.runtime.sendMessage(msg).catch(() => {
+    /* popup / extension pages only */
   });
+  broadcastToLcscContentTabs(msg);
 }
 
 async function persistState(keys) {
@@ -887,6 +1269,38 @@ async function persistState(keys) {
   });
   await storageSet(payload);
 }
+
+function jobLifecycleRank(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "queued") return 1;
+  if (s === "running") return 2;
+  if (s === "completed" || s === "failed") return 3;
+  return 0;
+}
+
+/** Return value for submitJob callers: latest row from state.jobs (task_update may have advanced past RPC summary). */
+function jobSummaryForSubmitReturn(jobId, rpcFallback) {
+  const j = state.jobs[jobId];
+  if (!j) {
+    return rpcFallback;
+  }
+  return {
+    id: j.id ?? jobId,
+    status: j.status,
+    progress: j.progress,
+    message: j.message,
+    queue_position: j.queue_position,
+    error: j.error,
+    result: j.result,
+    created_at: j.created_at,
+    started_at: j.started_at,
+    finished_at: j.finished_at,
+  };
+}
+
+// =============================================================================
+// Job pipeline (submitJob, task_update merge, history)
+// =============================================================================
 
 async function submitJob(payload) {
   const providedPrefix = normalizePath(payload.libraryPath || "");
@@ -975,12 +1389,29 @@ async function submitJob(payload) {
     force_template: Boolean(payload.forceTemplate),
   };
 
-  const response = await apiFetch("tasks", {
-    method: "POST",
-    body: JSON.stringify(body),
+  kpiJobLog("enqueue_task → sending", { lcsc_id: body.lcsc_id, output_path: body.output_path });
+  let summary;
+  try {
+    summary = await sendExtensionRpc("enqueue_task", body, 120000);
+  } catch (err) {
+    kpiJobLog("enqueue_task RPC threw", err?.message || err);
+    throw err;
+  }
+  if (!summary || typeof summary.id !== "string") {
+    kpiJobLog("enqueue_task invalid response (missing id)", summary);
+    throw new Error("Invalid enqueue_task response from backend.");
+  }
+  kpiJobLog("enqueue_task ← RPC summary", {
+    id: summary.id,
+    status: summary.status,
+    progress: summary.progress,
+    queue_position: summary.queue_position,
+    message: summary.message,
   });
-
-  const summary = await response.json();
+  if (summary && summary.progress != null) {
+    const np = Number(summary.progress);
+    if (Number.isFinite(np)) summary.progress = np;
+  }
   const meta = {
     lcscId: payload.lcscId,
     libraryName,
@@ -994,11 +1425,51 @@ async function submitJob(payload) {
   };
 
   state.jobMeta[summary.id] = meta;
-  state.jobs[summary.id] = { ...summary, ...meta };
+  let merged = { ...meta, ...summary };
+  const prev = state.jobs[summary.id];
+  if (prev) {
+    const pr = jobLifecycleRank(prev.status);
+    const nr = jobLifecycleRank(summary.status);
+    if (pr > nr) {
+      kpiJobLog("submitJob merge: keep higher lifecycle (RPC stale vs state.jobs)", {
+        id: summary.id,
+        prevStatus: prev.status,
+        rpcStatus: summary.status,
+      });
+      merged = {
+        ...merged,
+        status: prev.status,
+        progress: prev.progress ?? merged.progress,
+        message: prev.message ?? merged.message,
+        queue_position: prev.queue_position ?? merged.queue_position,
+        started_at: prev.started_at ?? merged.started_at,
+        finished_at: prev.finished_at ?? merged.finished_at,
+        error: prev.error ?? merged.error,
+        result: prev.result ?? merged.result,
+      };
+      if (Array.isArray(prev.log) && prev.log.length > (merged.log?.length || 0)) {
+        merged.log = prev.log;
+      }
+    } else if (pr === 2 && nr === 2) {
+      const pp = Number(prev.progress);
+      const np = Number(summary.progress);
+      if (Number.isFinite(pp) && Number.isFinite(np) && pp > np) {
+        kpiJobVerbose("submitJob merge: keep higher progress (both running)", summary.id, pp, np);
+        merged.progress = prev.progress;
+        merged.message = prev.message ?? merged.message;
+      }
+    }
+  }
+  state.jobs[summary.id] = merged;
+  kpiJobLog("submitJob stored state.jobs", {
+    id: summary.id,
+    status: merged.status,
+    progress: merged.progress,
+    queue_position: merged.queue_position,
+  });
   await persistState(["jobMeta"]);
   broadcastState();
-  scheduleJobPoll(summary.id, 1000);
-  return summary;
+  return jobSummaryForSubmitReturn(summary.id, summary);
 }
 
 async function handleCreateLibrary(payload = {}) {
@@ -1142,457 +1613,364 @@ async function handleValidateLibrary(payload = {}) {
 }
 
 async function fetchRoots() {
-  const response = await apiFetch("fs/roots");
-  return response.json();
+  return sendExtensionRpc("fs_roots", {}, 30000);
 }
 
 async function fetchDirectory(path) {
-  const response = await apiFetch(`fs/list?${new URLSearchParams({ path })}`);
-  return response.json();
+  return sendExtensionRpc("fs_list", { path }, 30000);
 }
 
 async function checkPath(path) {
-  const response = await apiFetch("fs/check", {
-    method: "POST",
-    body: JSON.stringify({ path }),
-  });
-  return response.json();
+  return sendExtensionRpc("fs_check", { path }, 30000);
 }
+
+// =============================================================================
+// chrome.runtime.onMessage — handler map (popup + content script)
+// =============================================================================
+
+const RUNTIME_MESSAGE_HANDLERS = {
+  getState: async () => {
+    try {
+      await inventoryLibraries();
+    } catch (error) {
+      console.warn("Library inventory failed during getState", error);
+    }
+    return snapshotState();
+  },
+  setServerUrl: async (message) => {
+    state.serverUrl = message.url || DEFAULT_STATE.serverUrl;
+    await persistState(["serverUrl"]);
+    closeExtensionSocket();
+    extReconnectDelayMs = EXT_RECONNECT_INITIAL_MS;
+    connectExtensionSocket();
+    return snapshotState();
+  },
+  createLibrary: async (message) => {
+    const { type: _t, ...rest } = message;
+    return handleCreateLibrary(rest);
+  },
+  importLibrary: async (message) => {
+    const { type: _t, ...rest } = message;
+    return handleImportLibrary(rest);
+  },
+  validateLibrary: async (message) => handleValidateLibrary(message),
+  updateSettings: async (message) => {
+    if (typeof message.serverUrl === "string") {
+      state.serverUrl = message.serverUrl.trim() || DEFAULT_STATE.serverUrl;
+    }
+    if (typeof message.overwriteFootprints === "boolean") {
+      state.overwriteFootprints = message.overwriteFootprints;
+    }
+    if (typeof message.overwriteModels === "boolean") {
+      state.overwriteModels = message.overwriteModels;
+    }
+    if (typeof message.debugLogs === "boolean") {
+      state.debugLogs = message.debugLogs;
+    }
+    if (typeof message.projectRelative === "boolean") {
+      state.projectRelative = message.projectRelative;
+    }
+    if (typeof message.projectRelativePath === "string") {
+      state.projectRelativePath = normalizeProjectRelativePath(message.projectRelativePath);
+    }
+    if (message.categorySettings && typeof message.categorySettings === "object") {
+      state.categorySettings = { ...message.categorySettings };
+    }
+    await persistState([
+      "serverUrl",
+      "overwriteFootprints",
+      "overwriteModels",
+      "debugLogs",
+      "projectRelative",
+      "projectRelativePath",
+      "categorySettings",
+    ]);
+    if (typeof message.serverUrl === "string") {
+      closeExtensionSocket();
+      extReconnectDelayMs = EXT_RECONNECT_INITIAL_MS;
+      connectExtensionSocket();
+    }
+    return snapshotState();
+  },
+  updateLibraries: async (message) => {
+    if (Array.isArray(message.libraries)) {
+      const prevTemplatePath = getTemplateLibraryPath();
+      state.libraries = message.libraries
+        .map(normalizeLibraryRecord)
+        .filter((library) => library);
+      recalcLibraryTotals();
+      await ensureSelectedLibrary();
+      await persistState(["libraries", "libraryTotals"]);
+      const newTemplatePath = getTemplateLibraryPath();
+      if (state.connected && newTemplatePath !== prevTemplatePath) {
+        refreshTemplateStatus().catch(() => {});
+      }
+    }
+    return snapshotState();
+  },
+  validateLibraryDirectory: async (message) => validateLibraryDirectory(message.path),
+  setSelectedLibrary: async (message) => {
+    state.selectedLibraryPath = normalizePath(message.path || "");
+    let requestedName = "";
+    if (typeof message.name === "string") {
+      requestedName = message.name.trim();
+    }
+    let sanitizedName = sanitizeLibraryName(requestedName);
+    if (!sanitizedName) {
+      sanitizedName = deriveLibraryNameFromPath(state.selectedLibraryPath)
+        || "easyeda2kicad";
+    }
+    state.selectedLibraryName = sanitizedName;
+    await persistState(["selectedLibraryPath", "selectedLibraryName"]);
+    broadcastState();
+    return {
+      path: state.selectedLibraryPath,
+      name: state.selectedLibraryName,
+    };
+  },
+  quickDownload: async (message) => {
+    kpiJobLog("quickDownload message", { lcscId: message.lcscId, connected: state.connected });
+    if (!state.connected) {
+      const connected = await checkHealth();
+      if (!connected) {
+        kpiJobLog("quickDownload aborted: backend not reachable after checkHealth");
+        throw new Error("Backend not reachable. Start the backend.");
+      }
+    }
+    const lcscId = (message.lcscId || "").trim().toUpperCase();
+    if (!lcscId || !lcscId.startsWith("C")) {
+      throw new Error("Invalid LCSC ID.");
+    }
+    let basePath = normalizePath(state.selectedLibraryPath || "");
+    if (!basePath) {
+      await ensureSelectedLibrary();
+      basePath = normalizePath(state.selectedLibraryPath || "");
+    }
+    if (!basePath) {
+      throw new Error("Please select a library path in the extension first.");
+    }
+
+    const libraryName = sanitizeLibraryName(
+      state.selectedLibraryName || lcscId,
+    );
+
+    const selectedLibrary = getSelectedLibraryRecord();
+    const projectRelative = selectedLibrary
+      ? normalizeBoolean(selectedLibrary.projectRelative, false)
+      : Boolean(state.projectRelative);
+    const projectRelativePath = selectedLibrary
+      ? normalizeProjectRelativePath(
+          selectedLibrary.projectRelativePath || state.projectRelativePath
+        )
+      : normalizeProjectRelativePath(state.projectRelativePath);
+    const modelPath = selectedLibrary?.modelPath || "";
+
+    const payload = {
+      lcscId,
+      libraryPath: basePath,
+      libraryName: libraryName || lcscId,
+      symbol: true,
+      footprint: true,
+      model: true,
+      overwrite: message.overwrite !== undefined ? Boolean(message.overwrite) : Boolean(state.overwriteFootprints),
+      overwrite_model: message.overwrite_model !== undefined ? Boolean(message.overwrite_model) : Boolean(state.overwriteModels),
+      projectRelative,
+      projectRelativePath,
+      modelPath,
+      category: typeof message.category === "string" ? message.category : null,
+      componentPackage: typeof message.componentPackage === "string" ? message.componentPackage : null,
+      params: message.params && typeof message.params === "object" ? message.params : {},
+      description: typeof message.description === "string" ? message.description : null,
+      datasheetUrl: typeof message.datasheetUrl === "string" ? message.datasheetUrl : null,
+      useTemplate: Boolean(message.useTemplate),
+      templateName: typeof message.templateName === "string" ? message.templateName : null,
+      templateLibPath: typeof message.templateLibPath === "string" ? message.templateLibPath : null,
+      forceTemplate: Boolean(message.forceTemplate),
+      categoryConfigOverride:
+        message.categoryConfigOverride && typeof message.categoryConfigOverride === "object"
+          ? message.categoryConfigOverride
+          : null,
+    };
+
+    const summary = await submitJob(payload);
+    kpiJobLog("quickDownload submitJob returned", {
+      jobId: summary?.id,
+      status: summary?.status,
+      progress: summary?.progress,
+      queue_position: summary?.queue_position,
+    });
+    return {
+      jobId: summary?.id,
+      status: summary?.status,
+      progress: summary?.progress,
+      message: summary?.message,
+      queue_position: summary?.queue_position,
+      libraryName: payload.libraryName,
+      libraryPath: basePath,
+    };
+  },
+  getJobStatus: async (message) => {
+    const jobId = message.jobId;
+    if (!jobId) {
+      throw new Error("Missing jobId");
+    }
+    const job = state.jobs[jobId];
+    if (job) {
+      return {
+        ...job,
+        outputAnalysis: analyzeJobOutputs(job),
+        messages: job.result?.messages || job.messages || [],
+      };
+    }
+    const history = state.jobHistory.find((entry) => entry.id === jobId);
+    if (!history) {
+      throw new Error("Job not found.");
+    }
+    return {
+      ...history,
+      outputAnalysis: analyzeJobOutputs(history),
+      messages: history.result?.messages || history.messages || [],
+    };
+  },
+  checkComponentExists: async (message) => {
+    if (!state.connected) {
+      const connected = await checkHealth();
+      if (!connected) {
+        throw new Error("Backend not reachable. Start the backend.");
+      }
+    }
+    const lcscId = (message.lcscId || "").trim().toUpperCase();
+    if (!lcscId || !lcscId.startsWith("C")) {
+      throw new Error("Invalid LCSC ID.");
+    }
+    const activeJob = Object.values(state.jobs || {}).find((job) => job.lcscId === lcscId);
+    if (activeJob) {
+      return {
+        inProgress: true,
+        jobId: activeJob.id,
+        status: activeJob.status,
+        progress: activeJob.progress,
+        message: activeJob.message,
+        queue_position: activeJob.queue_position,
+        libraryName: activeJob.libraryName,
+        libraryPath: activeJob.libraryPath,
+        completed: false,
+        outputAnalysis: analyzeJobOutputs(activeJob),
+        partial: false,
+        missing: [],
+        outputs: activeJob.outputs,
+        result: activeJob.result,
+        messages: activeJob.result?.messages || activeJob.messages || [],
+      };
+    }
+
+    const selectedLibrary = getSelectedLibraryRecord();
+    const libraryPrefix = normalizePath(
+      deriveLibraryPrefix(selectedLibrary) || state.selectedLibraryPath || ""
+    );
+    if (!libraryPrefix) {
+      throw new Error("Please select a library in the extension.");
+    }
+
+    const validation = await validateLibraryOnServer(libraryPrefix);
+    const index = state.libraries.findIndex(
+      (library) => normalizePath(library.path || library.resolvedPrefix || "") === libraryPrefix
+    );
+    if (index >= 0) {
+      state.libraries[index] = buildLibraryStatus(state.libraries[index], validation);
+      recalcLibraryTotals();
+      await persistState(["libraries", "libraryTotals"]);
+      broadcastState();
+    }
+    if (!validation.exists) {
+      return {
+        inProgress: false,
+        jobId: null,
+        status: null,
+        libraryName: selectedLibrary?.name || null,
+        libraryPath: libraryPrefix,
+        completed: false,
+        outputAnalysis: null,
+        partial: false,
+        missing: ["library"],
+        outputs: null,
+        result: null,
+        messages: ["Library path is missing on disk."],
+      };
+    }
+
+    const check = await checkComponentOnServer(libraryPrefix, lcscId);
+    return buildComponentStatus({
+      lcscId,
+      check,
+      libraryPrefix,
+      selectedLibrary,
+    });
+  },
+  checkCategoryKnown: async (message) => {
+    const cat = typeof message.category === "string" ? message.category.trim() : "";
+    return { known: Boolean(cat && state.categorySettings && cat in state.categorySettings) };
+  },
+  getCategorySettings: async (message) => {
+    const cat = typeof message.category === "string" ? message.category.trim() : "";
+    if (!cat) return null;
+    return state.categorySettings?.[cat] ?? null;
+  },
+  saveCategorySettings: async (message) => {
+    const cat = typeof message.category === "string" ? message.category.trim() : "";
+    if (!cat) throw new Error("Category name required.");
+    const cfg = message.config && typeof message.config === "object" ? message.config : {};
+    state.categorySettings = {
+      ...state.categorySettings,
+      [cat]: {
+        hidePinNumbers: Boolean(cfg.hidePinNumbers),
+        hidePinNames: Boolean(cfg.hidePinNames),
+        valueParam: typeof cfg.valueParam === "string" ? cfg.valueParam.trim() || null : null,
+      },
+    };
+    await persistState(["categorySettings"]);
+    broadcastState();
+    return state.categorySettings[cat];
+  },
+  getTemplateStatus: async () =>
+    Object.fromEntries((state.templateSymbols || []).map((n) => [n, true])),
+  templatesPinCheck: async (message) => {
+    const lcscId = (message.lcscId || "").trim().toUpperCase();
+    const templateName = typeof message.templateName === "string" ? message.templateName.trim() : "";
+    const templateLibPath = typeof message.templateLibPath === "string" ? message.templateLibPath.trim() : "";
+    if (!lcscId || !lcscId.startsWith("C") || !templateName || !templateLibPath) {
+      throw new Error("templatesPinCheck requires lcscId, templateName, and templateLibPath.");
+    }
+    return sendExtensionRpc(
+      "templates_pin_check",
+      {
+        lcsc_id: lcscId,
+        template_name: templateName,
+        template_lib_path: templateLibPath,
+      },
+      120000,
+    );
+  },
+  submitJob: async (message) => submitJob(message.payload),
+  "fs:listRoots": async () => fetchRoots(),
+  "fs:listDirectory": async (message) => fetchDirectory(message.path),
+  "fs:check": async (message) => checkPath(message.path),
+  clearHistory: async () => {
+    state.jobHistory = [];
+    await persistState(["jobHistory"]);
+    broadcastState();
+    return { cleared: true };
+  },
+};
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {
     await ensureInitialized();
-    switch (message.type) {
-      case "getState":
-        try {
-          await inventoryLibraries();
-        } catch (error) {
-          console.warn("Library inventory failed during getState", error);
-        }
-        return snapshotState();
-      case "setServerUrl":
-        state.serverUrl = message.url || DEFAULT_STATE.serverUrl;
-        await persistState(["serverUrl"]);
-        await checkHealth();
-        return snapshotState();
-      case "toggleNotifications":
-        state.notificationsEnabled = Boolean(message.enabled);
-        await persistState(["notificationsEnabled"]);
-        return snapshotState();
-      case "createLibrary": {
-        const { type, ...rest } = message;
-        const record = await handleCreateLibrary(rest);
-        return record;
-      }
-      case "importLibrary": {
-        const { type, ...rest } = message;
-        const record = await handleImportLibrary(rest);
-        return record;
-      }
-      case "validateLibrary":
-        return handleValidateLibrary(message);
-      case "updateSettings":
-        if (typeof message.serverUrl === "string") {
-          state.serverUrl = message.serverUrl.trim() || DEFAULT_STATE.serverUrl;
-        }
-        if (typeof message.overwriteFootprints === "boolean") {
-          state.overwriteFootprints = message.overwriteFootprints;
-        }
-        if (typeof message.overwriteModels === "boolean") {
-          state.overwriteModels = message.overwriteModels;
-        }
-        if (typeof message.debugLogs === "boolean") {
-          state.debugLogs = message.debugLogs;
-        }
-        if (typeof message.projectRelative === "boolean") {
-          state.projectRelative = message.projectRelative;
-        }
-        if (typeof message.projectRelativePath === "string") {
-          state.projectRelativePath = normalizeProjectRelativePath(message.projectRelativePath);
-        }
-        if (message.categorySettings && typeof message.categorySettings === "object") {
-          state.categorySettings = { ...message.categorySettings };
-        }
-        await persistState([
-          "serverUrl",
-          "overwriteFootprints",
-          "overwriteModels",
-          "debugLogs",
-          "projectRelative",
-          "projectRelativePath",
-          "categorySettings",
-        ]);
-        checkHealth();
-        return snapshotState();
-      case "updateLibraries":
-        if (Array.isArray(message.libraries)) {
-          const prevTemplatePath = getTemplateLibraryPath();
-          state.libraries = message.libraries
-            .map(normalizeLibraryRecord)
-            .filter((library) => library);
-          recalcLibraryTotals();
-          await ensureSelectedLibrary();
-          await persistState(["libraries", "libraryTotals"]);
-          const newTemplatePath = getTemplateLibraryPath();
-          if (state.connected && newTemplatePath !== prevTemplatePath) {
-            refreshTemplateStatus().catch(() => {});
-          }
-        }
-        return snapshotState();
-      case "validateLibraryDirectory":
-        return await validateLibraryDirectory(message.path);
-      case "setSelectedLibrary":
-        state.selectedLibraryPath = normalizePath(message.path || "");
-        let requestedName = "";
-        if (typeof message.name === "string") {
-          requestedName = message.name.trim();
-        }
-        let sanitizedName = sanitizeLibraryName(requestedName);
-        if (!sanitizedName) {
-          sanitizedName = deriveLibraryNameFromPath(state.selectedLibraryPath)
-            || "easyeda2kicad";
-        }
-        state.selectedLibraryName = sanitizedName;
-        await persistState(["selectedLibraryPath", "selectedLibraryName"]);
-        broadcastState();
-        return {
-          path: state.selectedLibraryPath,
-          name: state.selectedLibraryName,
-        };
-      case "quickDownload": {
-        if (!state.connected) {
-          const connected = await checkHealth();
-          if (!connected) {
-            throw new Error("Backend not reachable. Start the backend.");
-          }
-        }
-        const lcscId = (message.lcscId || "").trim().toUpperCase();
-        if (!lcscId || !lcscId.startsWith("C")) {
-          throw new Error("Invalid LCSC ID.");
-        }
-        let basePath = normalizePath(state.selectedLibraryPath || "");
-        if (!basePath) {
-          await ensureSelectedLibrary();
-          basePath = normalizePath(state.selectedLibraryPath || "");
-        }
-        if (!basePath) {
-          throw new Error("Please select a library path in the extension first.");
-        }
-
-        const libraryName = sanitizeLibraryName(
-          state.selectedLibraryName || lcscId,
-        );
-
-        const selectedLibrary = getSelectedLibraryRecord();
-        const projectRelative = selectedLibrary
-          ? normalizeBoolean(selectedLibrary.projectRelative, false)
-          : Boolean(state.projectRelative);
-        const projectRelativePath = selectedLibrary
-          ? normalizeProjectRelativePath(
-              selectedLibrary.projectRelativePath || state.projectRelativePath
-            )
-          : normalizeProjectRelativePath(state.projectRelativePath);
-        const modelPath = selectedLibrary?.modelPath || "";
-
-        const payload = {
-          lcscId,
-          libraryPath: basePath,
-          libraryName: libraryName || lcscId,
-          symbol: true,
-          footprint: true,
-          model: true,
-          overwrite: message.overwrite !== undefined ? Boolean(message.overwrite) : Boolean(state.overwriteFootprints),
-          overwrite_model: message.overwrite_model !== undefined ? Boolean(message.overwrite_model) : Boolean(state.overwriteModels),
-          projectRelative,
-          projectRelativePath,
-          modelPath,
-          category: typeof message.category === "string" ? message.category : null,
-          componentPackage: typeof message.componentPackage === "string" ? message.componentPackage : null,
-          params: message.params && typeof message.params === "object" ? message.params : {},
-          description: typeof message.description === "string" ? message.description : null,
-          datasheetUrl: typeof message.datasheetUrl === "string" ? message.datasheetUrl : null,
-          useTemplate: Boolean(message.useTemplate),
-          templateName: typeof message.templateName === "string" ? message.templateName : null,
-          templateLibPath: typeof message.templateLibPath === "string" ? message.templateLibPath : null,
-          forceTemplate: Boolean(message.forceTemplate),
-          categoryConfigOverride:
-            message.categoryConfigOverride && typeof message.categoryConfigOverride === "object"
-              ? message.categoryConfigOverride
-              : null,
-        };
-
-        const summary = await submitJob(payload);
-        return {
-          jobId: summary?.id,
-          status: summary?.status,
-          libraryName: payload.libraryName,
-          libraryPath: basePath,
-        };
-      }
-      case "getJobStatus": {
-        const jobId = message.jobId;
-        if (!jobId) {
-          throw new Error("Missing jobId");
-        }
-        const job = state.jobs[jobId];
-        if (job) {
-          return {
-            ...job,
-            outputAnalysis: analyzeJobOutputs(job),
-            messages: job.result?.messages || job.messages || [],
-          };
-        }
-        const history = state.jobHistory.find((entry) => entry.id === jobId);
-        if (!history) {
-          throw new Error("Job not found.");
-        }
-        return {
-          ...history,
-          outputAnalysis: analyzeJobOutputs(history),
-          messages: history.result?.messages || history.messages || [],
-        };
-      }
-      case "checkComponentExists": {
-        if (!state.connected) {
-          const connected = await checkHealth();
-          if (!connected) {
-            throw new Error("Backend not reachable. Start the backend.");
-          }
-        }
-        const lcscId = (message.lcscId || "").trim().toUpperCase();
-        if (!lcscId || !lcscId.startsWith("C")) {
-          throw new Error("Invalid LCSC ID.");
-        }
-        const activeJob = Object.values(state.jobs || {}).find((job) => job.lcscId === lcscId);
-        if (activeJob) {
-          return {
-            inProgress: true,
-            jobId: activeJob.id,
-            status: activeJob.status,
-            libraryName: activeJob.libraryName,
-            libraryPath: activeJob.libraryPath,
-            completed: false,
-            outputAnalysis: analyzeJobOutputs(activeJob),
-            partial: false,
-            missing: [],
-            outputs: activeJob.outputs,
-            result: activeJob.result,
-            messages: activeJob.result?.messages || activeJob.messages || [],
-          };
-        }
-
-        const selectedLibrary = getSelectedLibraryRecord();
-        const libraryPrefix = normalizePath(
-          deriveLibraryPrefix(selectedLibrary) || state.selectedLibraryPath || ""
-        );
-        if (!libraryPrefix) {
-          throw new Error("Please select a library in the extension.");
-        }
-
-        const validation = await validateLibraryOnServer(libraryPrefix);
-        const index = state.libraries.findIndex(
-          (library) => normalizePath(library.path || library.resolvedPrefix || "") === libraryPrefix
-        );
-        if (index >= 0) {
-          state.libraries[index] = buildLibraryStatus(state.libraries[index], validation);
-          recalcLibraryTotals();
-          await persistState(["libraries", "libraryTotals"]);
-          broadcastState();
-        }
-        if (!validation.exists) {
-          return {
-            inProgress: false,
-            jobId: null,
-            status: null,
-            libraryName: selectedLibrary?.name || null,
-            libraryPath: libraryPrefix,
-            completed: false,
-            outputAnalysis: null,
-            partial: false,
-            missing: ["library"],
-            outputs: null,
-            result: null,
-            messages: ["Library path is missing on disk."],
-          };
-        }
-
-        const check = await checkComponentOnServer(libraryPrefix, lcscId);
-        return buildComponentStatus({
-          lcscId,
-          check,
-          libraryPrefix,
-          selectedLibrary,
-        });
-      }
-      case "checkComponentsExists": {
-        if (!state.connected) {
-          const connected = await checkHealth();
-          if (!connected) {
-            throw new Error("Backend not reachable. Start the backend.");
-          }
-        }
-        const ids = Array.isArray(message.lcscIds)
-          ? Array.from(
-              new Set(
-                message.lcscIds
-                  .map((id) => (id || "").trim().toUpperCase())
-                  .filter((id) => id),
-              ),
-            )
-          : [];
-        if (!ids.length) {
-          throw new Error("No component IDs supplied.");
-        }
-
-        const selectedLibrary = getSelectedLibraryRecord();
-        const libraryPrefix = normalizePath(
-          deriveLibraryPrefix(selectedLibrary) || state.selectedLibraryPath || ""
-        );
-        if (!libraryPrefix) {
-          throw new Error("Please select a library in the extension.");
-        }
-
-        const validation = await validateLibraryOnServer(libraryPrefix);
-        const index = state.libraries.findIndex(
-          (library) => normalizePath(library.path || library.resolvedPrefix || "") === libraryPrefix
-        );
-        if (index >= 0) {
-          state.libraries[index] = buildLibraryStatus(state.libraries[index], validation);
-          recalcLibraryTotals();
-          await persistState(["libraries", "libraryTotals"]);
-          broadcastState();
-        }
-        if (!validation.exists) {
-          const results = {};
-          ids.forEach((lcscId) => {
-            results[lcscId] = {
-              inProgress: false,
-              jobId: null,
-              status: null,
-              libraryName: selectedLibrary?.name || null,
-              libraryPath: libraryPrefix,
-              completed: false,
-              outputAnalysis: null,
-              partial: false,
-              missing: ["library"],
-              outputs: null,
-              result: null,
-              messages: ["Library path is missing on disk."],
-            };
-          });
-          return { results };
-        }
-
-        const activeJobs = Object.values(state.jobs || {}).reduce((acc, job) => {
-          if (job?.lcscId) {
-            acc[job.lcscId] = job;
-          }
-          return acc;
-        }, {});
-
-        const backendResult = await checkComponentsOnServer(libraryPrefix, ids);
-        const checks = backendResult?.results || {};
-        const results = {};
-
-        ids.forEach((lcscId) => {
-          const activeJob = activeJobs[lcscId];
-          if (activeJob) {
-            results[lcscId] = {
-              inProgress: true,
-              jobId: activeJob.id,
-              status: activeJob.status,
-              libraryName: activeJob.libraryName,
-              libraryPath: activeJob.libraryPath,
-              completed: false,
-              outputAnalysis: analyzeJobOutputs(activeJob),
-              partial: false,
-              missing: [],
-              outputs: activeJob.outputs,
-              result: activeJob.result,
-              messages: activeJob.result?.messages || activeJob.messages || [],
-            };
-            return;
-          }
-
-          const check = checks[lcscId] || {};
-          results[lcscId] = buildComponentStatus({
-            lcscId,
-            check,
-            libraryPrefix,
-            selectedLibrary,
-          });
-        });
-
-        return { results };
-      }
-      case "checkCategoryKnown": {
-        const cat = typeof message.category === "string" ? message.category.trim() : "";
-        return { known: Boolean(cat && state.categorySettings && cat in state.categorySettings) };
-      }
-      case "getCategorySettings": {
-        const cat = typeof message.category === "string" ? message.category.trim() : "";
-        if (!cat) return null;
-        return state.categorySettings?.[cat] ?? null;
-      }
-      case "saveCategorySettings": {
-        const cat = typeof message.category === "string" ? message.category.trim() : "";
-        if (!cat) throw new Error("Category name required.");
-        const cfg = message.config && typeof message.config === "object" ? message.config : {};
-        state.categorySettings = {
-          ...state.categorySettings,
-          [cat]: {
-            hidePinNumbers: Boolean(cfg.hidePinNumbers),
-            hidePinNames: Boolean(cfg.hidePinNames),
-            valueParam: typeof cfg.valueParam === "string" ? cfg.valueParam.trim() || null : null,
-          },
-        };
-        await persistState(["categorySettings"]);
-        broadcastState();
-        return state.categorySettings[cat];
-      }
-      case "getTemplateStatus":
-        // Return dict format {symbolName: true} for backward compat with contentScript
-        return Object.fromEntries((state.templateSymbols || []).map((n) => [n, true]));
-      case "templatesPinCheck": {
-        const lcscId = (message.lcscId || "").trim().toUpperCase();
-        const templateName = typeof message.templateName === "string" ? message.templateName.trim() : "";
-        const templateLibPath = typeof message.templateLibPath === "string" ? message.templateLibPath.trim() : "";
-        if (!lcscId || !lcscId.startsWith("C") || !templateName || !templateLibPath) {
-          throw new Error("templatesPinCheck requires lcscId, templateName, and templateLibPath.");
-        }
-        const url = buildUrl("templates/pin-check");
-        const res = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            lcsc_id: lcscId,
-            template_name: templateName,
-            template_lib_path: templateLibPath,
-          }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          const detail = Array.isArray(data.detail) ? data.detail.join(" ") : (data.detail || data.message || "Pin check failed.");
-          throw new Error(detail);
-        }
-        return data;
-      }
-      case "submitJob":
-        return submitJob(message.payload);
-      case "fs:listRoots":
-        return fetchRoots();
-      case "fs:listDirectory":
-        return fetchDirectory(message.path);
-      case "fs:check":
-        return checkPath(message.path);
-      case "clearHistory":
-        state.jobHistory = [];
-        await persistState(["jobHistory"]);
-        broadcastState();
-        return { cleared: true };
-      default:
-        return null;
+    const run = RUNTIME_MESSAGE_HANDLERS[message.type];
+    if (typeof run !== "function") {
+      return null;
     }
+    return run(message);
   })()
     .then((result) => sendResponse({ ok: true, data: result }))
     .catch((error) => {
