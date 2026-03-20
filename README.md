@@ -1,274 +1,187 @@
 # KiCad Parts Importer
 
-Chrome extension for [LCSC](https://www.lcsc.com/) plus a local Python backend: import components into a selected KiCad library using EasyEDA-sourced data (symbol, footprint, 3D) and optional **your own KiCad symbol templates**.
+**Version 2.0.0** · Chrome extension for [LCSC](https://www.lcsc.com/) with a **local backend** — import symbols, footprints, and 3D models into KiCad libraries using EasyEDA-sourced data, with optional **custom KiCad symbol templates**.
 
 > [!WARNING]
-> EasyEDA source data can contain issues. **Always verify pins and footprints** before using converted parts in production.
+> EasyEDA source data can contain errors. **Verify pins and footprints** before using converted parts in production.
 
 <p align="center">
   <img src="/img/store_images/store-card.jpg" alt="KiCad Parts Importer" />
 </p>
 
+## Architecture & data exchange
+
 ```mermaid
 flowchart LR
   lcsc[LCSC website] <--> ext[Chrome extension]
-  ext <-->|WebSocket JSON-RPC plus task push| api[Local backend API]
+  ext <-->|WebSocket JSON-RPC and task push| api[Local backend]
   api --> easyeda[EasyEDA API]
   api --> disk[KiCad libraries on disk]
+
+  classDef clientSide fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a
+  classDef serverSide fill:#ffedd5,stroke:#c2410c,color:#7c2d12
+
+  class lcsc,ext clientSide
+  class api,easyeda,disk serverSide
 ```
 
-The extension service worker talks to the backend only over **`/ws/extension`** (`ws://` or `wss://`, same host/port as the configured server URL). Job progress is **pushed** (`task_update`); there is **no HTTP polling** for tasks. The Python app exposes **no HTTP REST API**—only this WebSocket.
+| Path | What flows |
+| --- | --- |
+| **LCSC ↔ extension** | The **content script** reads product pages and renders download UI; user actions trigger messages to the **service worker**. |
+| **Extension ↔ backend** | The **service worker** opens one **WebSocket** to **`/ws/extension`** (`ws://` or `wss://`, same **host and port** as **API base URL**, e.g. `http://localhost:8087` → `ws://localhost:8087/ws/extension`). Requests use **JSON-RPC**-style methods (enqueue jobs, health, library/fs helpers, template pin-check, etc.). The backend **pushes** **`task_update`** (and related) messages so job progress reaches the UI **without polling**. |
+| **Backend ↔ EasyEDA / disk** | The Python server fetches EasyEDA CAD data and writes symbols, footprints, and 3D files into the library paths you configure. |
+
+There is **no separate HTTP REST API** for application logic: extension and backend coordinate **only** on that WebSocket (aside from the browser loading normal LCSC pages).
+
+## Overview
+
+- **Extension** (Chrome, Manifest V3) adds controls on LCSC and a **popup** for libraries and settings.
+- **Backend** (Python, same repo) performs conversion and talks to EasyEDA; it stores files under your chosen library folders.
+- Details of the wire protocol are summarized in [Architecture & data exchange](#architecture--data-exchange) above.
 
 ## Contents
 
-- [Quick start](#quick-start)
-- [How downloading works](#how-downloading-works)
-- [Product-page flow (diagrams)](#product-page-flow-diagrams)
-- [Extension popup reference](#extension-popup-reference)
-- [Features in detail](#features-in-detail)
-- [UI screenshots](#ui-and-lcsc-website-integration)
+- [Architecture & data exchange](#architecture--data-exchange)
+- [Getting started](#getting-started)
+- [Understanding settings & parameters](#understanding-settings--parameters)
+- [Import workflow on LCSC](#import-workflow-on-lcsc)
+- [Templates & metadata](#templates--metadata)
+- [UI screenshots](#ui-screenshots)
 - [Repository layout](#repository-layout)
 - [Development](#development)
-- [Credits & license](#credits)
+- [Credits & license](#credits--license)
 
-## Quick start
+## Getting started
 
-1. **Extension**
-   - [Chrome Web Store](https://chromewebstore.google.com/detail/ojkpgmndjlkghmaccanfophkcngdkpmi), or  
-   - Load unpacked: `chrome://extensions` → Developer mode → **Load unpacked** → select `chrome_extension/`.
+### Prerequisites
 
-2. **Backend** (required for import) — from [Releases](../../releases):
-   - macOS/Linux: `chmod +x "./<version>-KiCad Parts Importer-<OS>"` then run the binary.
-   - macOS Gatekeeper: `xattr -dr com.apple.quarantine "./<version>-KiCad Parts Importer-Mac"`
-   - Windows: run `"<version>-KiCad Parts Importer-Windows.exe"`
+- **Google Chrome** (or a Chromium-based browser that supports unpacked extensions).
+- **Local backend** running on your machine — required for any import. Use a [release binary](../../releases) or run from source (see [Development](#development)).
 
-3. Open [lcsc.com](https://www.lcsc.com/), pick a library in the extension, and use **Download / EasyEDA** or **Download / Template** on **product detail** pages (`/product-detail/...`).
+### 1. Install the extension
 
-## How downloading works
+- **Chrome Web Store:** [KiCad Parts Importer](https://chromewebstore.google.com/detail/ojkpgmndjlkghmaccanfophkcngdkpmi)  
+- **From source:** open `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select the `chrome_extension/` folder in this repository.
 
-Rough order on a **product page** (details in [Features](#features-in-detail)):
+### 2. Install and run the backend
 
-1. **Backend reachable** (WebSocket to `/ws/extension`) — otherwise the UI shows offline. If the backend is up but the extension stays offline, check **proxies or security software blocking WebSockets** to `localhost`.
-2. **Already in library?** If global overwrite is off, **Overwrite?** is asked **first** (Override / Permanent override / Cancel).
-3. **Category & value field** — new category, missing LCSC table data, or mismatched saved “Value parameter” → dialogs (Skip / Save & continue / Continue / Cancel, etc.).
-4. **Template path** (optional) — choose **EasyEDA** (LCSC) or **Template**; template libraries can expose a dropdown. If EasyEDA and template pin counts differ, a **pin mismatch** flow can appear (continue with template constraints or fall back to EasyEDA).
-5. **Conversion** — job runs; success state and optional confetti on the in-page progress UI.
+From **Releases**, use the build for your OS (macOS/Linux/Windows). Examples:
 
-List pages use a compact download button with the same backend checks where applicable (no separate **Template** dropdown — **EasyEDA** path only).
+- **macOS / Linux:** `chmod +x "./<version>-KiCad Parts Importer-<OS>"` then run the binary.  
+- **macOS Gatekeeper:** `xattr -dr com.apple.quarantine "./<version>-KiCad Parts Importer-Mac"`  
+- **Windows:** run `"<version>-KiCad Parts Importer-Windows.exe"`
 
-### Product-page flow (diagrams)
+From **source:** use a Python environment with project dependencies, then `python run_server.py` (default port is often **8087** — check console output and align the extension URL).
 
-Below: **(1)** how you enter the shared download pipeline from the grouped buttons, **(2)** what happens inside that pipeline until a job starts. Cancelling any modal returns to a **ready-to-click** state (green “in library”, blue “download”, or partial — see table).
+### 3. Point the extension at the backend
 
-#### 1 — Entry: EasyEDA vs Template (pin gate)
+1. Open the extension **popup** → **Settings** tab.  
+2. Set **API base URL** to match the server (e.g. `http://localhost:8087`).  
+3. Click **Test** to confirm the backend is reachable.  
+4. The header should show the backend as connected; if not, check firewalls, proxies, or software blocking **WebSockets** to `localhost`.
 
-```mermaid
-flowchart TB
-  idle(["Starting state: button group idle<br/>EasyEDA + Template visible"])
-  idle -->|Click EasyEDA| pipe["Enter pipeline: handleDownloadClick()"]
-  idle -->|Click Template → choose symbol| pin{"Backend:<br/>templatesPinCheck"}
-  pin -->|counts match| pipe
-  pin -->|counts differ| mis["Pin mismatch bar<br/>(product page progress row)"]
-  mis -->|Continue with template| pipeFT["Enter pipeline with<br/>useTemplate + forceTemplate"]
-  mis -->|Download EasyEDA model| pipe
-  pipeFT --> pipe
-  idle -.->|Close dropdown without pick| idle
-```
+### 4. Add or select a KiCad library
 
-#### 2 — Pipeline inside `handleDownloadClick` (after entry)
+1. Open the **Library** tab.  
+2. Use **Add** to **create** a new library folder layout or **Import library** to register an existing `.kicad_sym`.  
+3. **Activate** the library that should receive imports. Only one library is active at a time.
 
-Order is fixed: **backend check → optional overwrite → category/value dialogs → job**.
+### 5. Import a part
 
-```mermaid
-flowchart TB
-  start(["Enter handleDownloadClick"])
-  start --> be{"Backend<br/>connected?"}
-  be -->|no| off["Offline styling"]
-  be -->|yes| ow{"Part in library<br/>overwrite off in settings<br/>no one-shot overwrite?"}
-  ow -->|yes| od["Overwrite dialog"]
-  od -->|Cancel| rs["Restore green exists"]
-  od -->|Override| once["One-shot overwrite"]
-  od -->|Permanent| perm["Overwrite on in settings"]
-  dlg["Category and value dialogs"]
-  once --> dlg
-  perm --> dlg
-  ow -->|no| dlg
-  dlg --> nc{"LCSC category<br/>unknown?"}
-  nc -->|no| vp{"No LCSC params<br/>on page?"}
-  nc -->|yes| cat["New category dialog"]
-  cat -->|Cancel| ab["Abort → refresh group"]
-  cat -->|Skip or Save or Continue| mm
-  vp -->|yes| fb["No parameters dialog"]
-  fb -->|Cancel| ab
-  fb -->|EasyEDA default| mm
-  fb -->|Configure| cat2["Category dialog"]
-  cat2 -->|Cancel| ab
-  cat2 -->|done| mm
-  vp -->|no| mm
-  mm{"Saved Value Param<br/>not on page?"}
-  mm -->|yes| vm["Value param mismatch"]
-  vm -->|Cancel| ab
-  vm -->|EasyEDA default| job
-  vm -->|Change| cat3["Category dialog"]
-  cat3 -->|Cancel| ab
-  cat3 -->|done| job
-  mm -->|no| job
-  job["Pending → quickDownload → job UI"]
-```
+1. Open an LCSC **product detail** page (`/product-detail/...`).  
+2. Use **Download / EasyEDA** for the default LCSC-derived symbol, or **Download / Template** if you use template libraries (see [Templates & metadata](#templates--metadata)).  
+3. Wait for the job to finish; the part appears under your active library’s paths.
 
-\*After **New category** completes, the **No LCSC params** dialog is **skipped** (`needsValueParamFromPage && !categoryDialogShown`); flow goes straight to the **Value param mismatch** check (`mm`).
+**List pages** may show a compact download control; the full **Template** choice is on product pages.
 
-#### 3 — State / phase reference
+## Understanding settings & parameters
 
-| Phase | When it appears | User choices | Where you land after |
-| --- | --- | --- | --- |
-| **Idle (group)** | Default on product page | — | EasyEDA = LCSC import; Template opens searchable list. |
-| **Template dropdown** | Template clicked, templates exist | Pick symbol / filter / click outside | **Pick** → pin check; **outside click** → same idle as before. |
-| **Pin check** | After template symbol chosen | — (automatic) | Match → pipeline; mismatch → pin mismatch bar. |
-| **Pin mismatch** | EasyEDA pin count ≠ template pin count | **Continue (incompatible…)** → forced template import; **Download EasyEDA model** → LCSC symbol path | Enters pipeline with `forceTemplate` or plain EasyEDA. |
-| **Backend offline** | `getState` not connected | — | Grey/offline buttons until backend returns. |
-| **Overwrite** | `libState === exists` and both overwrite toggles off and not already a one-shot overwrite | **Override** (once) · **Permanent override** · **Cancel** | **Cancel** → green exists, idle. **Override/Permanent** → continue pipeline (Permanent turns overwrite on for later). |
-| **New category** | No saved row matches this product’s **full LCSC path** (deepest-prefix rules + legacy short keys) | Skip · Save & continue · Continue · Cancel | **Cancel** → abort, refresh group (skip idle reset flash). Others → next checks. |
-| **No parameters** | LCSC table empty / unread and new-category dialog did not already run | Cancel · Use EasyEDA default · Configure… | **Cancel** → abort. **Configure** → category dialog. |
-| **Value param mismatch** | Saved Value Param not on page | Cancel · EasyEDA default · Change… | **Cancel** → abort. **Change** → category dialog. |
-| **Job** | All gates passed | — | Progress bar → success (confetti) → auto-switch to exists, or error message. |
+Think of two places: the **popup** (configuration and library list) and the **LCSC page** (where you start an import). Parameters from LCSC tables flow into KiCad fields; you control how **Value** and some symbol options are chosen via **Categories** in Settings.
 
-> **Note:** After **Cancel** on any blocking dialog, the extension calls `resumeDownloadUiAfterCategoryAbort`: buttons re-enable and library state is re-checked (`refreshButtonGroup` with `skipIdleReset` on the product group) so the UI matches “already in library” when applicable.
+### Library tab (what to configure first)
 
-## Extension popup reference
-
-The popup talks to the **local backend** over **WebSocket** (`/ws/extension`). Everything below is configured here unless noted (imports themselves run from **LCSC product pages**).
-
-### Header
-
-| UI | What it does |
+| Item | Purpose |
 | --- | --- |
-| **LCSC Parts** | Popup title. |
-| **Active library** | Subtitle under the title: which library is **active** — EasyEDA / Template downloads write into that library’s folder. |
-| **Backend:** | Status next to the title: whether the WebSocket to the configured API base URL is up. If offline, a red **connection hint** below the tabs may explain a missing URL or unreachable server. |
+| **Active library** | All imports write into this library’s on-disk paths. |
+| **Add / Create** | Define name, base folder, and whether to create `.kicad_sym`, `.pretty`, `.3dshapes`, plus optional **project-relative 3D** paths (`${KIPRJMOD}` + **3D base path**). |
+| **Import library** | Pick an existing `.kicad_sym`; the backend registers it in the list. |
+| **Template** switch | Marks a library as a **template library**; symbols inside can be selected on the LCSC page when using **Template** download. |
+| **Search / counts** | Filter libraries; summary shows symbol / footprint / 3D counts. |
 
-### Library tab
+**3D paths:** Each library remembers project-relative options from **Create** (or import). On import, the **active library**’s values are used; if its **3D base path** is empty, the extension falls back to **Settings → Import defaults → 3D base path**. Changing defaults pre-fills **Add library** but does not rewrite older libraries.
 
-| UI | What it does |
+### Settings → Backend & appearance
+
+| Item | Purpose |
 | --- | --- |
-| **Add** | Opens **Add library** (see below). |
-| **Search libraries…** | Filters the list by name or path text. |
-| **Summary line** | Total symbol / footprint / 3D counts; filter shows “matches / total”. |
-| **Each library row** | **Name** and on-disk path; **Active** badge or **Activate** to make it the import target; **Missing** if the folder is gone; **TEMPLATE** badge when that library is a **template library**. |
-| **Template** switch | Marks the library as a **template library** (symbols in it can be chosen as templates on the LCSC page). |
-| **Remove (×)** | Removes the library from the extension list only (does not delete files). |
+| **API base URL** | Host and port of the conversion server; drives WebSocket and health checks. |
+| **Test** | Verifies reachability (not a full conversion). |
+| **Light / Dark** | Theme for the **popup only** (not LCSC). |
 
-### Add library (modal)
+### Settings → Import defaults
 
-| Field / control | What it does |
+These apply to **product-page imports** unless you pick a one-off choice in a dialog (e.g. single overwrite).
+
+| Item | Purpose |
 | --- | --- |
-| **Library name** | Name for this KiCad library (required). |
-| **Base folder** | Root directory on disk (required for **Create**). Use **Browse…** to open the folder picker (requires backend connection). |
-| **Create symbol library (.kicad_sym)** | Create a `.kicad_sym` in that tree when using **Create**. |
-| **Create footprint folder (.pretty)** | Create a `.pretty` footprint folder. |
-| **Create 3D folder (.3dshapes)** | Create a `.3dshapes` folder for STEP/OBJ. |
-| **Project relative 3D paths** | When on, 3D model paths in KiCad use **`${KIPRJMOD}`** plus the **3D base path** (folder relative to the board project). |
-| **3D base path** | Shown when project-relative is on; appended after `${KIPRJMOD}/` (e.g. `../../library`). |
-| **Import library** (footer) | Opens the file picker to select an existing **`.kicad_sym`**; the backend registers it as a library in the list (requires backend connection). |
-| **Create** | Creates the selected structure under **Base folder** and registers the library. |
-| **Cancel** | Closes without saving. |
+| **Overwrite footprints & symbols** | Replace existing symbol/footprint files without asking each time when appropriate. |
+| **Overwrite 3D models** | Same for 3D files. |
+| **Debug logging** | Verbose service-worker logs for jobs and RPC (see [Development](#development)). |
+| **Project relative 3D paths** | Default for new libraries and fallback path segment for `${KIPRJMOD}`-based model references. |
 
-**3D path mode for imports:** Each library stores **Project relative 3D paths** and **3D base path** from **Create** (or from the backend when importing). When you run an import, the extension uses the **active library**’s flags and path, and if the library’s **3D base path** is empty it falls back to **Settings → Import defaults** (`projectRelativePath`). Changing **Import defaults** updates global state and pre-fills the Add-library modal; it does not rewrite existing libraries’ stored paths.
+### Categories & the Value parameter
 
-### Settings — Backend
+**Category name** (each row) is a **lookup key** for LCSC’s category breadcrumb:
 
-| Setting | What it does |
-| --- | --- |
-| **API base URL** | Base URL of the easyeda2kicad server (same host/port as `run_server.py`), e.g. `http://localhost:8087`. Used for HTTP health checks and the **WebSocket** connection. |
-| **Test** | Checks that the backend is reachable (does not run a full conversion). |
+- Prefer a **full path** with slashes, e.g. `Passives/Resistors/SMD` (normalized when saved).  
+- The extension uses **deepest-prefix matching**: among saved rows, the **longest** key that equals the product path or is a **strict prefix** wins.  
+- **Legacy:** a key **without** `/` can match the **second segment** of the path (e.g. `Resistors`), like the built-in defaults for resistors, capacitors, and inductors.
 
-### Settings — Appearance
+**Value Param** must be the **exact column title** (label) of an LCSC parameter table on the product page. That cell’s text becomes the KiCad symbol **Value** when present. If the column is missing or empty for a specific part, you get a **Value parameter not found** dialog: use the EasyEDA default Value, change the mapping, or cancel.
 
-| Setting | What it does |
-| --- | --- |
-| **Light / Dark** | **Popup-only** theme (LCSC pages and in-page import UI are unchanged). Stored in Chrome local storage. |
+**Hide pin numbers / Hide pin names** are passed through to conversion for that category match.
 
-### Settings — Import defaults
+**Templates:** You choose the **template symbol** on the **LCSC page**, not in the Categories table. The Library tab only marks which libraries are **template libraries**.
 
-Defaults apply to **LCSC imports** from the product page unless you choose a one-off override there (e.g. temporary overwrite).
+### If LCSC shows a category or value dialog
 
-| Setting | What it does |
-| --- | --- |
-| **Overwrite footprints & symbols by default** | If a part already exists in the library, replace symbol/footprint files without asking each time (you can still get the overwrite dialog when both overwrites are off). |
-| **Overwrite 3D models by default** | Same for 3D model files. |
-| **Enable debug logging** | Extra **service worker** logging (`[KPI jobs]`, verbose RPC). See [Debug logging](#debug-logging-jobs--websocket). |
-| **Project relative 3D paths by default** | When enabled, **3D base path** is shown: path relative to the KiCad project, combined with `${KIPRJMOD}` in generated model references. |
+- **New category:** No saved row matches this product’s path — you can skip once, save for the full path, continue without saving, or cancel.  
+- **No parameters:** The script could not read attribute tables — default Value or configure category.  
+- **Value mismatch:** Your saved **Value Param** does not appear (or is empty) on this page — default, reconfigure, or cancel.
 
-### Settings — Categories & templates
+### Where settings are stored
 
-| UI | What it does |
-| --- | --- |
-| **Add** | Adds a new expandable **category row**. |
+Libraries, URL, toggles, theme, and the category table live in **Chrome extension storage** and the **service worker**. When the backend is connected, updates sync so conversion uses the same configuration.
 
-Each **category row**: click the **header** (name + chevron) to expand or collapse. **×** removes that row after confirmation (clears saved Value / pin options for that key).
+## Import workflow on LCSC
 
-When expanded:
+When you start a download on a **product page**, the extension roughly:
 
-| Field | What it does |
-| --- | --- |
-| **Category name** | Text field in the row **header** (always visible). **Lookup key** for LCSC’s category breadcrumb: use a **full path** with `/` (e.g. `Passives/Resistors/SMD`), normalized when saved. The extension picks the **longest stored key** that equals the product path or is a **prefix** of it (deeper row beats a parent). **Legacy:** a key **without** `/` still matches the **second** segment of the LCSC path (e.g. built-in `Resistors`, `Capacitors`, `Inductors`). |
-| **Value Param** | Name of the LCSC **parameter column** whose value becomes the KiCad symbol **Value** (e.g. `Resistance`, `Capacitance`). Must match a label on the product page tables. |
-| **Hide pin numbers** | Passed to conversion: omit pin numbers on the generated symbol. |
-| **Hide pin names** | Omit pin names on the generated symbol. |
+1. Confirms the **backend** is connected.  
+2. If the part **already exists** and overwrites are off, may ask **Overwrite?** (once, permanently, or cancel).  
+3. Resolves **category** and **Value** using saved Categories rules and on-page tables (dialogs if needed).  
+4. For **Template**, may run a **pin-count check** against EasyEDA; you can continue with constraints or fall back to EasyEDA.  
+5. Submits a **job** and shows **progress** on the page until success or error.
 
-**Templates:** Which **template symbol** to use is chosen on the **LCSC product page** (Template dropdown), not in this table. Here you only maintain **template libraries** on the Library tab.
+Cancelling a blocking dialog returns you to a normal button state; **in library** state is refreshed where applicable.
 
-Category rows save as you edit (debounced). They are merged into extension + backend **categorySettings** used for category checks and each import job.
+## Templates & metadata
 
-### Category / value dialogs (on LCSC)
+- Place **`Templates.kicad_sym`** next to your symbol library (or use symbols from a marked **template library**). Typical names include `Template_Resistor`, `Template_Capacitor`, etc.; the picker on LCSC shows what the backend exposes.  
+- The merger aligns template **pins** with EasyEDA (add/remove as needed) so electrical sets stay consistent.  
+- **LCSC metadata** (datasheet, description, manufacturer, package, and table parameters) is merged from several page structures into KiCad properties; labels are normalized where the extension maps synonyms (power, tolerance, ratings, etc.).
 
-When the product path has **no** matching category row → **New category** dialog (**Skip**, **Save & continue**, **Continue**, **Cancel**).  
-If the attributes table is empty/unreadable → **No parameters** dialog.  
-If the saved **Value Param** is missing on the page → **Value param mismatch** dialog.  
-Details remain in the [flow diagram](#2--pipeline-inside-handledownloadclick-after-entry) and table above it.
-
-### Where settings live
-
-Libraries, global settings (URL, overwrites, theme, import defaults, category table), and the active library selection are kept in **Chrome extension storage** and mirrored in the **service worker** while the extension runs. The backend receives updates when connected (e.g. **updateSettings**, **updateLibraries**).
-
-## Features in detail
-
-### Per-category symbol settings (summary)
-
-The popup **Categories** table is the single place to edit per-path **Value Param** and **hide pin** options. Matching uses **full LCSC path + longest-prefix** rules and **legacy second-segment** keys — see [Settings — Categories & templates](#settings--categories--templates).
-
-Default rows ship for **Resistors**, **Capacitors**, **Inductors** (typical value fields + pin hiding). Add rows for finer paths (e.g. `…/SMD`) when you need different **Value** sources under the same parent category.
-
-### LCSC metadata → KiCad properties
-
-The content script merges **`table.tableInfoWrap`**, **`v-data-table.common-table-v7`**, and **`paramsItem`** data. Typical mapped fields include **Datasheet**, **Description**, **Manufacturer**, **LCSC Part**, **Package**, plus parameters normalized through a label map (Power, Tolerance, voltage ratings, DCR, etc.) — same idea as in the extension’s parameter mapping tables.
-
-### Template symbols (`Templates.kicad_sym`)
-
-You can place **`Templates.kicad_sym`** next to your symbol library and define symbols such as `Template_Resistor`, `Template_Capacitor`, `Template_Capacitor_Polarized`, `Template_Inductor` (names configurable when picking a template at download).
-
-- **Multiple libraries** can be marked as template libraries; the backend/extension aggregate template symbol lists.
-- **Merge behaviour:** the importer aligns the template’s **pin table** with EasyEDA (adds missing pins at the origin, removes template-only pins) so electrical pin sets stay consistent.
-- **WebSocket RPC** `templates_pin_check` compares EasyEDA vs template pin counts before conversion; `force_template` on conversion tasks avoids falling back to the raw EasyEDA symbol when you explicitly require the template path.
-
-Required properties on templates include at least **Reference**, **Value**, **Footprint**, **Datasheet**, **Description**; manufacturer/LCSC/JLC and scraped params are appended as hidden fields.
-
-### Network resilience
-
-EasyEDA fetches (component CAD, 3D OBJ/STEP) use **timeouts and retries** with user-visible status where possible.
-
-## UI and LCSC website integration
+## UI screenshots
 
 | Extension settings | Library management |
 | --- | --- |
 | ![Extension settings](img/extension_settings.png) | ![Library management](img/extension_library.png) |
-| Backend URL, overwrite defaults, project-relative paths, categories. | Libraries, counts, status. |
 
 | Add a library |
 | --- |
 | ![Add a library](img/extension_add_library.png) |
 
-Part import (templates, LCSC details, outputs) is done from **LCSC product pages** via the in-page controls, not the extension popup.
+Imports are started from **LCSC product pages**, not from the popup.
 
 | LCSC product page | After download |
 | --- | --- |
@@ -279,32 +192,61 @@ Part import (templates, LCSC details, outputs) is done from **LCSC product pages
 | Path | Role |
 | --- | --- |
 | `chrome_extension/` | Manifest V3 extension (content script, service worker, popup). |
-| `easyeda2kicad/` | Conversion core: EasyEDA parsing, KiCad export, `template_merger.py`. |
-| `easyeda2kicad/api/` | FastAPI app (`server.py`) — tasks, library checks, `templates/pin-check`, etc. |
+| `easyeda2kicad/` | Conversion core, KiCad export, `template_merger.py`. |
+| `easyeda2kicad/api/` | FastAPI app — tasks, library checks, templates / pin-check. |
 | `easyeda2kicad/service/` | Orchestration (`conversion.py`). |
-| `run_server.py` | Entry point to run the API locally. |
-| `tests/` | Pytest (API, template merger, …). |
-| `docs/` | Design notes (e.g. template dropdown / pin-check plan). |
+| `run_server.py` | Run the API locally. |
+| `tests/` | Pytest suite. |
+| `docs/` | Design notes and extension refactor playbook. |
 
 ## Development
 
 ```bash
-# Python env with dev dependencies, then:
-python -m pytest tests/
-
-# Run API (default port often 8087 — see extension settings / run_server.py)
+pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest tests/ -v
 python run_server.py
 ```
 
-Load the extension from `chrome_extension/` as **unpacked** and point it at your local backend URL.
+Load **unpacked** from `chrome_extension/` and set **API base URL** to your local server.
 
-**Extension architecture & refactor playbook:** [docs/extension-refactor-strategy.md](docs/extension-refactor-strategy.md) (data flow, design tokens, **manual regression checklist**, optional ESLint/bundler notes).
+**Architecture & regression checklist:** [docs/extension-refactor-strategy.md](docs/extension-refactor-strategy.md)
 
-### Debug logging (jobs / WebSocket)
+### CI (GitHub Actions)
 
-- **Extension:** With **Settings → Debug logs** enabled, the service worker logs **`[KPI jobs]`** (enqueue, `task_update`, merge) and **`[KPI jobs verbose]`** (RPC params/results, `list_tasks`). To trace jobs without the popup, set **`KPI_JOB_TRACE = true`** at the top of `chrome_extension/background.js` (remember to turn it off). Open the worker via `chrome://extensions` → **Service worker**.
-- **Backend:** Set `EASYEDA2KICAD_WS_JOB_TRACE=1` when starting the API to log **`[ws-job]`** lines (enqueue, worker pickup, `broadcast` push counts, completion). Example (PowerShell):  
-  `$env:EASYEDA2KICAD_WS_JOB_TRACE='1'; python run_server.py`
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs **only when you start it manually** (**Actions** → **CI** → **Run workflow** → choose branch, optional note → **Run workflow**). It does **not** run on every push (avoids noise; use this when you want a checked build).
+
+| Job | What it does |
+| --- | --- |
+| **Backend** | Python **3.11** and **3.12** on Ubuntu: `pip install -r requirements.txt -r requirements-dev.txt`, then `pytest tests/`. |
+| **Extension** | Validates `chrome_extension/manifest.json` (JSON) and runs `node --check` on `background.js`, `contentScript.js`, `popup.js`. |
+
+**Where “version” comes from**
+
+| Context | Source |
+| --- | --- |
+| **This CI workflow** | Does **not** compute a release version. The first step **prints** the extension **`version`** field from [`chrome_extension/manifest.json`](chrome_extension/manifest.json) and the **Git ref / commit SHA** so the log matches what you built. |
+| **GitHub Releases / binaries** | The separate workflow [`.github/workflows/build-backend.yml`](.github/workflows/build-backend.yml) names artifacts from a **`v*.*.*` tag** (version = tag without leading `v`) or `dev-<short-sha>` when not tagging. |
+
+**How to verify the pipeline**
+
+1. **On GitHub:** **Actions** → **CI** → **Run workflow** → branch (e.g. `master`) → optional note → **Run workflow**; open the run and expand **Report versions** / job logs.  
+2. **Locally (same commands as CI):**
+
+   ```bash
+   pip install -r requirements.txt -r requirements-dev.txt
+   python -m pytest tests/ -v --tb=short
+   python -c "import json; json.load(open('chrome_extension/manifest.json'))"
+   node --check chrome_extension/background.js
+   node --check chrome_extension/contentScript.js
+   node --check chrome_extension/popup.js
+   ```
+
+Release builds (PyInstaller + extension zip + GitHub Release) stay separate: [`.github/workflows/build-backend.yml`](.github/workflows/build-backend.yml) (tags `v*.*.*` and manual dispatch).
+
+### Debug logging
+
+- **Extension:** Enable **Settings → Enable debug logging**, or set `KPI_JOB_TRACE = true` at the top of `chrome_extension/background.js` (temporary). Inspect logs via `chrome://extensions` → **Service worker**.  
+- **Backend:** `EASYEDA2KICAD_WS_JOB_TRACE=1` when starting the server (PowerShell: `$env:EASYEDA2KICAD_WS_JOB_TRACE='1'; python run_server.py`).
 
 ## Credits
 
@@ -313,6 +255,4 @@ Based on [easyeda2kicad](https://github.com/uPesy/easyeda2kicad.py) by uPesy.
 ## License
 
 > [!NOTE]
-> This repository includes code from the original **AGPL-3.0** project; that license continues to apply to those parts. New contributions are intended to remain **free to use, non-commercial** where separately noted; this does not change AGPL terms for upstream code.
-
-See `LICENSE` (AGPL-3.0).
+> This repository includes **AGPL-3.0** code from the upstream project; that license still applies to those parts. See `LICENSE`.

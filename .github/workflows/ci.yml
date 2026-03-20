@@ -1,0 +1,74 @@
+# Manual CI: tests + extension sanity checks. Does not publish releases or bump versions.
+# Version context is printed from manifest.json + git (see "Report versions" step).
+# See README → Development → CI.
+name: CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: "Optional note (logged in the workflow run only)"
+        required: false
+        default: ""
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-tests:
+    name: Backend (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Report versions (CI does not assign a release version)
+        run: |
+          echo "Git: ${GITHUB_REF} @ ${GITHUB_SHA}"
+          N="${{ github.event.inputs.note }}"
+          if [ -n "$N" ]; then echo "Note: $N"; fi
+          python -c "import json; m=json.load(open('chrome_extension/manifest.json')); print('Extension manifest version:', m.get('version'))"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run tests
+        run: python -m pytest tests/ -v --tb=short
+
+  extension-checks:
+    name: Extension (manifest + JS syntax)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Report versions
+        run: |
+          echo "Git: ${GITHUB_REF} @ ${GITHUB_SHA}"
+          N="${{ github.event.inputs.note }}"
+          if [ -n "$N" ]; then echo "Note: $N"; fi
+          python -c "import json; m=json.load(open('chrome_extension/manifest.json')); print('Extension manifest version:', m.get('version'))"
+
+      - name: Validate manifest.json
+        run: python -c "import json,sys; json.load(open('chrome_extension/manifest.json')); print('manifest OK')"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Check JavaScript syntax
+        run: |
+          node --check chrome_extension/background.js
+          node --check chrome_extension/contentScript.js
+          node --check chrome_extension/popup.js
+          echo "JS syntax OK"

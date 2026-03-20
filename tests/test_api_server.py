@@ -56,8 +56,11 @@ class TaskApiTest(unittest.TestCase):
                 msg = ws.receive_json()
                 if msg.get("id") == "1":
                     task_id = msg["result"]["id"]
+                # Final broadcast may follow a brief "completed" snapshot without result filled — wait for both.
                 if msg.get("type") == "task_update" and msg.get("payload", {}).get("status") == "completed":
-                    detail = msg["payload"]
+                    pl = msg["payload"]
+                    if pl.get("result") is not None:
+                        detail = pl
             self.assertIsNotNone(task_id)
             self.assertIsNotNone(detail)
             assert detail is not None

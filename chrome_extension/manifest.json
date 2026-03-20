@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "KiCad Parts Importer",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "description": "Download KiCad symbols, footprints & 3D models from LCSC in one click. Uses WebSocket to the configured local backend (same host as server URL).",
   "permissions": [
     "storage"
