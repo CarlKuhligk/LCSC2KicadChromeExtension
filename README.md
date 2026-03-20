@@ -24,6 +24,7 @@ The extension service worker talks to the backend only over **`/ws/extension`** 
 - [Quick start](#quick-start)
 - [How downloading works](#how-downloading-works)
 - [Product-page flow (diagrams)](#product-page-flow-diagrams)
+- [Extension popup reference](#extension-popup-reference)
 - [Features in detail](#features-in-detail)
 - [UI screenshots](#ui-and-lcsc-website-integration)
 - [Repository layout](#repository-layout)
@@ -127,29 +128,116 @@ flowchart TB
 | **Pin mismatch** | EasyEDA pin count ≠ template pin count | **Continue (incompatible…)** → forced template import; **Download EasyEDA model** → LCSC symbol path | Enters pipeline with `forceTemplate` or plain EasyEDA. |
 | **Backend offline** | `getState` not connected | — | Grey/offline buttons until backend returns. |
 | **Overwrite** | `libState === exists` and both overwrite toggles off and not already a one-shot overwrite | **Override** (once) · **Permanent override** · **Cancel** | **Cancel** → green exists, idle. **Override/Permanent** → continue pipeline (Permanent turns overwrite on for later). |
-| **New category** | LCSC category not stored yet | Skip · Save & continue · Continue · Cancel | **Cancel** → abort, refresh group (skip idle reset flash). Others → next checks. |
+| **New category** | No saved row matches this product’s **full LCSC path** (deepest-prefix rules + legacy short keys) | Skip · Save & continue · Continue · Cancel | **Cancel** → abort, refresh group (skip idle reset flash). Others → next checks. |
 | **No parameters** | LCSC table empty / unread and new-category dialog did not already run | Cancel · Use EasyEDA default · Configure… | **Cancel** → abort. **Configure** → category dialog. |
 | **Value param mismatch** | Saved Value Param not on page | Cancel · EasyEDA default · Change… | **Cancel** → abort. **Change** → category dialog. |
 | **Job** | All gates passed | — | Progress bar → success (confetti) → auto-switch to exists, or error message. |
 
 > **Note:** After **Cancel** on any blocking dialog, the extension calls `resumeDownloadUiAfterCategoryAbort`: buttons re-enable and library state is re-checked (`refreshButtonGroup` with `skipIdleReset` on the product group) so the UI matches “already in library” when applicable.
 
+## Extension popup reference
+
+The popup talks to the **local backend** over **WebSocket** (`/ws/extension`). Everything below is configured here unless noted (imports themselves run from **LCSC product pages**).
+
+### Header
+
+| UI | What it does |
+| --- | --- |
+| **LCSC Parts** | Popup title. |
+| **Active library** | Subtitle under the title: which library is **active** — EasyEDA / Template downloads write into that library’s folder. |
+| **Backend:** | Status next to the title: whether the WebSocket to the configured API base URL is up. If offline, a red **connection hint** below the tabs may explain a missing URL or unreachable server. |
+
+### Library tab
+
+| UI | What it does |
+| --- | --- |
+| **Add** | Opens **Add library** (see below). |
+| **Search libraries…** | Filters the list by name or path text. |
+| **Summary line** | Total symbol / footprint / 3D counts; filter shows “matches / total”. |
+| **Each library row** | **Name** and on-disk path; **Active** badge or **Activate** to make it the import target; **Missing** if the folder is gone; **TEMPLATE** badge when that library is a **template library**. |
+| **Template** switch | Marks the library as a **template library** (symbols in it can be chosen as templates on the LCSC page). |
+| **Remove (×)** | Removes the library from the extension list only (does not delete files). |
+
+### Add library (modal)
+
+| Field / control | What it does |
+| --- | --- |
+| **Library name** | Name for this KiCad library (required). |
+| **Base folder** | Root directory on disk (required for **Create**). Use **Browse…** to open the folder picker (requires backend connection). |
+| **Create symbol library (.kicad_sym)** | Create a `.kicad_sym` in that tree when using **Create**. |
+| **Create footprint folder (.pretty)** | Create a `.pretty` footprint folder. |
+| **Create 3D folder (.3dshapes)** | Create a `.3dshapes` folder for STEP/OBJ. |
+| **Project relative 3D paths** | When on, 3D model paths in KiCad use **`${KIPRJMOD}`** plus the **3D base path** (folder relative to the board project). |
+| **3D base path** | Shown when project-relative is on; appended after `${KIPRJMOD}/` (e.g. `../../library`). |
+| **Import library** (footer) | Opens the file picker to select an existing **`.kicad_sym`**; the backend registers it as a library in the list (requires backend connection). |
+| **Create** | Creates the selected structure under **Base folder** and registers the library. |
+| **Cancel** | Closes without saving. |
+
+**3D path mode for imports:** Each library stores **Project relative 3D paths** and **3D base path** from **Create** (or from the backend when importing). When you run an import, the extension uses the **active library**’s flags and path, and if the library’s **3D base path** is empty it falls back to **Settings → Import defaults** (`projectRelativePath`). Changing **Import defaults** updates global state and pre-fills the Add-library modal; it does not rewrite existing libraries’ stored paths.
+
+### Settings — Backend
+
+| Setting | What it does |
+| --- | --- |
+| **API base URL** | Base URL of the easyeda2kicad server (same host/port as `run_server.py`), e.g. `http://localhost:8087`. Used for HTTP health checks and the **WebSocket** connection. |
+| **Test** | Checks that the backend is reachable (does not run a full conversion). |
+
+### Settings — Appearance
+
+| Setting | What it does |
+| --- | --- |
+| **Light / Dark** | **Popup-only** theme (LCSC pages and in-page import UI are unchanged). Stored in Chrome local storage. |
+
+### Settings — Import defaults
+
+Defaults apply to **LCSC imports** from the product page unless you choose a one-off override there (e.g. temporary overwrite).
+
+| Setting | What it does |
+| --- | --- |
+| **Overwrite footprints & symbols by default** | If a part already exists in the library, replace symbol/footprint files without asking each time (you can still get the overwrite dialog when both overwrites are off). |
+| **Overwrite 3D models by default** | Same for 3D model files. |
+| **Enable debug logging** | Extra **service worker** logging (`[KPI jobs]`, verbose RPC). See [Debug logging](#debug-logging-jobs--websocket). |
+| **Project relative 3D paths by default** | When enabled, **3D base path** is shown: path relative to the KiCad project, combined with `${KIPRJMOD}` in generated model references. |
+
+### Settings — Categories & templates
+
+| UI | What it does |
+| --- | --- |
+| **Add** | Adds a new expandable **category row**. |
+
+Each **category row**: click the **header** (name + chevron) to expand or collapse. **×** removes that row after confirmation (clears saved Value / pin options for that key).
+
+When expanded:
+
+| Field | What it does |
+| --- | --- |
+| **Category name** | Text field in the row **header** (always visible). **Lookup key** for LCSC’s category breadcrumb: use a **full path** with `/` (e.g. `Passives/Resistors/SMD`), normalized when saved. The extension picks the **longest stored key** that equals the product path or is a **prefix** of it (deeper row beats a parent). **Legacy:** a key **without** `/` still matches the **second** segment of the LCSC path (e.g. built-in `Resistors`, `Capacitors`, `Inductors`). |
+| **Value Param** | Name of the LCSC **parameter column** whose value becomes the KiCad symbol **Value** (e.g. `Resistance`, `Capacitance`). Must match a label on the product page tables. |
+| **Hide pin numbers** | Passed to conversion: omit pin numbers on the generated symbol. |
+| **Hide pin names** | Omit pin names on the generated symbol. |
+
+**Templates:** Which **template symbol** to use is chosen on the **LCSC product page** (Template dropdown), not in this table. Here you only maintain **template libraries** on the Library tab.
+
+Category rows save as you edit (debounced). They are merged into extension + backend **categorySettings** used for category checks and each import job.
+
+### Category / value dialogs (on LCSC)
+
+When the product path has **no** matching category row → **New category** dialog (**Skip**, **Save & continue**, **Continue**, **Cancel**).  
+If the attributes table is empty/unreadable → **No parameters** dialog.  
+If the saved **Value Param** is missing on the page → **Value param mismatch** dialog.  
+Details remain in the [flow diagram](#2--pipeline-inside-handledownloadclick-after-entry) and table above it.
+
+### Where settings live
+
+Libraries, global settings (URL, overwrites, theme, import defaults, category table), and the active library selection are kept in **Chrome extension storage** and mirrored in the **service worker** while the extension runs. The backend receives updates when connected (e.g. **updateSettings**, **updateLibraries**).
+
 ## Features in detail
 
-### Per-category symbol settings (extension Settings)
+### Per-category symbol settings (summary)
 
-| Setting | Meaning |
-| --- | --- |
-| **Hide Num** | Hide pin numbers on the generated symbol |
-| **Hide Name** | Hide pin names on the generated symbol |
-| **Value Param** | Which LCSC attribute fills KiCad **Value** (e.g. `Resistance`, `Capacitance`) |
+The popup **Categories** table is the single place to edit per-path **Value Param** and **hide pin** options. Matching uses **full LCSC path + longest-prefix** rules and **legacy second-segment** keys — see [Settings — Categories & templates](#settings--categories--templates).
 
-When a **new LCSC category** appears, a dialog offers **Skip**, **Save & continue** (persist for that category), **Continue** (this import only), or **Cancel**.
-
-If the product **attributes table** cannot be read, you get **Use EasyEDA default** or **Configure value source…** (same options as above).  
-If the table was read but your saved **Value Param** does not match any row → **Use EasyEDA default**, **Change value parameter…**, or **Cancel**.
-
-Default rows ship for **Resistors**, **Capacitors**, **Inductors** (hide num/name + typical value fields). Template names are **not** fixed per category in storage; template choice happens at download time when templates are available.
+Default rows ship for **Resistors**, **Capacitors**, **Inductors** (typical value fields + pin hiding). Add rows for finer paths (e.g. `…/SMD`) when you need different **Value** sources under the same parent category.
 
 ### LCSC metadata → KiCad properties
 
@@ -176,9 +264,11 @@ EasyEDA fetches (component CAD, 3D OBJ/STEP) use **timeouts and retries** with u
 | ![Extension settings](img/extension_settings.png) | ![Library management](img/extension_library.png) |
 | Backend URL, overwrite defaults, project-relative paths, categories. | Libraries, counts, status. |
 
-| Add a library | Fetch new parts |
-| --- | --- |
-| ![Add a library](img/extension_add_library.png) | ![Fetch new parts](img/extension_get_new_parts.png) |
+| Add a library |
+| --- |
+| ![Add a library](img/extension_add_library.png) |
+
+Part import (templates, LCSC details, outputs) is done from **LCSC product pages** via the in-page controls, not the extension popup.
 
 | LCSC product page | After download |
 | --- | --- |
@@ -206,7 +296,7 @@ python -m pytest tests/
 python run_server.py
 ```
 
-Load the extension from `chrome_extension/` as **unpacked** and point it at your local server URL.
+Load the extension from `chrome_extension/` as **unpacked** and point it at your local backend URL.
 
 **Extension architecture & refactor playbook:** [docs/extension-refactor-strategy.md](docs/extension-refactor-strategy.md) (data flow, design tokens, **manual regression checklist**, optional ESLint/bundler notes).
 
