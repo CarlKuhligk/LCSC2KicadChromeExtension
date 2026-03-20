@@ -11,101 +11,127 @@ const BTN_GROUP_ID = "easyeda2kicad-btn-group";
 /** Inner flex container inside the product button group's ShadowRoot (buttons mount here). */
 const BTN_GROUP_MOUNT_CLASS = "easyeda2kicad-btn-mount";
 const BUTTON_WRAPPER_ID = "easyeda2kicad-download-wrapper";
-const LIST_BUTTON_CLASS = "easyeda2kicad-list-download-btn";
-const LIST_CONTAINER_CLASS = "easyeda2kicad-list-container";
 const CATEGORY_DIALOG_ID = "easyeda2kicad-category-dialog";
 const VALUE_PARAM_FALLBACK_DIALOG_ID = "easyeda2kicad-value-param-fallback-dialog";
 const VALUE_PARAM_MISMATCH_DIALOG_ID = "easyeda2kicad-value-param-mismatch-dialog";
 const INIT_ATTR = "easyeda2kicadInitialized";
+const PRODUCT_PROGRESS_ROW_ID = "easyeda2kicad-progress-row";
+
+// =============================================================================
+// In-page dialog theme (light panels on LCSC — tweak colors in CS_DIALOG only)
+// =============================================================================
 
 /** @param {string[]} parts */
 function cssJoin(parts) {
   return parts.join(";");
 }
 
-/** Full-screen dimmed backdrop — value-param fallback & category dialog */
+/** Single source for modal/backdrop/button colors used by category & value-param dialogs. */
+const CS_DIALOG = {
+  overlayDim: "rgba(0,0,0,0.45)",
+  overlaySlate: "rgba(15,23,42,0.4)",
+  fontSans: "sans-serif",
+  fontUi: 'system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif',
+  panelBg: "#fff",
+  panelText: "#1a1a1a",
+  panelShadow: "0 8px 32px rgba(0,0,0,0.18)",
+  btnNeutralBorder: "#ccc",
+  btnSecondaryBg: "#f5f5f5",
+  btnOutlineBg: "#fff",
+  primaryBg: "#1f6feb",
+  primaryColor: "#fff",
+  outlineAccentBorder: "#1f6feb",
+  outlineAccentColor: "#1f6feb",
+  radius: "4px",
+  /** Product-row overwrite bar (LCSC blue) */
+  lcscBlue: "#1166dd",
+  slate900: "#0f172a",
+  slate800: "#1e293b",
+  slate400: "#94a3b8",
+  slate600: "#475569",
+  slate700: "#334155",
+  slate200: "#e2e8f0",
+};
+
+function cssModalPanelLight(maxWidthPx) {
+  return cssJoin([
+    `background:${CS_DIALOG.panelBg}`, "border-radius:8px", "padding:24px 28px",
+    `max-width:${Number(maxWidthPx)}px`, "width:90%", `box-shadow:${CS_DIALOG.panelShadow}`,
+    `color:${CS_DIALOG.panelText}`,
+  ]);
+}
+
+/** @param {"secondary"|"outline"|"primary"} variant @param {"wide"|"dense"} density */
+function dialogButtonStyle(variant, density) {
+  const padH = density === "dense" ? "12px" : "16px";
+  const fs = density === "dense" ? "12px" : "13px";
+  const base = [
+    `padding:7px ${padH}`,
+    `border-radius:${CS_DIALOG.radius}`,
+    "cursor:pointer",
+    `font-size:${fs}`,
+    "white-space:nowrap",
+    "flex-shrink:0",
+    "box-sizing:border-box",
+  ];
+  if (variant === "secondary") {
+    return cssJoin([
+      ...base,
+      `border:1px solid ${CS_DIALOG.btnNeutralBorder}`,
+      `background:${CS_DIALOG.btnSecondaryBg}`,
+    ]);
+  }
+  if (variant === "outline") {
+    if (density === "dense") {
+      return cssJoin([
+        ...base,
+        `border:1px solid ${CS_DIALOG.outlineAccentBorder}`,
+        `background:${CS_DIALOG.btnOutlineBg}`,
+        `color:${CS_DIALOG.outlineAccentColor}`,
+        "font-weight:500",
+      ]);
+    }
+    return cssJoin([
+      ...base,
+      `border:1px solid ${CS_DIALOG.btnNeutralBorder}`,
+      `background:${CS_DIALOG.btnOutlineBg}`,
+    ]);
+  }
+  return cssJoin([
+    ...base,
+    "border:none",
+    `background:${CS_DIALOG.primaryBg}`,
+    `color:${CS_DIALOG.primaryColor}`,
+    "font-weight:600",
+  ]);
+}
+
 const CSS_MODAL_OVERLAY_STANDARD = cssJoin([
   "position:fixed", "top:0", "left:0", "width:100%", "height:100%",
-  "background:rgba(0,0,0,0.45)", "z-index:2147483647",
+  `background:${CS_DIALOG.overlayDim}`, "z-index:2147483647",
   "display:flex", "align-items:center", "justify-content:center",
-  "font-family:sans-serif",
+  `font-family:${CS_DIALOG.fontSans}`,
 ]);
 
-/** Mismatch dialog (slate tint + padding) */
 const CSS_MODAL_OVERLAY_MISMATCH = cssJoin([
   "position:fixed", "top:0", "left:0", "width:100%", "height:100%",
-  "background:rgba(15,23,42,0.4)", "z-index:2147483647",
+  `background:${CS_DIALOG.overlaySlate}`, "z-index:2147483647",
   "display:flex", "align-items:center", "justify-content:center",
-  "font-family:system-ui,-apple-system,\"Segoe UI\",Roboto,\"Helvetica Neue\",Arial,sans-serif",
+  `font-family:${CS_DIALOG.fontUi}`,
   "padding:16px",
   "box-sizing:border-box",
 ]);
 
-function cssModalPanelLight(maxWidthPx) {
-  return cssJoin([
-    "background:#fff", "border-radius:8px", "padding:24px 28px",
-    `max-width:${Number(maxWidthPx)}px`, "width:90%", "box-shadow:0 8px 32px rgba(0,0,0,0.18)",
-    "color:#1a1a1a",
-  ]);
-}
-
-/** 7×16px — value-param fallback & mismatch “wide” buttons */
-const CSS_DIALOG_BTN_WIDE = {
-  secondary: cssJoin([
-    "padding:7px 16px", "border:1px solid #ccc", "border-radius:4px",
-    "background:#f5f5f5", "cursor:pointer", "font-size:13px",
-    "white-space:nowrap", "flex-shrink:0", "box-sizing:border-box",
-  ]),
-  outline: cssJoin([
-    "padding:7px 16px", "border:1px solid #ccc", "border-radius:4px",
-    "background:#fff", "cursor:pointer", "font-size:13px",
-    "white-space:nowrap", "flex-shrink:0", "box-sizing:border-box",
-  ]),
-  primary: cssJoin([
-    "padding:7px 16px", "border:none", "border-radius:4px",
-    "background:#1f6feb", "color:#fff", "cursor:pointer", "font-size:13px",
-    "font-weight:600",
-    "white-space:nowrap", "flex-shrink:0", "box-sizing:border-box",
-  ]),
-};
-
-/** 7×12px — category dialog footer (dense row) */
-const CSS_CATEGORY_BTN = {
-  secondary: cssJoin([
-    "padding:7px 12px",
-    "border:1px solid #ccc",
-    "border-radius:4px",
-    "background:#f5f5f5",
-    "cursor:pointer",
-    "font-size:12px",
-    "white-space:nowrap",
-    "flex-shrink:0",
-  ]),
-  primary: cssJoin([
-    "padding:7px 12px",
-    "border:none",
-    "border-radius:4px",
-    "background:#1f6feb",
-    "color:#fff",
-    "cursor:pointer",
-    "font-size:12px",
-    "font-weight:600",
-    "white-space:nowrap",
-    "flex-shrink:0",
-  ]),
-  outline: cssJoin([
-    "padding:7px 12px",
-    "border:1px solid #1f6feb",
-    "border-radius:4px",
-    "background:#fff",
-    "color:#1f6feb",
-    "cursor:pointer",
-    "font-size:12px",
-    "font-weight:500",
-    "white-space:nowrap",
-    "flex-shrink:0",
-  ]),
-};
+const K2C_DLG_BTN_LIGHT_PRIMARY = cssJoin([
+  "padding:6px 12px", "border-radius:6px",
+  `border:1px solid ${CS_DIALOG.lcscBlue}`, "background:#fff", `color:${CS_DIALOG.slate900}`,
+  "cursor:pointer", "font-size:12px", "font-weight:600",
+]);
+const K2C_DLG_BTN_LIGHT_SECONDARY = cssJoin([
+  "padding:6px 12px", "border-radius:6px",
+  `border:1px solid ${CS_DIALOG.slate400}`, "background:#f8fafc", `color:${CS_DIALOG.slate800}`,
+  "cursor:pointer", "font-size:12px", "font-weight:500",
+]);
 
 /**
  * Disable page scrolling behind modal overlays / template menu (refcount supports close→open chains).
@@ -154,7 +180,6 @@ const PREFERRED_VALUE_PARAM_KEYS = [
 ];
 const SVG_NS = "http://www.w3.org/2000/svg";
 const PRODUCT_REGEX = /\/product-detail\/(C\d+)(?:\.html)?/i;
-const LIST_REGEX = /\/list\/list\?.*/i;
 
 const COLORS = {
   primary: "#1166dd",
@@ -173,16 +198,22 @@ const LCSC_BTN = {
 };
 
 const jobWatchers = new Map();
+/** Same completed/failed job must not run terminal UI twice (duplicate poll / race). */
+const terminalJobHandled = new Set();
+/** One confetti burst per successful job id. */
+const confettiDoneForJobId = new Set();
 const activeObservers = new Set();
 let spinnerStyleInjected = false;
 let debugEnabled = false;
 let currentUrl = window.location.href;
-const listValidationQueue = new Map();
-let listValidationTimer = null;
 let backendOnlineMonitorTimer = null;
 let backendOnlineMonitorLcscId = null;
 let backendOnlineMonitorGroupDiv = null;
 let backendOnlineMonitorAttempts = 0;
+
+// =============================================================================
+// Runtime messaging (content script ↔ service worker)
+// =============================================================================
 
 function sendRuntimeMessage(payload, { retries = 3, delay = 250 } = {}) {
   return new Promise((resolve, reject) => {
@@ -210,13 +241,17 @@ function sendRuntimeMessage(payload, { retries = 3, delay = 250 } = {}) {
   });
 }
 
+function contentRpc(type, fields = {}, opts) {
+  return sendRuntimeMessage({ type, ...fields }, opts);
+}
+
 function startBackendOnlineMonitor() {
   if (!backendOnlineMonitorLcscId || !backendOnlineMonitorGroupDiv) return;
   if (backendOnlineMonitorTimer) return;
   backendOnlineMonitorAttempts = 0;
   backendOnlineMonitorTimer = setInterval(async () => {
     try {
-      const resp = await sendRuntimeMessage({ type: "getState" }, { retries: 2, delay: 200 });
+      const resp = await contentRpc("getState", {}, { retries: 2, delay: 200 });
       if (resp?.ok && resp.data?.connected) {
         backendOnlineMonitorAttempts += 1;
         refreshButtonGroup(backendOnlineMonitorLcscId, backendOnlineMonitorGroupDiv);
@@ -475,11 +510,12 @@ function ensureSpinnerStyle() {
     /* Progress + status sit in the LCSC table (usually light background). Default palette = light theme. */
     #easyeda2kicad-progress-track {
       width: 100%;
-      height: 3px;
-      background: rgba(15, 23, 42, 0.08);
-      border-radius: 0 0 4px 4px;
+      height: 5px;
+      background: rgba(15, 23, 42, 0.1);
+      border-radius: 0 0 5px 5px;
       overflow: hidden;
       transition: opacity 0.3s ease;
+      box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.07);
     }
 
     #easyeda2kicad-progress-bar {
@@ -487,7 +523,8 @@ function ensureSpinnerStyle() {
       width: 0%;
       border-radius: 4px;
       background: linear-gradient(90deg, #38bdf8, #2563eb);
-      transition: width 0.4s ease, background 0.3s ease;
+      transition: width 0.35s ease, background 0.3s ease;
+      box-shadow: 0 0 8px rgba(37, 99, 235, 0.45);
     }
 
     #easyeda2kicad-progress-bar.indeterminate {
@@ -525,11 +562,12 @@ function ensureSpinnerStyle() {
       color: #c2410c !important;
     }
 
+    /* Light table: force readable slate text (LCSC/Vuetify may inherit light-on-light). */
     #easyeda2kicad-status-text {
       font-size: 11px;
       line-height: 1.3;
       margin-top: 5px;
-      color: #475569 !important;
+      color: #1e293b !important;
       text-align: center;
       min-height: 0;
       transition: color 0.3s ease, opacity 0.3s ease;
@@ -546,6 +584,15 @@ function ensureSpinnerStyle() {
 
     #easyeda2kicad-status-text.status-success {
       color: #15803d !important;
+    }
+
+    #easyeda2kicad-status-text.k2c-status-progress {
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.35;
+      color: #0f172a !important;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.01em;
     }
 
     #easyeda2kicad-status-text .easyeda2kicad-copy-btn {
@@ -578,10 +625,17 @@ function ensureSpinnerStyle() {
       color: #15803d !important;
     }
 
-    /* Dark OS: only tweak track; status text keeps non-white slate palette above. */
+    /* Dark OS: track + high-contrast progress caption. */
     @media (prefers-color-scheme: dark) {
       #easyeda2kicad-progress-track {
         background: rgba(255,255,255,0.12);
+        box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
+      }
+      #easyeda2kicad-status-text {
+        color: #cbd5e1 !important;
+      }
+      #easyeda2kicad-status-text.k2c-status-progress {
+        color: #e2e8f0 !important;
       }
     }
   `;
@@ -597,7 +651,7 @@ function dbg(...args) {
 
 async function initDebug() {
   try {
-    const response = await sendRuntimeMessage({ type: "getState" }, { retries: 5, delay: 300 });
+    const response = await contentRpc("getState", {}, { retries: 5, delay: 300 });
     if (response?.ok && response.data) {
       debugEnabled = Boolean(response.data.debugLogs);
       dbg("debug flag initial", debugEnabled);
@@ -608,38 +662,111 @@ async function initDebug() {
 }
 
 function clearJobWatcher(jobId) {
-  const timer = jobWatchers.get(jobId);
-  if (timer) {
-    clearTimeout(timer);
-    jobWatchers.delete(jobId);
+  const entry = jobWatchers.get(jobId);
+  if (typeof entry === "number") {
+    clearTimeout(entry);
   }
+  jobWatchers.delete(jobId);
+}
+
+/** Never regress UI (e.g. running → queued) when snapshots arrive out of order. */
+const jobUiMonotone = new Map();
+
+function forgetJobUi(jobId) {
+  if (jobId) jobUiMonotone.delete(jobId);
+}
+
+function normalizeJobProgressValue(job) {
+  const p = job?.progress ?? job?.Progress;
+  if (typeof p === "number" && Number.isFinite(p)) return Math.max(0, Math.min(100, p));
+  const n = Number(p);
+  if (Number.isFinite(n)) return Math.max(0, Math.min(100, n));
+  return null;
+}
+
+function classifyJobTier(job) {
+  const s = String(job?.status || "").toLowerCase();
+  if (s === "completed" || s === "failed") return 3;
+  if (s === "running") return 2;
+  if (s === "queued") return 1;
+  return 0;
+}
+
+/** @returns {boolean} false if update should be skipped (stale regression). */
+function shouldApplyJobUiUpdate(jobId, job) {
+  if (!jobUiMonotone.has(jobId)) {
+    jobUiMonotone.set(jobId, { maxTier: 0, maxProgress: 0 });
+  }
+  const st = jobUiMonotone.get(jobId);
+  const tier = classifyJobTier(job);
+  if (tier === 1 && st.maxTier >= 2) {
+    dbg("jobUi: skip stale queued after running", jobId);
+    return false;
+  }
+  const prog = normalizeJobProgressValue(job) ?? 0;
+  if (tier === 2 && st.maxProgress >= 5 && prog === 0) {
+    dbg("jobUi: skip running 0% after meaningful progress", jobId);
+    return false;
+  }
+  st.maxTier = Math.max(st.maxTier, tier);
+  if (tier === 2) st.maxProgress = Math.max(st.maxProgress, prog);
+  return true;
+}
+
+/** Same pattern as {@link formatLibraryStatusMessage}: "Lead: detail". */
+function formatStatusColon(lead, detail) {
+  const d = detail != null ? String(detail).trim() : "";
+  return d ? `${lead}: ${d}` : lead;
+}
+
+function formatJobStatusMessage(job) {
+  const s = String(job?.status || "").toLowerCase();
+  const qp = job?.queue_position != null ? Number(job.queue_position) : null;
+  const prog = normalizeJobProgressValue(job);
+  if (s === "queued") {
+    if (Number.isFinite(qp) && qp > 1) return formatStatusColon("In queue", `position ${qp}`);
+    return formatStatusColon("In queue", "waiting");
+  }
+  if (s === "running") {
+    const serverMsg = typeof job.message === "string" && job.message.trim() ? job.message.trim() : "";
+    const pctKnown = prog != null && Number.isFinite(prog);
+    const pct = pctKnown ? Math.round(Math.max(0, Math.min(100, prog))) : null;
+    if (pct != null) {
+      if (serverMsg) return formatStatusColon("Converting", `${serverMsg} (${pct}%)`);
+      return formatStatusColon("Converting", `${pct}%`);
+    }
+    return serverMsg ? formatStatusColon("Converting", serverMsg) : formatStatusColon("Converting", "waiting");
+  }
+  return formatStatusColon("Status", "working");
+}
+
+function progressBarFieldsFromJob(job) {
+  const s = String(job?.status || "").toLowerCase();
+  const prog = normalizeJobProgressValue(job);
+  if (s === "queued") {
+    return { progress: 0 };
+  }
+  if (s === "running") {
+    const p = prog ?? 0;
+    return { progress: Math.max(0, Math.min(100, p)) };
+  }
+  return { progress: prog ?? 0 };
+}
+
+function applyJobStatusToButton(button, jobId, job) {
+  if (!shouldApplyJobUiUpdate(jobId, job)) {
+    return false;
+  }
+  const { progress } = progressBarFieldsFromJob(job);
+  const message = formatJobStatusMessage(job);
+  const phase = String(job?.status || "").toLowerCase();
+  updateButtonState(button, "progress", { progress, message, phase });
+  return true;
 }
 
 function extractLcscIdFromString(str = "") {
   const match = str.match(/C\d+/i);
   return match ? match[0].toUpperCase() : null;
-}
-
-function extractLcscIdFromElement(element) {
-  if (!element) {
-    return null;
-  }
-  if (element.dataset && element.dataset.lcscId) {
-    return element.dataset.lcscId.toUpperCase();
-  }
-  if (element.getAttribute) {
-    const fromTitle = extractLcscIdFromString(element.getAttribute("title") || "");
-    if (fromTitle) {
-      return fromTitle;
-    }
-  }
-  if (element.href) {
-    const fromHref = extractLcscIdFromString(element.href);
-    if (fromHref) {
-      return fromHref;
-    }
-  }
-  return extractLcscIdFromString(element.textContent || "");
 }
 
 function hasModelPaths(result) {
@@ -659,13 +786,44 @@ function hasModelPaths(result) {
   return Boolean(modelPaths);
 }
 
+function coerceConversionResult(raw) {
+  if (raw == null || raw === "") {
+    return null;
+  }
+  if (typeof raw === "string") {
+    try {
+      return coerceConversionResult(JSON.parse(raw));
+    } catch {
+      return null;
+    }
+  }
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  const o = raw;
+  const mp = o.model_paths ?? o.modelPaths;
+  return {
+    symbol_path: o.symbol_path ?? o.symbolPath ?? null,
+    footprint_path: o.footprint_path ?? o.footprintPath ?? null,
+    model_paths:
+      mp && typeof mp === "object" && !Array.isArray(mp) ? mp : {},
+    messages: Array.isArray(o.messages) ? o.messages : [],
+  };
+}
+
 function computeOutputAnalysis(job = {}) {
   const requested = {
     symbol: Boolean(job.outputs && job.outputs.symbol),
     footprint: Boolean(job.outputs && job.outputs.footprint),
     model: Boolean(job.outputs && job.outputs.model),
   };
-  const result = job.result || {};
+  const raw =
+    job.result != null && job.result !== ""
+      ? job.result
+      : job.Result != null && job.Result !== ""
+        ? job.Result
+        : null;
+  const result = coerceConversionResult(raw) || {};
   const actual = {
     symbol: Boolean(result.symbol_path),
     footprint: Boolean(result.footprint_path),
@@ -704,23 +862,26 @@ function mapMissingLabel(key) {
   }
 }
 
-function formatMissingTooltip(missing = []) {
-  if (!missing.length) {
-    return "Partially imported";
-  }
+/** Detail segment for {@link formatStatusColon} (progress row / tooltips). */
+function formatMissingSummary(missing = []) {
+  if (!missing.length) return "incomplete";
   const labels = missing.map(mapMissingLabel);
   if (labels.length === 1) {
-    return `Incomplete: ${labels[0]} missing`;
+    return `${labels[0]} missing`;
   }
   const head = labels.slice(0, -1).join(", ");
   const tail = labels[labels.length - 1];
-  return `Incomplete: ${head} and ${tail} missing`;
+  return `${head} and ${tail} missing`;
+}
+
+function formatMissingTooltip(missing = []) {
+  return formatStatusColon("Incomplete", formatMissingSummary(missing));
 }
 
 function buildSuccessTooltip(analysis, messages) {
   const parts = [];
   if (Array.isArray(messages) && messages.length) {
-    parts.push(messages.join(" • "));
+    parts.push(messages.join("; "));
   }
   if (analysis && analysis.missing && analysis.missing.length) {
     parts.push(formatMissingTooltip(analysis.missing));
@@ -733,6 +894,24 @@ function formatLibraryStatusMessage(libraryName, libraryPath) {
     || (libraryPath ? libraryPath.replace(/^.*[/\\]/, "").replace(/\.(kicad_sym|lib)$/i, "") : null);
   return name ? `Already available in the library: ${name}` : "Already available in the library";
 }
+
+function formatAddedToLibraryMessage(libraryName, libraryPath) {
+  const name = libraryName
+    || (libraryPath ? libraryPath.replace(/^.*[/\\]/, "").replace(/\.(kicad_sym|lib)$/i, "") : null);
+  return name ? `Added to the library: ${name}` : "Added to the library";
+}
+
+function formatPartialImportMessage(messages, missing) {
+  const detail = Array.isArray(messages) && messages.length
+    ? messages.join("; ")
+    : formatMissingSummary(missing);
+  return formatStatusColon("Partial import", detail);
+}
+
+/** Shared copy for backend-unreachable UI (progress row + titles). */
+const MSG_BACKEND_OFFLINE = formatStatusColon("Download unavailable", "backend offline");
+
+const MSG_LIBRARY_TITLE = formatStatusColon("Already in library", "click to update");
 
 function extractLcscId() {
   const match = window.location.pathname.match(PRODUCT_REGEX);
@@ -935,17 +1114,14 @@ function resumeDownloadUiAfterCategoryAbort(button, lcscId) {
   button.disabled = false;
   void (async () => {
     try {
-      const resp = await sendRuntimeMessage(
-        { type: "checkComponentExists", lcscId },
-        { retries: 2, delay: 300 },
-      );
+      const resp = await contentRpc("checkComponentExists", { lcscId }, { retries: 2, delay: 300 });
       if (resp?.ok && resp.data) {
         const d = resp.data || {};
         const analysis = d.outputAnalysis
           || computeOutputAnalysis({ outputs: d.outputs, result: d.result });
         if (d.completed && !analysis.partial) {
           updateButtonState(button, "exists", {
-            message: "Already in library – click to update",
+            message: MSG_LIBRARY_TITLE,
             libraryName: d.libraryName,
             libraryPath: d.libraryPath,
           });
@@ -1034,17 +1210,17 @@ function showValueParamFallbackDialog(onDone) {
   const cancelBtn = document.createElement("button");
   cancelBtn.type = "button";
   cancelBtn.textContent = "Cancel";
-  cancelBtn.style.cssText = CSS_DIALOG_BTN_WIDE.secondary;
+  cancelBtn.style.cssText = dialogButtonStyle("secondary", "wide");
 
   const configureBtn = document.createElement("button");
   configureBtn.type = "button";
   configureBtn.textContent = "Configure value source…";
-  configureBtn.style.cssText = CSS_DIALOG_BTN_WIDE.outline;
+  configureBtn.style.cssText = dialogButtonStyle("outline", "wide");
 
   const defaultBtn = document.createElement("button");
   defaultBtn.type = "button";
   defaultBtn.textContent = "Use EasyEDA default";
-  defaultBtn.style.cssText = CSS_DIALOG_BTN_WIDE.primary;
+  defaultBtn.style.cssText = dialogButtonStyle("primary", "wide");
 
   cancelBtn.addEventListener("click", () => finish("cancel"));
   configureBtn.addEventListener("click", () => finish("configure"));
@@ -1189,17 +1365,17 @@ function showValueParamMismatchDialog(configuredKey, onDone) {
   const defaultBtn = document.createElement("button");
   defaultBtn.type = "button";
   defaultBtn.textContent = "Use EasyEDA default";
-  defaultBtn.style.cssText = CSS_DIALOG_BTN_WIDE.secondary;
+  defaultBtn.style.cssText = dialogButtonStyle("secondary", "wide");
 
   const configureBtn = document.createElement("button");
   configureBtn.type = "button";
   configureBtn.textContent = "Change value parameter…";
-  configureBtn.style.cssText = CSS_DIALOG_BTN_WIDE.primary;
+  configureBtn.style.cssText = dialogButtonStyle("primary", "wide");
 
   const cancelBtn = document.createElement("button");
   cancelBtn.type = "button";
   cancelBtn.textContent = "Cancel";
-  cancelBtn.style.cssText = `${CSS_DIALOG_BTN_WIDE.secondary};margin-left:auto;`;
+  cancelBtn.style.cssText = `${dialogButtonStyle("secondary", "wide")};margin-left:auto;`;
 
   cancelBtn.addEventListener("click", () => finish("cancel"));
   configureBtn.addEventListener("click", () => finish("configure"));
@@ -1252,6 +1428,7 @@ function promiseValueParamMismatch(configuredKey) {
  *   onCancel: () => void,
  * }} actions
  */
+// --- Category / value-param dialogs (DOM modals) ---
 function showCategoryDialog(category, paramKeys, actions) {
   const {
     onSaveAndContinue,
@@ -1513,7 +1690,7 @@ function showCategoryDialog(category, paramKeys, actions) {
     "title",
     "Do not save this dialog. Use existing or built-in defaults for this category and proceed with the import.",
   );
-  skipBtn.style.cssText = CSS_CATEGORY_BTN.secondary;
+  skipBtn.style.cssText = dialogButtonStyle("secondary", "dense");
 
   const saveContinueBtn = document.createElement("button");
   saveContinueBtn.type = "button";
@@ -1522,7 +1699,7 @@ function showCategoryDialog(category, paramKeys, actions) {
     "title",
     "Store these pin and Value settings in the extension for this LCSC category (Settings → category table), then start the import.",
   );
-  saveContinueBtn.style.cssText = CSS_CATEGORY_BTN.primary;
+  saveContinueBtn.style.cssText = dialogButtonStyle("primary", "dense");
 
   const continueOnlyBtn = document.createElement("button");
   continueOnlyBtn.type = "button";
@@ -1531,13 +1708,13 @@ function showCategoryDialog(category, paramKeys, actions) {
     "title",
     "Use the settings above for this import only. Nothing is written to extension storage; next time the category may prompt again.",
   );
-  continueOnlyBtn.style.cssText = CSS_CATEGORY_BTN.outline;
+  continueOnlyBtn.style.cssText = dialogButtonStyle("outline", "dense");
 
   const cancelBtn = document.createElement("button");
   cancelBtn.type = "button";
   cancelBtn.textContent = "Cancel";
   cancelBtn.setAttribute("title", "Close this dialog and abort the download (no changes applied).");
-  cancelBtn.style.cssText = `${CSS_CATEGORY_BTN.secondary};margin-left:auto;`;
+  cancelBtn.style.cssText = `${dialogButtonStyle("secondary", "dense")};margin-left:auto;`;
 
   skipBtn.addEventListener("click", () => {
     removeCategoryDialog();
@@ -1617,107 +1794,6 @@ function findInsertionPoint() {
   }
 }
 
-function createButton(variant = "product") {
-  ensureSpinnerStyle();
-  const button = document.createElement("button");
-  if (variant === "product") {
-    button.id = BUTTON_ID;
-  } else {
-    button.classList.add(LIST_BUTTON_CLASS);
-  }
-  button.type = "button";
-  button.setAttribute("title", "Download KiCad files");
-
-  const iconSvg = document.createElementNS(SVG_NS, "svg");
-  iconSvg.setAttribute("viewBox", "0 0 24 24");
-  iconSvg.style.flexShrink = "0";
-  iconSvg.id = "easyeda2kicad-icon";
-  iconSvg.classList.add("easyeda2kicad-icon");
-
-  const iconPath = document.createElementNS(SVG_NS, "path");
-  iconPath.setAttribute("d", ICONS.download);
-  iconPath.setAttribute("fill", "currentColor");
-  iconPath.setAttribute("id", "easyeda2kicad-icon-path");
-  iconSvg.appendChild(iconPath);
-
-  if (variant === "product") {
-    // Full pill button with icon + label text
-    Object.assign(button.style, {
-      display: "inline-flex",
-      alignItems: "center",
-      gap: "6px",
-      padding: "7px 16px",
-      borderRadius: "999px",
-      border: "none",
-      background: "linear-gradient(135deg, #1d4ed8, #2563eb)",
-      color: "#fff",
-      fontFamily: "inherit",
-      fontSize: "13px",
-      fontWeight: "600",
-      letterSpacing: "0.01em",
-      cursor: "pointer",
-      transition: "filter 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease",
-      boxShadow: "0 2px 8px rgba(37,99,235,0.35)",
-      position: "relative",
-      userSelect: "none",
-      marginLeft: "0",
-    });
-
-    iconSvg.setAttribute("width", "15");
-    iconSvg.setAttribute("height", "15");
-
-    const label = document.createElement("span");
-    label.id = "easyeda2kicad-btn-label";
-    label.textContent = "Download";
-
-    button.appendChild(iconSvg);
-    button.appendChild(label);
-
-    button.addEventListener("mouseenter", () => {
-      if (!button.disabled) {
-        button.style.filter = "brightness(1.12)";
-      button.style.boxShadow = "0 4px 14px rgba(37,99,235,0.45)";
-      }
-    });
-    button.addEventListener("mouseleave", () => {
-      button.style.filter = "";
-      button.style.boxShadow = "0 2px 8px rgba(37,99,235,0.35)";
-    });
-  } else {
-    // Compact icon-only circle for list view
-    Object.assign(button.style, {
-      display: "inline-flex",
-      alignItems: "center",
-      justifyContent: "center",
-      width: "32px",
-      height: "32px",
-      padding: "4px",
-      borderRadius: "999px",
-      border: "1px solid transparent",
-      background: "transparent",
-      cursor: "pointer",
-      transition: "transform 0.2s ease",
-      position: "relative",
-      marginLeft: "8px",
-    });
-
-    iconSvg.setAttribute("width", "24");
-    iconSvg.setAttribute("height", "24");
-    iconPath.setAttribute("fill", COLORS.primary);
-
-    button.appendChild(iconSvg);
-
-    button.addEventListener("mouseenter", () => {
-      if (!button.disabled) button.style.transform = "scale(1.08)";
-    });
-    button.addEventListener("mouseleave", () => {
-      button.style.transform = "scale(1)";
-    });
-  }
-
-  return button;
-}
-
 function setIcon(button, color, type = "download") {
   const path = button.querySelector(".easyeda2kicad-icon-path");
   if (!path) return;
@@ -1757,7 +1833,7 @@ function setGroupEnabled(enabled) {
 function markGroupExists(updatedButton, tooltip) {
   const group = document.getElementById(BTN_GROUP_ID);
   if (!group) return;
-  const msg = tooltip || "Already in library – click to update";
+  const msg = tooltip || MSG_LIBRARY_TITLE;
   const skipRole = updatedButton?.getAttribute?.("data-k2c-dl") || "easyeda";
   queryProductGroupButtons(group).forEach((b) => {
     if (b.getAttribute("data-k2c-dl") === skipRole) return;
@@ -1851,7 +1927,7 @@ function setDlButtonHoverShadow(button) {
 function setGroupBackendOffline() {
   const group = document.getElementById(BTN_GROUP_ID);
   if (!group) return;
-  const offlineMessage = "Download not available. Backend is offline.";
+  const offlineMessage = MSG_BACKEND_OFFLINE;
   queryProductGroupButtons(group).forEach((b) => {
     b.disabled = true;
     setSpin(b, false);
@@ -1881,7 +1957,7 @@ function setGroupBackendOffline() {
 }
 
 function showBackendOfflineUIForButton(button, options = {}) {
-  const offlineMessage = options.message || "Download not available. Backend is offline.";
+  const offlineMessage = options.message || MSG_BACKEND_OFFLINE;
   const group = document.getElementById(BTN_GROUP_ID);
   if (group && button && btnGroupHostContains(group, button)) {
     setGroupBackendOffline();
@@ -1900,7 +1976,7 @@ function showBackendOfflineUIForButton(button, options = {}) {
   }
 }
 
-function setButtonDisabledPlaceholder(button, title = "Download pending…") {
+function setButtonDisabledPlaceholder(button, title = formatStatusColon("Download", "pending")) {
   if (!button) return;
   button.disabled = true;
   setSpin(button, false);
@@ -2016,7 +2092,7 @@ function updateButtonState(button, state, options = {}) {
       setBtnTheme(button, "exists");
       button.dataset.libState = "exists";
       button.style.cursor = "pointer";
-      button.setAttribute("title", options.message || "Already in library – click to update");
+      button.setAttribute("title", options.message || MSG_LIBRARY_TITLE);
       setProgressUI({
         visible: true,
         barClass: "success",
@@ -2035,24 +2111,44 @@ function updateButtonState(button, state, options = {}) {
       setBtnLabel(button, "Starting…");
       setBtnTheme(button, "disabled");
       button.style.cursor = "default";
-      button.setAttribute("title", options.message || "Conversion is starting…");
-      setProgressUI({ visible: false });
+      {
+        const pendingLine = options.message || formatStatusColon("Conversion", "submitting job");
+        button.setAttribute("title", pendingLine);
+        setProgressUI({
+          visible: true,
+          barClass: "indeterminate",
+          widthPct: null,
+          message: pendingLine,
+          messageClass: "k2c-status-progress",
+        });
+      }
       break;
     case "progress": {
       setGroupEnabled(false);
-      const pct = options.progress ?? 0;
+      const phase = String(options.phase || "").toLowerCase();
+      const pctRaw = Number(options.progress);
+      const pct = Number.isFinite(pctRaw) ? Math.max(0, Math.min(100, pctRaw)) : 0;
       button.disabled = true;
       setSpin(button, true);
       setIcon(button, COLORS.spinner, "spinner");
-      setBtnLabel(button, pct > 0 ? `${Math.round(pct)} %` : "Converting…");
+      const btnShort = phase === "queued"
+        ? "Queue"
+        : `${Math.round(pct)}%`;
+      setBtnLabel(button, btnShort);
       setBtnTheme(button, "disabled");
       button.style.cursor = "default";
-      button.setAttribute("title", options.message || `Conversion in progress… ${Math.round(pct)}%`);
+      const progressLine = options.message
+        || (phase === "queued"
+          ? formatStatusColon("In queue", "waiting")
+          : formatStatusColon("Converting", `${Math.round(pct)}%`));
+      button.setAttribute("title", options.message || progressLine);
+      const indeterminate = phase === "queued" || pct <= 0;
       setProgressUI({
         visible: true,
-        barClass: pct > 0 ? "" : "indeterminate",
-        widthPct: pct > 0 ? pct : null,
-        message: options.message || `Converting… ${Math.round(pct)} %`,
+        barClass: indeterminate ? "indeterminate" : "",
+        widthPct: !indeterminate ? pct : null,
+        message: progressLine,
+        messageClass: "k2c-status-progress",
       });
       break;
     }
@@ -2065,26 +2161,38 @@ function updateButtonState(button, state, options = {}) {
       setBtnLabel(button, "Done");
       setBtnTheme(button, "success");
       button.style.cursor = "pointer";
-      button.setAttribute("title", options.message || "Available in library");
+      button.setAttribute("title", options.message || formatStatusColon("Library", "import complete"));
       setProgressUI({
         visible: true,
         barClass: "success",
         widthPct: 100,
-        message: options.message || "Added to library",
+        message: formatAddedToLibraryMessage(options.libraryName, options.libraryPath),
         messageClass: "status-success",
       });
       setGroupEnabled(true);
       const group = document.getElementById(BTN_GROUP_ID);
-      if (group && btnGroupHostContains(group, button)) triggerConfetti(group);
+      const celebrate = options.celebrate !== false;
+      const cjid = options.celebrateJobId;
+      let doConfetti = celebrate && cjid && group && btnGroupHostContains(group, button);
+      if (doConfetti && confettiDoneForJobId.has(cjid)) {
+        doConfetti = false;
+      }
+      if (doConfetti && cjid) {
+        confettiDoneForJobId.add(cjid);
+        setTimeout(() => confettiDoneForJobId.delete(cjid), 180000);
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => triggerConfetti(group));
+        });
+      }
       const libName = options.libraryName ?? button.dataset.libraryName ?? null;
       const libPath = options.libraryPath ?? button.dataset.libraryPath ?? null;
       setTimeout(() => {
         updateButtonState(button, "exists", {
-          message: "In library – click to update",
+          message: MSG_LIBRARY_TITLE,
           libraryName: libName || undefined,
           libraryPath: libPath || undefined,
         });
-        markGroupExists(button, "In library – click to update");
+        markGroupExists(button, MSG_LIBRARY_TITLE);
       }, 4000);
       break;
     }
@@ -2095,14 +2203,17 @@ function updateButtonState(button, state, options = {}) {
       setBtnLabel(button, "Partial");
       setBtnTheme(button, "warning");
       button.style.cursor = "pointer";
-      button.setAttribute("title", options.message || "Incomplete – partially imported");
-      setProgressUI({
-        visible: true,
-        barClass: "success",
-        widthPct: 100,
-        message: options.message || "Partially imported",
-        messageClass: "status-success",
-      });
+      {
+        const partialLine = options.message || formatStatusColon("Partial import", "incomplete");
+        button.setAttribute("title", partialLine);
+        setProgressUI({
+          visible: true,
+          barClass: "success",
+          widthPct: 100,
+          message: partialLine,
+          messageClass: "status-success",
+        });
+      }
       setGroupEnabled(true);
       setTimeout(() => {
         setBtnLabel(button, "Download");
@@ -2113,7 +2224,7 @@ function updateButtonState(button, state, options = {}) {
       }, 6000);
       break;
     case "offline": {
-      const offlineMsg = options.message || "Download not available. Backend is offline.";
+      const offlineMsg = options.message || MSG_BACKEND_OFFLINE;
       button.disabled = true;
       setSpin(button, false);
       setIcon(button, "currentColor", "download");
@@ -2144,15 +2255,18 @@ function updateButtonState(button, state, options = {}) {
       setBtnLabel(button, "Retry");
       setBtnTheme(button, "error");
       button.style.cursor = "pointer";
-      button.setAttribute("title", options.message || "Download failed");
-      setProgressUI({
-        visible: true,
-        barClass: "error",
-        widthPct: 100,
-        message: options.message || "Download failed",
-        messageClass: "status-error",
-        copyText: options.copyText || options.message || null,
-      });
+      {
+        const errLine = options.message || formatStatusColon("Download", "failed");
+        button.setAttribute("title", errLine);
+        setProgressUI({
+          visible: true,
+          barClass: "error",
+          widthPct: 100,
+          message: errLine,
+          messageClass: "status-error",
+          copyText: options.copyText || options.message || null,
+        });
+      }
       setGroupEnabled(true);
       break;
     default:
@@ -2168,13 +2282,13 @@ function applyComponentState(button, data) {
   if (data.completed) {
     if (analysis.partial) {
       updateButtonState(button, "partial", {
-        message: messages.join(" • ") || formatMissingTooltip(analysis.missing),
+        message: formatPartialImportMessage(messages, analysis.missing),
         iconType: "download",
       });
     } else {
       const tooltip = buildSuccessTooltip(analysis, messages);
       updateButtonState(button, "exists", {
-        message: tooltip || "Already in library – click to update",
+        message: tooltip || MSG_LIBRARY_TITLE,
         libraryName: data.libraryName,
         libraryPath: data.libraryPath,
       });
@@ -2185,9 +2299,12 @@ function applyComponentState(button, data) {
   }
 
   if (data.inProgress && data.jobId) {
-    updateButtonState(button, "progress", {
-      progress: 0,
-      message: "Conversion in progress…",
+    button.dataset.k2cWatchJobId = data.jobId;
+    applyJobStatusToButton(button, data.jobId, {
+      status: data.status,
+      progress: data.progress,
+      message: data.message,
+      queue_position: data.queue_position,
     });
     startJobWatcher(button, data.jobId);
     button.dataset[INIT_ATTR] = "true";
@@ -2198,16 +2315,59 @@ function applyComponentState(button, data) {
   button.dataset[INIT_ATTR] = "true";
 }
 
+/**
+ * LCSC/Vue often re-renders the table and drops our progress <tr> while keeping the button host.
+ * Recreate the row after the KiCad product row when missing so setProgressUI never silently no-ops.
+ */
+function ensureProductProgressRow() {
+  if (document.getElementById(PRODUCT_PROGRESS_ROW_ID)) {
+    return;
+  }
+  const group = document.getElementById(BTN_GROUP_ID);
+  const btnRow = group?.closest?.("tr");
+  const tbody = btnRow?.parentElement;
+  if (!btnRow || !tbody || String(tbody.tagName).toLowerCase() !== "tbody") {
+    return;
+  }
+
+  const progressRow = document.createElement("tr");
+  progressRow.id = PRODUCT_PROGRESS_ROW_ID;
+  progressRow.style.display = "none";
+
+  const progressCell = document.createElement("td");
+  progressCell.setAttribute("colspan", "2");
+  progressCell.style.paddingTop = "2px";
+  progressCell.style.paddingBottom = "6px";
+
+  const track = document.createElement("div");
+  track.id = "easyeda2kicad-progress-track";
+
+  const bar = document.createElement("div");
+  bar.id = "easyeda2kicad-progress-bar";
+  track.appendChild(bar);
+
+  const statusText = document.createElement("div");
+  statusText.id = "easyeda2kicad-status-text";
+
+  progressCell.appendChild(track);
+  progressCell.appendChild(statusText);
+  progressRow.appendChild(progressCell);
+  btnRow.insertAdjacentElement("afterend", progressRow);
+}
+
 function getProgressElements() {
   return {
     track: document.getElementById("easyeda2kicad-progress-track"),
     bar: document.getElementById("easyeda2kicad-progress-bar"),
     text: document.getElementById("easyeda2kicad-status-text"),
-    row: document.getElementById("easyeda2kicad-progress-row"),
+    row: document.getElementById(PRODUCT_PROGRESS_ROW_ID),
   };
 }
 
 function setProgressUI({ visible = true, barClass = "", widthPct = null, message = "", messageClass = "", copyText = null } = {}) {
+  if (visible) {
+    ensureProductProgressRow();
+  }
   const { track, bar, text, row } = getProgressElements();
   if (!row) return;
 
@@ -2365,6 +2525,7 @@ function buildDlOptions(hasTemplates) {
  *   If `skipIdleReset` is true (e.g. after canceling "New category"), do not set both buttons to
  *   idle/blue before `checkComponentExists` — avoids flashing away the correct "exists" green.
  */
+// --- Product-page button group (shadow DOM, exists/progress UI) ---
 async function refreshButtonGroup(lcscId, groupDiv, options = {}) {
   const skipIdleReset = Boolean(options.skipIdleReset);
   const mount = ensureProductBtnGroupShadow(groupDiv);
@@ -2373,7 +2534,7 @@ async function refreshButtonGroup(lcscId, groupDiv, options = {}) {
   const getTemplateBtn = () => mount.querySelector('button[data-k2c-dl="template"]');
 
   try {
-    const stateResp = await sendRuntimeMessage({ type: "getState" }, { retries: 2, delay: 200 });
+    const stateResp = await contentRpc("getState", {}, { retries: 2, delay: 200 });
     const state = stateResp?.ok ? (stateResp.data || {}) : {};
     // Must treat ok:false or connected !== true as offline (previously only `connected === false` missed unreachable backend).
     const backendOnline = stateResp?.ok === true && state.connected === true;
@@ -2423,7 +2584,10 @@ async function refreshButtonGroup(lcscId, groupDiv, options = {}) {
       return;
     }
 
-    if (!skipIdleReset) {
+    const anyJobWatch =
+      Boolean(easyBtn.dataset.k2cWatchJobId)
+      || Boolean(templateBtn && templateBtn.dataset.k2cWatchJobId);
+    if (!skipIdleReset && !anyJobWatch) {
       updateButtonState(easyBtn, "idle");
       if (templateBtn && templateBtn.style.display !== "none") {
         updateButtonState(templateBtn, "idle");
@@ -2434,10 +2598,7 @@ async function refreshButtonGroup(lcscId, groupDiv, options = {}) {
     // Async: update exists/progress/partial without blocking render.
     void (async () => {
       try {
-        const existResp = await sendRuntimeMessage(
-          { type: "checkComponentExists", lcscId },
-          { retries: 3, delay: 300 },
-        );
+        const existResp = await contentRpc("checkComponentExists", { lcscId }, { retries: 3, delay: 300 });
         if (!mount.contains(easyBtn)) return;
 
         if (existResp?.ok) {
@@ -2448,20 +2609,23 @@ async function refreshButtonGroup(lcscId, groupDiv, options = {}) {
           if (d.completed && !analysis.partial) {
             const tooltip = buildSuccessTooltip(analysis, msgs);
             updateButtonState(easyBtn, "exists", {
-              message: tooltip || "Already in library – click to update",
+              message: tooltip || MSG_LIBRARY_TITLE,
               libraryName: d.libraryName,
               libraryPath: d.libraryPath,
             });
             markGroupExists(easyBtn);
           } else if (d.completed && analysis.partial) {
             updateButtonState(easyBtn, "partial", {
-              message: msgs.join(" • ") || formatMissingTooltip(analysis.missing),
+              message: formatPartialImportMessage(msgs, analysis.missing),
               iconType: "download",
             });
           } else if (d.inProgress && d.jobId) {
-            updateButtonState(easyBtn, "progress", {
-              progress: 0,
-              message: "Conversion in progress…",
+            easyBtn.dataset.k2cWatchJobId = d.jobId;
+            applyJobStatusToButton(easyBtn, d.jobId, {
+              status: d.status,
+              progress: d.progress,
+              message: d.message,
+              queue_position: d.queue_position,
             });
             startJobWatcher(easyBtn, d.jobId);
           } else {
@@ -2706,45 +2870,45 @@ function openTemplateDropdown(anchorButton, groupDiv, lcscId, state) {
 async function onTemplateSelected(button, lcscId, templateName, templateLibPath) {
   // Keep backend-offline handling consistent with the EasyEDA button.
   try {
-    const status = await sendRuntimeMessage({ type: "getState" }, { retries: 2, delay: 200 });
+    const status = await contentRpc("getState", {}, { retries: 2, delay: 200 });
     if (!status?.ok || !status?.data || status.data.connected !== true) {
-      showBackendOfflineUIForButton(button, { message: "Download not available. Backend is offline." });
+      showBackendOfflineUIForButton(button);
       return;
     }
   } catch (_e) {
-    showBackendOfflineUIForButton(button, { message: "Download not available. Backend is offline." });
+    showBackendOfflineUIForButton(button);
     return;
   }
 
-  updateButtonState(button, "pending", { progress: 0, message: "Checking pins…" });
+  updateButtonState(button, "pending", { progress: 0, message: formatStatusColon("Pin check", "in progress") });
   let pinCheckResp;
   try {
-    pinCheckResp = await sendRuntimeMessage(
-      {
-        type: "templatesPinCheck",
-        lcscId,
-        templateName,
-        templateLibPath,
-      },
+    pinCheckResp = await contentRpc(
+      "templatesPinCheck",
+      { lcscId, templateName, templateLibPath },
       { retries: 2, delay: 300 },
     );
   } catch (err) {
     const msg = err?.message || String(err);
     if (/backend|reach|offline/i.test(msg)) {
-      showBackendOfflineUIForButton(button, { message: "Download not available. Backend is offline." });
+      showBackendOfflineUIForButton(button);
       return;
     }
-    updateButtonState(button, "error", { message: err.message || "Pin check failed." });
+    updateButtonState(button, "error", {
+      message: formatStatusColon("Pin check failed", err.message || "unknown error"),
+    });
     return;
   }
 
   if (!pinCheckResp?.ok || !pinCheckResp.data) {
     const msg = pinCheckResp?.error || pinCheckResp?.message || "";
     if (/backend|reach|offline/i.test(msg)) {
-      showBackendOfflineUIForButton(button, { message: "Download not available. Backend is offline." });
+      showBackendOfflineUIForButton(button);
       return;
     }
-    updateButtonState(button, "error", { message: pinCheckResp?.error || "Pin check failed." });
+    updateButtonState(button, "error", {
+      message: formatStatusColon("Pin check failed", pinCheckResp?.error || "unknown error"),
+    });
     return;
   }
 
@@ -2762,21 +2926,31 @@ async function onTemplateSelected(button, lcscId, templateName, templateLibPath)
   showPinMismatchUI(button, lcscId, templateName, templateLibPath, easyeda_pin_count, template_pin_count);
 }
 
+/** LCSC product table: caption + buttons (Vuetify often forces light text on <td>). */
+function styleLightTableCaption(textEl, msgEl) {
+  if (textEl) {
+    textEl.style.setProperty("color", CS_DIALOG.slate900, "important");
+  }
+  if (msgEl) {
+    msgEl.style.setProperty("color", CS_DIALOG.slate900, "important");
+  }
+}
+
 /** @param {object} existingOverrides Passed through to the resumed download (template options, etc.). */
 function showOverwriteDialog(button, lcscId, pageData, existingOverrides) {
   const { row } = getProgressElements();
   const isProductPage = Boolean(row);
 
-  const msgText = "Part already in library. Overwrite?";
-  const btnStyle = `
-    padding: 6px 12px;
-    border-radius: 6px;
-    border: 1px solid #475569;
-    background: #334155;
-    color: #e2e8f0;
-    cursor: pointer;
-    font-size: 12px;
-  `;
+  const msgText = formatStatusColon("Part already in library", "overwrite?");
+  const btnStyleDarkModal = cssJoin([
+    "padding:6px 12px",
+    "border-radius:6px",
+    `border:1px solid ${CS_DIALOG.slate600}`,
+    `background:${CS_DIALOG.slate700}`,
+    `color:${CS_DIALOG.slate200}`,
+    "cursor:pointer",
+    "font-size:12px",
+  ]);
 
   const runDownload = (extraOverrides) => {
     if (row) {
@@ -2793,11 +2967,11 @@ function showOverwriteDialog(button, lcscId, pageData, existingOverrides) {
     const libName = button.dataset.libraryName || null;
     const libPath = button.dataset.libraryPath || null;
     updateButtonState(button, "exists", {
-      message: "In library – click to update",
+      message: MSG_LIBRARY_TITLE,
       libraryName: libName || undefined,
       libraryPath: libPath || undefined,
     });
-    markGroupExists(button, "In library – click to update");
+    markGroupExists(button, MSG_LIBRARY_TITLE);
   };
 
   if (isProductPage) {
@@ -2811,10 +2985,11 @@ function showOverwriteDialog(button, lcscId, pageData, existingOverrides) {
       bar.style.width = "100%";
     }
     if (text) {
-      text.className = "easyeda2kicad-status-text";
+      text.className = "easyeda2kicad-status-text k2c-status-progress";
       text.innerHTML = "";
       const msg = document.createElement("span");
       msg.textContent = msgText;
+      styleLightTableCaption(text, msg);
       text.appendChild(msg);
       const btnWrap = document.createElement("div");
       btnWrap.className = "easyeda2kicad-overwrite-dialog";
@@ -2823,19 +2998,19 @@ function showOverwriteDialog(button, lcscId, pageData, existingOverrides) {
       const btnOverride = document.createElement("button");
       btnOverride.type = "button";
       btnOverride.textContent = "Override";
-      btnOverride.style.cssText = btnStyle;
+      btnOverride.style.cssText = K2C_DLG_BTN_LIGHT_PRIMARY;
       const btnPermanent = document.createElement("button");
       btnPermanent.type = "button";
       btnPermanent.textContent = "Permanent override";
-      btnPermanent.style.cssText = btnStyle;
+      btnPermanent.style.cssText = K2C_DLG_BTN_LIGHT_PRIMARY;
       const btnCancel = document.createElement("button");
       btnCancel.type = "button";
       btnCancel.textContent = "Cancel";
-      btnCancel.style.cssText = btnStyle;
+      btnCancel.style.cssText = K2C_DLG_BTN_LIGHT_SECONDARY;
       btnOverride.addEventListener("click", () => runDownload({ overwrite: true, overwrite_model: true }));
       btnPermanent.addEventListener("click", async () => {
         try {
-          await sendRuntimeMessage({ type: "updateSettings", overwriteFootprints: true, overwriteModels: true });
+          await contentRpc("updateSettings", { overwriteFootprints: true, overwriteModels: true });
         } catch (_e) {}
         runDownload({});
       });
@@ -2875,19 +3050,19 @@ function showOverwriteDialog(button, lcscId, pageData, existingOverrides) {
   const btnOverride = document.createElement("button");
   btnOverride.type = "button";
   btnOverride.textContent = "Override";
-  btnOverride.style.cssText = btnStyle;
+  btnOverride.style.cssText = btnStyleDarkModal;
   const btnPermanent = document.createElement("button");
   btnPermanent.type = "button";
   btnPermanent.textContent = "Permanent override";
-  btnPermanent.style.cssText = btnStyle;
+  btnPermanent.style.cssText = btnStyleDarkModal;
   const btnCancel = document.createElement("button");
   btnCancel.type = "button";
   btnCancel.textContent = "Cancel";
-  btnCancel.style.cssText = btnStyle;
+  btnCancel.style.cssText = btnStyleDarkModal;
   btnOverride.addEventListener("click", () => runDownload({ overwrite: true, overwrite_model: true }));
   btnPermanent.addEventListener("click", async () => {
     try {
-      await sendRuntimeMessage({ type: "updateSettings", overwriteFootprints: true, overwriteModels: true });
+      await contentRpc("updateSettings", { overwriteFootprints: true, overwriteModels: true });
     } catch (_e) {}
     runDownload({});
   });
@@ -2911,10 +3086,14 @@ function showPinMismatchUI(button, lcscId, templateName, templateLibPath, easyed
     bar.style.width = "100%";
   }
   if (text) {
-    text.className = "easyeda2kicad-status-text";
+    text.className = "easyeda2kicad-status-text k2c-status-progress";
     text.innerHTML = "";
     const msg = document.createElement("span");
-    msg.textContent = `Template has ${templatePinCount} pin(s), EasyEDA symbol has ${easyedaPinCount} pin(s). Pin count differs – manual fix may be required.`;
+    msg.textContent = formatStatusColon(
+      "Pin count mismatch",
+      `template ${templatePinCount} pins, EasyEDA ${easyedaPinCount} pins (manual fix may be required)`,
+    );
+    styleLightTableCaption(text, msg);
     text.appendChild(msg);
 
     const btnWrap = document.createElement("div");
@@ -2923,19 +3102,11 @@ function showPinMismatchUI(button, lcscId, templateName, templateLibPath, easyed
     const btnContinue = document.createElement("button");
     btnContinue.type = "button";
     btnContinue.textContent = "Continue (with pin incompatibility, manual fix required)";
-    btnContinue.style.cssText = `
-      padding: 6px 12px;
-      border-radius: 6px;
-      border: 1px solid #475569;
-      background: #334155;
-      color: #e2e8f0;
-      cursor: pointer;
-      font-size: 12px;
-    `;
+    btnContinue.style.cssText = K2C_DLG_BTN_LIGHT_PRIMARY;
     const btnEasyEda = document.createElement("button");
     btnEasyEda.type = "button";
     btnEasyEda.textContent = "Download EasyEDA model";
-    btnEasyEda.style.cssText = btnContinue.style.cssText;
+    btnEasyEda.style.cssText = K2C_DLG_BTN_LIGHT_SECONDARY;
 
     btnContinue.addEventListener("click", () => {
       row.style.display = "none";
@@ -2966,6 +3137,7 @@ function attachButton(lcscId) {
 
   if (document.getElementById(BTN_GROUP_ID)) {
     dbg("attachButton: product button group already present");
+    ensureProductProgressRow();
     return true;
   }
 
@@ -2980,13 +3152,13 @@ function attachButton(lcscId) {
   // Render buttons immediately (fast UX). refreshButtonGroup will rebuild with correct states.
   const templatePlaceholder = createDlButton(DL_SUB_TEMPLATE, { primary: false });
   templatePlaceholder.dataset.lcscId = lcscId;
-  setButtonDisabledPlaceholder(templatePlaceholder, "Checking backend…");
+  setButtonDisabledPlaceholder(templatePlaceholder, formatStatusColon("Backend", "checking"));
   templatePlaceholder.addEventListener("click", () => {});
   mount.appendChild(templatePlaceholder);
 
   const button = createDlButton(DL_SUB_EASYEDA, { primary: true });
   button.dataset.lcscId = lcscId;
-  setButtonDisabledPlaceholder(button, "Checking backend…");
+  setButtonDisabledPlaceholder(button, formatStatusColon("Backend", "checking"));
   button.addEventListener("click", () => handleDownloadClick(button, lcscId));
   button.dataset[INIT_ATTR] = "false";
   mount.appendChild(button);
@@ -3009,7 +3181,7 @@ function attachButton(lcscId) {
 
   // Progress / status row (initially hidden, spans both columns)
   const progressRow = document.createElement("tr");
-  progressRow.id = "easyeda2kicad-progress-row";
+  progressRow.id = PRODUCT_PROGRESS_ROW_ID;
   progressRow.style.display = "none";
 
   const progressCell = document.createElement("td");
@@ -3039,96 +3211,12 @@ function attachButton(lcscId) {
   return true;
 }
 
-function insertListButton(container, lcscId) {
-  if (!container) {
-    dbg("insertListButton: missing container", lcscId);
-    return;
-  }
-
-  const existingHolder = container.querySelector(`.${LIST_CONTAINER_CLASS}`);
-  if (existingHolder) {
-    const existingId = existingHolder.dataset.lcscId;
-    const button = existingHolder.querySelector("button");
-    if (existingId === lcscId) {
-      dbg("insertListButton: holder already bound to", lcscId);
-      if (button && button.dataset[INIT_ATTR] !== "true") {
-        updateButtonState(button, "idle");
-        button.dataset[INIT_ATTR] = "false";
-        queueListValidation(button, lcscId);
-      }
-      return;
-    }
-    dbg("insertListButton: reusing holder, old id", existingId, "new id", lcscId);
-    existingHolder.dataset.lcscId = lcscId;
-    existingHolder.innerHTML = "";
-    const newButton = createButton("list");
-    newButton.dataset.lcscId = lcscId;
-    updateButtonState(newButton, "idle");
-    newButton.dataset[INIT_ATTR] = "false";
-    newButton.addEventListener("click", () => handleDownloadClick(newButton, lcscId));
-    existingHolder.appendChild(newButton);
-    queueListValidation(newButton, lcscId);
-    return;
-  }
-
-  const button = createButton("list");
-  button.dataset.lcscId = lcscId;
-  updateButtonState(button, "idle");
-  button.dataset[INIT_ATTR] = "false";
-  button.addEventListener("click", () => handleDownloadClick(button, lcscId));
-
-  const holder = document.createElement("span");
-  holder.className = LIST_CONTAINER_CLASS;
-  holder.dataset.lcscId = lcscId;
-  holder.style.display = "inline-flex";
-  holder.style.alignItems = "center";
-  holder.style.marginLeft = "6px";
-  holder.appendChild(button);
-  container.appendChild(holder);
-
-  queueListValidation(button, lcscId);
-  dbg("insertListButton: added", lcscId);
-}
-
-function attachListButtons() {
-  const tableBody = document.querySelector(".tableContentTable > tbody");
-  if (!tableBody) {
-    dbg("attachListButtons: no table body");
-    return false;
-  }
-  dbg("attachListButtons: row count", tableBody.children.length);
-  let inserted = false;
-  Array.from(tableBody.children).forEach((row, index) => {
-    if (!row || !row.children || row.children.length < 2) {
-      dbg("attachListButtons: skip row", index, "unexpected structure");
-      return;
-    }
-    const cell = row.children[1];
-    const wrapper = cell?.children?.[0];
-    if (!wrapper) {
-      dbg("attachListButtons: skip row", index, "missing wrapper");
-      return;
-    }
-    const targetSlot = wrapper.children && wrapper.children[1] ? wrapper.children[1] : wrapper;
-    const anchor = wrapper.querySelector("span > a") || wrapper.querySelector("a");
-    const lcscId = extractLcscIdFromElement(anchor);
-    if (!lcscId) {
-      dbg("attachListButtons: skip row", index, "no LCSC id");
-      return;
-    }
-    insertListButton(targetSlot, lcscId);
-    inserted = true;
-  });
-  dbg("attachListButtons: inserted?", inserted);
-  return inserted;
-}
-
 function setButtonOfflineNoBackend(button) {
   const group = document.getElementById(BTN_GROUP_ID);
   if (group && btnGroupHostContains(group, button)) {
     setGroupBackendOffline();
   } else {
-    updateButtonState(button, "offline", { message: "Download not available. Backend is offline." });
+    updateButtonState(button, "offline", { message: MSG_BACKEND_OFFLINE });
   }
 }
 
@@ -3145,7 +3233,7 @@ function createCategoryDialogCallbacks(category, catCfgRef, resolve) {
   return {
     onSaveAndContinue: async (config) => {
       try {
-        await sendRuntimeMessage({ type: "saveCategorySettings", category, config });
+        await contentRpc("saveCategorySettings", { category, config });
       } catch (_err) {
         dbg("saveCategorySettings failed", _err);
       }
@@ -3174,11 +3262,12 @@ function openCategoryDialogPromise(category, pageData, catCfgRef) {
   });
 }
 
+// --- Download pipeline (gates → quickDownload RPC) ---
 async function handleDownloadClick(button, lcscId, overrides = {}) {
   dbg("handleDownloadClick", lcscId, overrides);
   let status;
   try {
-    status = await sendRuntimeMessage({ type: "getState" }, { retries: 2, delay: 200 });
+    status = await contentRpc("getState", {}, { retries: 2, delay: 200 });
     if (!status?.ok || !status.data) {
       throw new Error(status?.error || "Unable to reach extension backend.");
     }
@@ -3215,8 +3304,9 @@ async function handleDownloadClick(button, lcscId, overrides = {}) {
 
   if (pageData.category) {
     try {
-      const knownResponse = await sendRuntimeMessage(
-        { type: "checkCategoryKnown", category: pageData.category },
+      const knownResponse = await contentRpc(
+        "checkCategoryKnown",
+        { category: pageData.category },
         { retries: 2, delay: 200 },
       );
       const isKnown = knownResponse?.ok && knownResponse.data?.known;
@@ -3246,8 +3336,9 @@ async function handleDownloadClick(button, lcscId, overrides = {}) {
     && !categoryDialogShown
   ) {
     try {
-      const cfgResp = await sendRuntimeMessage(
-        { type: "getCategorySettings", category: pageData.category },
+      const cfgResp = await contentRpc(
+        "getCategorySettings",
+        { category: pageData.category },
         { retries: 2, delay: 200 },
       );
       if (cfgResp?.ok) {
@@ -3267,11 +3358,11 @@ async function handleDownloadClick(button, lcscId, overrides = {}) {
     }
   }
 
-  updateButtonState(button, "pending", { progress: 0, message: "Conversion is starting…" });
+  updateButtonState(button, "pending", { progress: 0, message: formatStatusColon("Conversion", "submitting job") });
   try {
-    const response = await sendRuntimeMessage(
+    const response = await contentRpc(
+      "quickDownload",
       {
-        type: "quickDownload",
         lcscId,
         source: "contentScript",
         category: pageData.category,
@@ -3296,189 +3387,87 @@ async function handleDownloadClick(button, lcscId, overrides = {}) {
     const data = response.data || {};
     const jobId = data.jobId;
     if (jobId) {
-      updateButtonState(button, "progress", { progress: 0, message: "Conversion in progress…" });
+      const prevWatch = button.dataset.k2cWatchJobId;
+      if (prevWatch && prevWatch !== jobId) {
+        clearJobWatcher(prevWatch);
+        forgetJobUi(prevWatch);
+      }
+      forgetJobUi(jobId);
+      button.dataset.k2cWatchJobId = jobId;
+      applyJobStatusToButton(button, jobId, {
+        status: data.status || "queued",
+        progress: data.progress,
+        message: data.message,
+        queue_position: data.queue_position,
+      });
       startJobWatcher(button, jobId);
     } else {
-      updateButtonState(button, "success", { message: "Job queued" });
+      updateButtonState(button, "progress", {
+        progress: 0,
+        phase: "queued",
+        message: formatStatusColon(
+          "Conversion",
+          "job submitted — open extension popup if this stays stuck",
+        ),
+      });
     }
   } catch (error) {
     console.error("easyeda2kicad quick download failed", error);
     updateButtonState(button, "error", {
-      message: error.message || "Failed to start conversion",
+      message: formatStatusColon("Conversion failed", error.message || "unknown error"),
       copyText: `Error: ${error.message || "Unknown error"}\n\nLCSC: ${lcscId}\n${error.stack || ""}`.trim(),
     });
     dbg("handleDownloadClick: failed", lcscId, error);
   }
 }
 
-async function initialiseButtonState(button, lcscId) {
-  try {
-    const response = await sendRuntimeMessage(
-      {
-        type: "checkComponentExists",
-        lcscId,
-      },
-      { retries: 4, delay: 300 },
-    );
-    if (!response?.ok) {
-      throw new Error(response?.error || "Failed to check library status");
-    }
-    const data = response.data || {};
-    dbg("initialiseButtonState", lcscId, data);
-    applyComponentState(button, data);
-  } catch (error) {
-    dbg("checkComponentExists failed", error);
-    const message = error?.message || "";
-    if (/backend/i.test(message) || /reach/i.test(message)) {
-      setButtonOfflineNoBackend(button);
+/** Terminal UI from WebSocket-driven state (no getJobStatus polling). */
+function applyTerminalJobUI(button, jobId, job) {
+  if (!button || !jobId || !job) return;
+  if (terminalJobHandled.has(jobId)) return;
+  terminalJobHandled.add(jobId);
+  setTimeout(() => terminalJobHandled.delete(jobId), 180000);
+  forgetJobUi(jobId);
+  clearJobWatcher(jobId);
+  delete button.dataset.k2cWatchJobId;
+  const messages = Array.isArray(job.messages)
+    ? job.messages
+    : (job.result?.messages || []);
+  const analysis = job.outputAnalysis
+    || computeOutputAnalysis({ outputs: job.outputs, result: job.result });
+  if (job.status === "completed") {
+    if (analysis.partial) {
+      updateButtonState(button, "partial", {
+        message: formatPartialImportMessage(messages, analysis.missing),
+      });
     } else {
-      updateButtonState(button, "idle");
-    }
-    button.dataset[INIT_ATTR] = "true";
-  }
-}
-
-function queueListValidation(button, lcscId) {
-  if (!button || !lcscId) {
-    return;
-  }
-  if (button.dataset[INIT_ATTR] === "true") {
-    return;
-  }
-  const normalized = lcscId.toUpperCase();
-  const entry = listValidationQueue.get(normalized) || new Set();
-  entry.add(button);
-  listValidationQueue.set(normalized, entry);
-  scheduleListValidation();
-}
-
-function scheduleListValidation(delay = 300) {
-  if (listValidationTimer) {
-    clearTimeout(listValidationTimer);
-  }
-  listValidationTimer = setTimeout(runListValidation, delay);
-}
-
-async function runListValidation() {
-  if (!listValidationQueue.size) {
-    return;
-  }
-  const queued = new Map(listValidationQueue);
-  listValidationQueue.clear();
-  listValidationTimer = null;
-
-  const lcscIds = Array.from(queued.keys());
-  try {
-    const response = await sendRuntimeMessage(
-      {
-        type: "checkComponentsExists",
-        lcscIds,
-      },
-      { retries: 3, delay: 300 },
-    );
-    if (!response?.ok) {
-      throw new Error(response?.error || "Failed to check library status");
-    }
-    const results = response.data?.results || {};
-    lcscIds.forEach((lcscId) => {
-      const data = results[lcscId] || {};
-      const buttons = queued.get(lcscId);
-      if (!buttons) {
-        return;
-      }
-      buttons.forEach((button) => {
-        applyComponentState(button, data);
+      const tooltip = buildSuccessTooltip(analysis, messages);
+      updateButtonState(button, "success", {
+        message: tooltip || undefined,
+        libraryName: job.libraryName,
+        libraryPath: job.libraryPath,
+        celebrateJobId: jobId,
       });
-    });
-  } catch (error) {
-    dbg("checkComponentsExists failed", error);
-    const message = error?.message || "";
-    lcscIds.forEach((lcscId) => {
-      const buttons = queued.get(lcscId);
-      if (!buttons) {
-        return;
-      }
-      buttons.forEach((button) => {
-        if (/backend/i.test(message) || /reach/i.test(message)) {
-          updateButtonState(button, "offline", {
-            message: "Download not available. Backend is offline.",
-          });
-        } else {
-          updateButtonState(button, "idle");
-        }
-        button.dataset[INIT_ATTR] = "true";
-      });
+    }
+    return;
+  }
+  if (job.status === "failed") {
+    updateButtonState(button, "error", {
+      message: formatStatusColon("Conversion failed", job.message || "unknown error"),
+      copyText: `Job failed: ${job.message || "Unknown error"}\n\nJob ID: ${jobId}\nStatus: ${job.status}\n${job.error || ""}`.trim(),
     });
   }
 }
 
 function startJobWatcher(button, jobId) {
-  clearJobWatcher(jobId);
-  dbg("startJobWatcher", jobId);
-
-  const poll = async () => {
-    try {
-      const response = await sendRuntimeMessage(
-        {
-          type: "getJobStatus",
-          jobId,
-        },
-        { retries: 4, delay: 400 },
-      );
-      if (!response?.ok) {
-        throw new Error(response?.error || "Job status unavailable");
-      }
-      const job = response.data || {};
-      const messages = Array.isArray(job.messages) ? job.messages : [];
-      const progress = Number.isFinite(job.progress) ? job.progress : job.status === "queued" ? 5 : 50;
-
-      const analysis = job.outputAnalysis
-        || computeOutputAnalysis({ outputs: job.outputs, result: job.result });
-      dbg("job status", jobId, job.status, progress, analysis);
-      if (job.status === "completed") {
-        if (analysis.partial) {
-          updateButtonState(button, "partial", {
-            message: messages.join(" • ") || formatMissingTooltip(analysis.missing),
-          });
-        } else {
-          const tooltip = buildSuccessTooltip(analysis, messages);
-          updateButtonState(button, "success", {
-            message: tooltip || "Conversion finished",
-            libraryName: job.libraryName,
-            libraryPath: job.libraryPath,
-          });
-        }
-        clearJobWatcher(jobId);
-        return;
-      }
-      if (job.status === "failed") {
-        updateButtonState(button, "error", {
-        message: job.message || "Conversion failed",
-        copyText: `Job failed: ${job.message || "Unknown error"}\n\nJob ID: ${jobId}\nStatus: ${job.status}\n${job.error || ""}`.trim(),
-      });
-        clearJobWatcher(jobId);
-        return;
-      }
-
-      const message = job.status === "queued"
-        ? "Waiting in queue…"
-        : `Conversion in progress – ${Math.round(progress)}%`;
-      updateButtonState(button, "progress", { progress, message });
-      const delay = job.status === "queued" ? 2000 : 1200;
-      const timer = setTimeout(poll, delay);
-      jobWatchers.set(jobId, timer);
-    } catch (error) {
-      console.warn("Polling job status failed", error);
-      updateButtonState(button, "error", {
-        message: error.message || "Failed to fetch job status",
-        copyText: `Error: ${error.message || "Unknown error"}\n\nJob ID: ${jobId}\n${error.stack || ""}`.trim(),
-      });
-      clearJobWatcher(jobId);
-      dbg("job watcher error", jobId, error);
-    }
-  };
-
-  poll();
+  const prevBtnJob = button.dataset.k2cWatchJobId;
+  if (prevBtnJob && prevBtnJob !== jobId) {
+    clearJobWatcher(prevBtnJob);
+    forgetJobUi(prevBtnJob);
+  }
+  button.dataset.k2cWatchJobId = jobId;
+  jobWatchers.set(jobId, true);
+  dbg("startJobWatcher(ws push)", jobId);
 }
 
 function registerObserver(observer) {
@@ -3495,19 +3484,14 @@ function cleanupInjectedUi() {
   if (productRow?.parentElement) {
     productRow.parentElement.removeChild(productRow);
   }
-  const progressRow = document.getElementById("easyeda2kicad-progress-row");
+  const progressRow = document.getElementById(PRODUCT_PROGRESS_ROW_ID);
   if (progressRow?.parentElement) {
     progressRow.parentElement.removeChild(progressRow);
   }
-  document.querySelectorAll(`.${LIST_CONTAINER_CLASS}`).forEach((holder) => {
-    holder.remove();
-  });
   jobWatchers.forEach((_, jobId) => clearJobWatcher(jobId));
-  listValidationQueue.clear();
-  if (listValidationTimer) {
-    clearTimeout(listValidationTimer);
-    listValidationTimer = null;
-  }
+  jobUiMonotone.clear();
+  terminalJobHandled.clear();
+  confettiDoneForJobId.clear();
   if (backendOnlineMonitorTimer) {
     clearInterval(backendOnlineMonitorTimer);
     backendOnlineMonitorTimer = null;
@@ -3555,22 +3539,6 @@ function setupForCurrentRoute() {
     }, 10000);
     return;
   }
-
-  if (LIST_REGEX.test(path) || document.querySelector(".tableContentTable")) {
-    attachListButtons();
-    const tableBody = document.querySelector(".tableContentTable > tbody");
-    if (!tableBody) {
-      return;
-    }
-    const observer = new MutationObserver(() => {
-      attachListButtons();
-    });
-    observer.observe(tableBody, {
-      childList: true,
-      subtree: true,
-    });
-    registerObserver(observer);
-  }
 }
 
 function scheduleRouteCheck() {
@@ -3597,6 +3565,44 @@ function setupRouteListener() {
   window.addEventListener("hashchange", scheduleRouteCheck);
 }
 
+/**
+ * Progress from `stateUpdate` (WebSocket pushes merged in the service worker).
+ */
+function syncWatchedJobUIFromExtensionState(extState) {
+  const jobs = Array.isArray(extState?.jobs) ? extState.jobs : [];
+  if (!jobs.length) return;
+  const group = document.getElementById(BTN_GROUP_ID);
+  if (!group) return;
+  queryProductGroupButtons(group).forEach((btn) => {
+    const jid = btn.dataset.k2cWatchJobId;
+    if (!jid) return;
+    const job = jobs.find((j) => j && j.id === jid);
+    if (!job) return;
+    const st = String(job.status || "").toLowerCase();
+    if (st === "completed" || st === "failed") return;
+    applyJobStatusToButton(btn, jid, job);
+  });
+}
+
+/** If `jobTerminal` was missed, pick terminal rows up from `jobHistory`. */
+function syncWatchedTerminalFromExtensionState(extState) {
+  const hist = Array.isArray(extState?.jobHistory) ? extState.jobHistory : [];
+  if (!hist.length) return;
+  const group = document.getElementById(BTN_GROUP_ID);
+  if (!group) return;
+  const active = Array.isArray(extState?.jobs) ? extState.jobs : [];
+  queryProductGroupButtons(group).forEach((btn) => {
+    const jid = btn.dataset.k2cWatchJobId;
+    if (!jid) return;
+    if (active.some((j) => j && j.id === jid)) return;
+    const job = hist.find((h) => h && h.id === jid);
+    if (!job) return;
+    const st = String(job.status || "").toLowerCase();
+    if (st !== "completed" && st !== "failed") return;
+    applyTerminalJobUI(btn, jid, job);
+  });
+}
+
 function init() {
   initDebug();
   chrome.runtime.onMessage.addListener((message) => {
@@ -3608,6 +3614,17 @@ function init() {
       } else if (previous && !debugEnabled) {
         console.log("[easyeda2kicad] debug logs disabled");
       }
+      syncWatchedJobUIFromExtensionState(message.state);
+      syncWatchedTerminalFromExtensionState(message.state);
+    }
+    if (message?.type === "jobTerminal" && message.jobId && message.job) {
+      const group = document.getElementById(BTN_GROUP_ID);
+      if (!group) return;
+      queryProductGroupButtons(group).forEach((btn) => {
+        if (btn.dataset.k2cWatchJobId === message.jobId) {
+          applyTerminalJobUI(btn, message.jobId, message.job);
+        }
+      });
     }
   });
 
