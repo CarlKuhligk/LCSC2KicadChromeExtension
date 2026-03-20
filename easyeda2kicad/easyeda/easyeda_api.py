@@ -73,10 +73,18 @@ class EasyedaApi:
         try:
             r = self._get_with_retry(ENDPOINT_3D_MODEL.format(uuid=uuid), timeout=15)
         except Exception as exc:
-            logging.error("Failed to fetch raw 3D model for uuid:%s: %s", uuid, exc)
+            logging.warning(
+                "Skipping raw 3D model for uuid %s (network/DNS or EasyEDA unreachable): %s",
+                uuid,
+                exc,
+            )
             return None
         if r.status_code != requests.codes.ok:
-            logging.error("No raw 3D model data found for uuid:%s on easyeda (status %s)", uuid, r.status_code)
+            logging.warning(
+                "No raw 3D model for uuid %s (HTTP %s); continuing without this asset",
+                uuid,
+                r.status_code,
+            )
             return None
         return r.content.decode()
 
@@ -84,9 +92,17 @@ class EasyedaApi:
         try:
             r = self._get_with_retry(ENDPOINT_3D_MODEL_STEP.format(uuid=uuid), timeout=20)
         except Exception as exc:
-            logging.error("Failed to fetch step 3D model for uuid:%s: %s", uuid, exc)
+            logging.warning(
+                "Skipping STEP 3D model for uuid %s (network/DNS or EasyEDA unreachable): %s",
+                uuid,
+                exc,
+            )
             return None
         if r.status_code != requests.codes.ok:
-            logging.error("No step 3D model data found for uuid:%s on easyeda (status %s)", uuid, r.status_code)
+            logging.warning(
+                "No STEP 3D model for uuid %s (HTTP %s); continuing without this asset",
+                uuid,
+                r.status_code,
+            )
             return None
         return r.content
