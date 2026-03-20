@@ -18,7 +18,7 @@ const INIT_ATTR = "easyeda2kicadInitialized";
 const PRODUCT_PROGRESS_ROW_ID = "easyeda2kicad-progress-row";
 
 // =============================================================================
-// In-page dialog theme (light panels on LCSC — tweak colors in CS_DIALOG only)
+// In-page dialog theme — aligned with extension popup (LCSC light / settings-section)
 // =============================================================================
 
 /** @param {string[]} parts */
@@ -26,38 +26,46 @@ function cssJoin(parts) {
   return parts.join(";");
 }
 
-/** Single source for modal/backdrop/button colors used by category & value-param dialogs. */
+/** Single source for modal/backdrop/button colors (category, value-param, overwrite). */
 const CS_DIALOG = {
-  overlayDim: "rgba(0,0,0,0.45)",
-  overlaySlate: "rgba(15,23,42,0.4)",
-  fontSans: "sans-serif",
+  overlayDim: "rgba(0,0,0,0.4)",
   fontUi: 'system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif',
-  panelBg: "#fff",
-  panelText: "#1a1a1a",
-  panelShadow: "0 8px 32px rgba(0,0,0,0.18)",
-  btnNeutralBorder: "#ccc",
-  btnSecondaryBg: "#f5f5f5",
-  btnOutlineBg: "#fff",
-  primaryBg: "#1f6feb",
-  primaryColor: "#fff",
-  outlineAccentBorder: "#1f6feb",
-  outlineAccentColor: "#1f6feb",
-  radius: "4px",
-  /** Product-row overwrite bar (LCSC blue) */
-  lcscBlue: "#1166dd",
-  slate900: "#0f172a",
-  slate800: "#1e293b",
-  slate400: "#94a3b8",
-  slate600: "#475569",
-  slate700: "#334155",
-  slate200: "#e2e8f0",
+  panelBg: "#ffffff",
+  panelText: "#1c1f23",
+  panelMuted: "rgba(102,102,102,0.88)",
+  panelMuted2: "rgba(102,102,102,0.82)",
+  labelStrong: "#4a4d52",
+  panelBorder: "#dedede",
+  panelShadow: "0 1px 3px rgba(0,0,0,0.06), 0 12px 40px rgba(0,0,0,0.1)",
+  btnNeutralBorder: "#dedede",
+  btnSecondaryBg: "#f0f2f5",
+  btnOutlineBg: "#ffffff",
+  primaryBg: "#1166dd",
+  primaryColor: "#ffffff",
+  outlineAccentBorder: "#1166dd",
+  outlineAccentColor: "#1166dd",
+  radius: "8px",
+  radiusSm: "4px",
+  inputBorder: "#dedede",
+  inputFocusRing: "rgba(17,102,221,0.2)",
+  dangerBg: "rgba(235,69,38,0.08)",
+  dangerBorder: "rgba(235,69,38,0.4)",
+  dangerText: "#c2410c",
+  slate900: "#1c1f23",
 };
 
 function cssModalPanelLight(maxWidthPx) {
   return cssJoin([
-    `background:${CS_DIALOG.panelBg}`, "border-radius:8px", "padding:24px 28px",
-    `max-width:${Number(maxWidthPx)}px`, "width:90%", `box-shadow:${CS_DIALOG.panelShadow}`,
+    `background:${CS_DIALOG.panelBg}`,
+    `border:1px solid ${CS_DIALOG.panelBorder}`,
+    `border-radius:${CS_DIALOG.radius}`,
+    "padding:18px 20px",
+    `max-width:${Number(maxWidthPx)}px`,
+    "width:min(90vw,100%)",
+    `box-shadow:${CS_DIALOG.panelShadow}`,
     `color:${CS_DIALOG.panelText}`,
+    `font-family:${CS_DIALOG.fontUi}`,
+    "box-sizing:border-box",
   ]);
 }
 
@@ -67,34 +75,29 @@ function dialogButtonStyle(variant, density) {
   const fs = density === "dense" ? "12px" : "13px";
   const base = [
     `padding:7px ${padH}`,
-    `border-radius:${CS_DIALOG.radius}`,
+    `border-radius:${CS_DIALOG.radiusSm}`,
     "cursor:pointer",
     `font-size:${fs}`,
     "white-space:nowrap",
     "flex-shrink:0",
     "box-sizing:border-box",
+    `font-family:${CS_DIALOG.fontUi}`,
   ];
   if (variant === "secondary") {
     return cssJoin([
       ...base,
       `border:1px solid ${CS_DIALOG.btnNeutralBorder}`,
       `background:${CS_DIALOG.btnSecondaryBg}`,
+      `color:${CS_DIALOG.panelText}`,
     ]);
   }
   if (variant === "outline") {
-    if (density === "dense") {
-      return cssJoin([
-        ...base,
-        `border:1px solid ${CS_DIALOG.outlineAccentBorder}`,
-        `background:${CS_DIALOG.btnOutlineBg}`,
-        `color:${CS_DIALOG.outlineAccentColor}`,
-        "font-weight:500",
-      ]);
-    }
     return cssJoin([
       ...base,
-      `border:1px solid ${CS_DIALOG.btnNeutralBorder}`,
+      `border:1px solid ${CS_DIALOG.outlineAccentBorder}`,
       `background:${CS_DIALOG.btnOutlineBg}`,
+      `color:${CS_DIALOG.outlineAccentColor}`,
+      "font-weight:500",
     ]);
   }
   return cssJoin([
@@ -110,27 +113,9 @@ const CSS_MODAL_OVERLAY_STANDARD = cssJoin([
   "position:fixed", "top:0", "left:0", "width:100%", "height:100%",
   `background:${CS_DIALOG.overlayDim}`, "z-index:2147483647",
   "display:flex", "align-items:center", "justify-content:center",
-  `font-family:${CS_DIALOG.fontSans}`,
-]);
-
-const CSS_MODAL_OVERLAY_MISMATCH = cssJoin([
-  "position:fixed", "top:0", "left:0", "width:100%", "height:100%",
-  `background:${CS_DIALOG.overlaySlate}`, "z-index:2147483647",
-  "display:flex", "align-items:center", "justify-content:center",
   `font-family:${CS_DIALOG.fontUi}`,
   "padding:16px",
   "box-sizing:border-box",
-]);
-
-const K2C_DLG_BTN_LIGHT_PRIMARY = cssJoin([
-  "padding:6px 12px", "border-radius:6px",
-  `border:1px solid ${CS_DIALOG.lcscBlue}`, "background:#fff", `color:${CS_DIALOG.slate900}`,
-  "cursor:pointer", "font-size:12px", "font-weight:600",
-]);
-const K2C_DLG_BTN_LIGHT_SECONDARY = cssJoin([
-  "padding:6px 12px", "border-radius:6px",
-  `border:1px solid ${CS_DIALOG.slate400}`, "background:#f8fafc", `color:${CS_DIALOG.slate800}`,
-  "cursor:pointer", "font-size:12px", "font-weight:500",
 ]);
 
 /**
@@ -990,12 +975,22 @@ function extractVDataTableSpecs() {
   return { params, labelsInOrder };
 }
 
+/** LCSC breadcrumb → `A/B/C`. Keep in sync with background.js `normalizeCategoryPath`. */
+function normalizeCategoryPath(raw) {
+  if (raw == null || typeof raw !== "string") return "";
+  return raw
+    .split("/")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join("/");
+}
+
 function extractPageData() {
   try {
     const categoryCell = document.getElementById("category_id");
     const categoryRaw = categoryCell?.nextElementSibling
       ?.querySelector("a")?.textContent?.trim() ?? null;
-    const category = categoryRaw ? (categoryRaw.split("/")[1] ?? categoryRaw).trim() : null;
+    const category = categoryRaw ? normalizeCategoryPath(categoryRaw) || null : null;
 
     const packageCell = document.getElementById("package_id");
     let pkg = packageCell?.nextElementSibling?.textContent?.trim() ?? null;
@@ -1189,18 +1184,26 @@ function showValueParamFallbackDialog(onDone) {
   box.style.cssText = cssModalPanelLight(440);
 
   const title = document.createElement("h3");
-  title.style.cssText = "margin:0 0 6px 0;font-size:15px;font-weight:700;";
+  title.style.cssText = `margin:0 0 6px 0;font-size:15px;font-weight:600;letter-spacing:-0.015em;color:${CS_DIALOG.panelText};`;
   title.textContent = "No product parameters found";
 
   const subtitle = document.createElement("p");
-  subtitle.style.cssText = "margin:0 0 18px 0;font-size:13px;color:#555;line-height:1.45;";
+  subtitle.style.cssText = `margin:0 0 18px 0;font-size:13px;color:${CS_DIALOG.panelMuted};line-height:1.45;`;
   subtitle.textContent =
     "The LCSC attributes table could not be read (or it is empty). "
     + "You can keep the KiCad Value field as in EasyEDA (usually the part name), "
     + "or open the same settings as for a new category to choose which LCSC field maps to Value when data is available.";
 
   const btnRow = document.createElement("div");
-  btnRow.style.cssText = "display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;margin-top:4px;";
+  btnRow.style.cssText = [
+    "display:flex",
+    "gap:10px",
+    "justify-content:flex-end",
+    "flex-wrap:wrap",
+    "margin-top:16px",
+    "padding-top:14px",
+    `border-top:1px solid ${CS_DIALOG.panelBorder}`,
+  ].join(";");
 
   const finish = (mode) => {
     removeValueParamFallbackDialog();
@@ -1284,36 +1287,17 @@ function showValueParamMismatchDialog(configuredKey, onDone) {
 
   const overlay = document.createElement("div");
   overlay.id = VALUE_PARAM_MISMATCH_DIALOG_ID;
-  overlay.style.cssText = CSS_MODAL_OVERLAY_MISMATCH;
+  overlay.style.cssText = CSS_MODAL_OVERLAY_STANDARD;
 
   const box = document.createElement("div");
-  box.style.cssText = [
-    "background:#fff",
-    "border-radius:12px",
-    "padding:0",
-    "max-width:460px",
-    "width:100%",
-    "box-shadow:0 20px 50px rgba(15,23,42,0.18),0 0 0 1px rgba(15,23,42,0.06)",
-    "color:#0f172a",
-    "overflow:hidden",
-  ].join(";");
+  box.style.cssText = cssModalPanelLight(460);
 
-  const header = document.createElement("div");
-  header.style.cssText = [
-    "padding:18px 22px 14px 22px",
-    "border-bottom:1px solid #f1f5f9",
-    "background:linear-gradient(180deg,#fff 0%,#fafbfc 100%)",
-  ].join(";");
   const title = document.createElement("h3");
-  title.style.cssText = "margin:0;font-size:16px;font-weight:700;color:#0f172a;line-height:1.3;";
+  title.style.cssText = `margin:0 0 6px 0;font-size:15px;font-weight:600;letter-spacing:-0.015em;color:${CS_DIALOG.panelText};line-height:1.3;`;
   title.textContent = "Value parameter not found on page";
-  header.appendChild(title);
-
-  const body = document.createElement("div");
-  body.style.cssText = "padding:18px 22px 8px 22px;";
 
   const intro = document.createElement("p");
-  intro.style.cssText = "margin:0 0 12px 0;font-size:13px;color:#475569;line-height:1.55;";
+  intro.style.cssText = `margin:0 0 12px 0;font-size:13px;color:${CS_DIALOG.panelMuted};line-height:1.55;`;
   intro.textContent = "Your category uses this LCSC attribute for the KiCad Value field, but it is missing or has no value in the tables on this page:";
 
   const keyWrap = document.createElement("div");
@@ -1321,40 +1305,36 @@ function showValueParamMismatchDialog(configuredKey, onDone) {
     "display:block",
     "margin:0 0 14px 0",
     "padding:12px 14px",
-    "border-radius:8px",
-    "background:#fef2f2",
-    "border:1px solid #fecaca",
+    `border-radius:${CS_DIALOG.radius}`,
+    `background:${CS_DIALOG.dangerBg}`,
+    `border:1px solid ${CS_DIALOG.dangerBorder}`,
   ].join(";");
   const keyEl = document.createElement("span");
   keyEl.textContent = configuredKey && String(configuredKey).trim() ? String(configuredKey).trim() : "(empty)";
   keyEl.style.cssText = [
     "font-weight:700",
     "font-size:14px",
-    "color:#b91c1c",
+    `color:${CS_DIALOG.dangerText}`,
     "letter-spacing:0.01em",
     "word-break:break-word",
   ].join(";");
   keyWrap.appendChild(keyEl);
 
   const hint = document.createElement("p");
-  hint.style.cssText = "margin:0;font-size:13px;color:#64748b;line-height:1.5;";
+  hint.style.cssText = `margin:0 0 4px 0;font-size:13px;color:${CS_DIALOG.panelMuted};line-height:1.5;`;
   hint.textContent =
     "You can continue with the EasyEDA default Value (usually the part name) or pick another LCSC field.";
-
-  body.appendChild(intro);
-  body.appendChild(keyWrap);
-  body.appendChild(hint);
 
   const btnRow = document.createElement("div");
   btnRow.style.cssText = [
     "display:flex",
     "flex-direction:row",
-    "flex-wrap:nowrap",
+    "flex-wrap:wrap",
     "align-items:center",
     "gap:10px",
-    "padding:14px 22px 18px 22px",
-    "border-top:1px solid #f1f5f9",
-    "background:#fafbfc",
+    "margin-top:16px",
+    "padding-top:14px",
+    `border-top:1px solid ${CS_DIALOG.panelBorder}`,
   ].join(";");
 
   const finish = (mode) => {
@@ -1388,8 +1368,10 @@ function showValueParamMismatchDialog(configuredKey, onDone) {
   btnRow.appendChild(defaultBtn);
   btnRow.appendChild(configureBtn);
   btnRow.appendChild(cancelBtn);
-  box.appendChild(header);
-  box.appendChild(body);
+  box.appendChild(title);
+  box.appendChild(intro);
+  box.appendChild(keyWrap);
+  box.appendChild(hint);
   box.appendChild(btnRow);
   overlay.appendChild(box);
   document.body.appendChild(overlay);
@@ -1447,15 +1429,20 @@ function showCategoryDialog(category, paramKeys, actions) {
   box.style.cssText = cssModalPanelLight(420);
 
   const title = document.createElement("h3");
-  title.style.cssText = "margin:0 0 6px 0;font-size:15px;font-weight:700;";
+  title.style.cssText = `margin:0 0 6px 0;font-size:15px;font-weight:600;letter-spacing:-0.015em;color:${CS_DIALOG.panelText};`;
   title.textContent = "New category detected";
 
   const subtitle = document.createElement("p");
-  subtitle.style.cssText = "margin:0 0 8px 0;font-size:13px;color:#555;";
-  subtitle.textContent = `Configure symbol settings for: ${category}`;
+  subtitle.style.cssText = `margin:0 0 6px 0;font-size:13px;color:${CS_DIALOG.panelMuted};line-height:1.45;`;
+  subtitle.textContent = `Full LCSC category path: ${category}`;
+
+  const pathHint = document.createElement("p");
+  pathHint.style.cssText = `margin:0 0 10px 0;font-size:12px;color:${CS_DIALOG.panelMuted2};line-height:1.45;`;
+  pathHint.textContent =
+    "Saved rows use this path. If you add both a parent and a deeper path in Settings, the deepest match applies (e.g. Parent/Child/SMD over Parent/Child).";
 
   const helpBlock = document.createElement("div");
-  helpBlock.style.cssText = "margin:0 0 16px 0;font-size:12px;color:#64748b;line-height:1.5;";
+  helpBlock.style.cssText = `margin:0 0 16px 0;font-size:12px;color:${CS_DIALOG.panelMuted2};line-height:1.5;`;
   const helpRows = [
     {
       key: "Skip",
@@ -1463,7 +1450,7 @@ function showCategoryDialog(category, paramKeys, actions) {
     },
     {
       key: "Save & continue",
-      text: "Store these defaults in the extension for this category.",
+      text: "Store these defaults under this full path in the extension (Settings → Categories).",
     },
     {
       key: "Continue",
@@ -1484,7 +1471,7 @@ function showCategoryDialog(category, paramKeys, actions) {
     ].join(";");
     const keySpan = document.createElement("span");
     keySpan.textContent = `${row.key}:`;
-    keySpan.style.cssText = "font-weight:600;color:#475569;white-space:nowrap;flex-shrink:0;";
+    keySpan.style.cssText = `font-weight:600;color:${CS_DIALOG.labelStrong};white-space:nowrap;flex-shrink:0;`;
     const textSpan = document.createElement("span");
     textSpan.textContent = row.text;
     textSpan.style.cssText = "flex:1;min-width:0;";
@@ -1495,7 +1482,7 @@ function showCategoryDialog(category, paramKeys, actions) {
 
   const checkRow = (labelText, id) => {
     const row = document.createElement("label");
-    row.style.cssText = "display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:13px;cursor:pointer;";
+    row.style.cssText = `display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:13px;cursor:pointer;color:${CS_DIALOG.panelText};`;
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.id = id;
@@ -1517,16 +1504,16 @@ function showCategoryDialog(category, paramKeys, actions) {
   const valueRow = document.createElement("div");
   valueRow.style.cssText = "margin-bottom:16px;";
   const valueLabel = document.createElement("label");
-  valueLabel.style.cssText = "display:block;font-size:13px;margin-bottom:4px;font-weight:600;color:#334155;";
+  valueLabel.style.cssText = `display:block;font-size:13px;margin-bottom:4px;font-weight:600;color:${CS_DIALOG.panelText};`;
   valueLabel.textContent = "Value parameter (optional)";
   const valueHint = document.createElement("p");
-  valueHint.style.cssText = "margin:0 0 8px 0;font-size:12px;color:#64748b;line-height:1.35;";
+  valueHint.style.cssText = `margin:0 0 8px 0;font-size:12px;color:${CS_DIALOG.panelMuted2};line-height:1.35;`;
   valueHint.textContent =
     "LCSC attribute name used for the KiCad Value field (from product tables below).";
 
   /** Chevron so the control reads as a dropdown even if LCSC CSS alters native &lt;select&gt; chrome. */
   const categorySelectChevronBg = `url("data:image/svg+xml,${encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>',
+    '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#666666" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>',
   )}")`;
 
   const selectDropdownStyle = [
@@ -1536,13 +1523,13 @@ function showCategoryDialog(category, paramKeys, actions) {
     "box-sizing:border-box",
     "min-height:40px",
     "padding:8px 40px 8px 12px",
-    "border:1px solid #cbd5e1",
-    "border-radius:8px",
+    `border:1px solid ${CS_DIALOG.inputBorder}`,
+    `border-radius:${CS_DIALOG.radius}`,
     "font-size:13px",
     "line-height:1.35",
-    "font-family:inherit",
-    "background-color:#fff",
-    "color:#0f172a",
+    `font-family:${CS_DIALOG.fontUi}`,
+    `background-color:${CS_DIALOG.panelBg}`,
+    `color:${CS_DIALOG.panelText}`,
     "cursor:pointer",
     "-webkit-appearance:none",
     "-moz-appearance:none",
@@ -1570,12 +1557,12 @@ function showCategoryDialog(category, paramKeys, actions) {
     valueSelect.setAttribute("aria-label", "Value parameter — LCSC attribute");
     valueSelect.style.cssText = selectDropdownStyle;
     valueSelect.addEventListener("focus", () => {
-      valueSelect.style.borderColor = "#1166dd";
-      valueSelect.style.boxShadow = "0 0 0 3px rgba(17,102,221,0.2)";
+      valueSelect.style.borderColor = CS_DIALOG.primaryBg;
+      valueSelect.style.boxShadow = `0 0 0 3px ${CS_DIALOG.inputFocusRing}`;
       valueSelect.style.outline = "none";
     });
     valueSelect.addEventListener("blur", () => {
-      valueSelect.style.borderColor = "#cbd5e1";
+      valueSelect.style.borderColor = CS_DIALOG.inputBorder;
       valueSelect.style.boxShadow = "none";
     });
 
@@ -1605,9 +1592,10 @@ function showCategoryDialog(category, paramKeys, actions) {
       "width:100%",
       "box-sizing:border-box",
       "padding:8px 10px",
-      "border:1px solid #cbd5e1",
-      "border-radius:8px",
+      `border:1px solid ${CS_DIALOG.inputBorder}`,
+      `border-radius:${CS_DIALOG.radius}`,
       "font-size:13px",
+      `font-family:${CS_DIALOG.fontUi}`,
       "margin-top:8px",
       "display:none",
     ].join(";");
@@ -1642,9 +1630,10 @@ function showCategoryDialog(category, paramKeys, actions) {
       "width:100%",
       "box-sizing:border-box",
       "padding:8px 10px",
-      "border:1px solid #cbd5e1",
-      "border-radius:8px",
+      `border:1px solid ${CS_DIALOG.inputBorder}`,
+      `border-radius:${CS_DIALOG.radius}`,
       "font-size:13px",
+      `font-family:${CS_DIALOG.fontUi}`,
     ].join(";");
     valueLabel.setAttribute("for", "easyeda2kicad-value-param");
     valueRow.appendChild(valueLabel);
@@ -1676,10 +1665,12 @@ function showCategoryDialog(category, paramKeys, actions) {
   btnRow.style.cssText = [
     "display:flex",
     "flex-direction:row",
-    "flex-wrap:nowrap",
+    "flex-wrap:wrap",
     "align-items:center",
     "gap:8px",
-    "margin-top:4px",
+    "margin-top:16px",
+    "padding-top:14px",
+    `border-top:1px solid ${CS_DIALOG.panelBorder}`,
     "justify-content:flex-start",
   ].join(";");
 
@@ -1697,7 +1688,7 @@ function showCategoryDialog(category, paramKeys, actions) {
   saveContinueBtn.textContent = "Save & continue";
   saveContinueBtn.setAttribute(
     "title",
-    "Store these pin and Value settings in the extension for this LCSC category (Settings → category table), then start the import.",
+    "Store under this full LCSC path in Settings → Categories (deepest matching row wins).",
   );
   saveContinueBtn.style.cssText = dialogButtonStyle("primary", "dense");
 
@@ -1753,6 +1744,7 @@ function showCategoryDialog(category, paramKeys, actions) {
   btnRow.appendChild(cancelBtn);
   box.appendChild(title);
   box.appendChild(subtitle);
+  box.appendChild(pathHint);
   box.appendChild(helpBlock);
   box.appendChild(hideNumRow);
   box.appendChild(hideNameRow);
@@ -2942,15 +2934,6 @@ function showOverwriteDialog(button, lcscId, pageData, existingOverrides) {
   const isProductPage = Boolean(row);
 
   const msgText = formatStatusColon("Part already in library", "overwrite?");
-  const btnStyleDarkModal = cssJoin([
-    "padding:6px 12px",
-    "border-radius:6px",
-    `border:1px solid ${CS_DIALOG.slate600}`,
-    `background:${CS_DIALOG.slate700}`,
-    `color:${CS_DIALOG.slate200}`,
-    "cursor:pointer",
-    "font-size:12px",
-  ]);
 
   const runDownload = (extraOverrides) => {
     if (row) {
@@ -2958,12 +2941,16 @@ function showOverwriteDialog(button, lcscId, pageData, existingOverrides) {
       row.style.display = "";
     } else if (overlay) {
       overlay.remove();
+      unlockOverlayPageScroll();
     }
     handleDownloadClick(button, lcscId, { ...existingOverrides, ...extraOverrides });
   };
 
   const restoreExists = () => {
-    if (!isProductPage && overlay) overlay.remove();
+    if (!isProductPage && overlay) {
+      overlay.remove();
+      unlockOverlayPageScroll();
+    }
     const libName = button.dataset.libraryName || null;
     const libPath = button.dataset.libraryPath || null;
     updateButtonState(button, "exists", {
@@ -2998,15 +2985,15 @@ function showOverwriteDialog(button, lcscId, pageData, existingOverrides) {
       const btnOverride = document.createElement("button");
       btnOverride.type = "button";
       btnOverride.textContent = "Override";
-      btnOverride.style.cssText = K2C_DLG_BTN_LIGHT_PRIMARY;
+      btnOverride.style.cssText = dialogButtonStyle("primary", "dense");
       const btnPermanent = document.createElement("button");
       btnPermanent.type = "button";
       btnPermanent.textContent = "Permanent override";
-      btnPermanent.style.cssText = K2C_DLG_BTN_LIGHT_PRIMARY;
+      btnPermanent.style.cssText = dialogButtonStyle("outline", "dense");
       const btnCancel = document.createElement("button");
       btnCancel.type = "button";
       btnCancel.textContent = "Cancel";
-      btnCancel.style.cssText = K2C_DLG_BTN_LIGHT_SECONDARY;
+      btnCancel.style.cssText = dialogButtonStyle("secondary", "dense");
       btnOverride.addEventListener("click", () => runDownload({ overwrite: true, overwrite_model: true }));
       btnPermanent.addEventListener("click", async () => {
         try {
@@ -3023,42 +3010,31 @@ function showOverwriteDialog(button, lcscId, pageData, existingOverrides) {
     return;
   }
 
-  let overlay = document.createElement("div");
-  overlay.style.cssText = `
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.5);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 999999;
-  `;
+  const overlay = document.createElement("div");
+  overlay.style.cssText = CSS_MODAL_OVERLAY_STANDARD;
   const box = document.createElement("div");
-  box.style.cssText = `
-    background: #1e293b;
-    padding: 16px 20px;
-    border-radius: 8px;
-    border: 1px solid #475569;
-    color: #e2e8f0;
-    font-size: 13px;
-    max-width: 320px;
-  `;
-  box.textContent = msgText;
+  box.style.cssText = cssModalPanelLight(340);
+  const titleEl = document.createElement("h3");
+  titleEl.style.cssText = `margin:0 0 8px 0;font-size:15px;font-weight:600;letter-spacing:-0.015em;color:${CS_DIALOG.panelText};`;
+  titleEl.textContent = "Part already in library";
+  const detailEl = document.createElement("p");
+  detailEl.style.cssText = `margin:0 0 16px 0;font-size:13px;color:${CS_DIALOG.panelMuted};line-height:1.45;`;
+  detailEl.textContent = "This part may already exist in your active library. Override this download, enable permanent overwrite, or cancel.";
   const btnWrap = document.createElement("div");
   btnWrap.style.cssText =
-    "display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;justify-content:center;align-items:center;width:100%;";
+    "display:flex;gap:8px;margin-top:4px;flex-wrap:wrap;justify-content:flex-start;align-items:center;width:100%;";
   const btnOverride = document.createElement("button");
   btnOverride.type = "button";
   btnOverride.textContent = "Override";
-  btnOverride.style.cssText = btnStyleDarkModal;
+  btnOverride.style.cssText = dialogButtonStyle("primary", "wide");
   const btnPermanent = document.createElement("button");
   btnPermanent.type = "button";
   btnPermanent.textContent = "Permanent override";
-  btnPermanent.style.cssText = btnStyleDarkModal;
+  btnPermanent.style.cssText = dialogButtonStyle("outline", "wide");
   const btnCancel = document.createElement("button");
   btnCancel.type = "button";
   btnCancel.textContent = "Cancel";
-  btnCancel.style.cssText = btnStyleDarkModal;
+  btnCancel.style.cssText = dialogButtonStyle("secondary", "wide");
   btnOverride.addEventListener("click", () => runDownload({ overwrite: true, overwrite_model: true }));
   btnPermanent.addEventListener("click", async () => {
     try {
@@ -3071,9 +3047,12 @@ function showOverwriteDialog(button, lcscId, pageData, existingOverrides) {
   btnWrap.appendChild(btnOverride);
   btnWrap.appendChild(btnPermanent);
   btnWrap.appendChild(btnCancel);
+  box.appendChild(titleEl);
+  box.appendChild(detailEl);
   box.appendChild(btnWrap);
   overlay.appendChild(box);
   document.body.appendChild(overlay);
+  lockOverlayPageScroll();
 }
 
 function showPinMismatchUI(button, lcscId, templateName, templateLibPath, easyedaPinCount, templatePinCount) {
@@ -3102,11 +3081,11 @@ function showPinMismatchUI(button, lcscId, templateName, templateLibPath, easyed
     const btnContinue = document.createElement("button");
     btnContinue.type = "button";
     btnContinue.textContent = "Continue (with pin incompatibility, manual fix required)";
-    btnContinue.style.cssText = K2C_DLG_BTN_LIGHT_PRIMARY;
+    btnContinue.style.cssText = dialogButtonStyle("primary", "dense");
     const btnEasyEda = document.createElement("button");
     btnEasyEda.type = "button";
     btnEasyEda.textContent = "Download EasyEDA model";
-    btnEasyEda.style.cssText = K2C_DLG_BTN_LIGHT_SECONDARY;
+    btnEasyEda.style.cssText = dialogButtonStyle("secondary", "dense");
 
     btnContinue.addEventListener("click", () => {
       row.style.display = "none";
