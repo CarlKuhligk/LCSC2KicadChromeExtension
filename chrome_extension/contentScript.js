@@ -109,6 +109,49 @@ function dialogButtonStyle(variant, density) {
   ]);
 }
 
+/** Breadcrumb segment buttons in the category dialog (file-manager style path). */
+function categoryBreadcrumbBtnStyle({ isLeaf, before, after }) {
+  const base = [
+    "margin:0",
+    "padding:4px 8px",
+    `border-radius:${CS_DIALOG.radiusSm}`,
+    "font-size:12px",
+    `font-family:${CS_DIALOG.fontUi}`,
+    "cursor:pointer",
+    "max-width:100%",
+    "text-align:left",
+    "line-height:1.35",
+    "word-break:break-word",
+    "box-sizing:border-box",
+    "transition:background 0.15s ease,border-color 0.15s ease,color 0.15s ease",
+  ];
+  if (isLeaf) {
+    return cssJoin([
+      ...base,
+      `border:2px solid ${CS_DIALOG.primaryBg}`,
+      `background:${CS_DIALOG.primaryBg}`,
+      `color:${CS_DIALOG.primaryColor}`,
+      "font-weight:700",
+    ]);
+  }
+  if (before) {
+    return cssJoin([
+      ...base,
+      `border:1px solid ${CS_DIALOG.outlineAccentBorder}`,
+      `background:${CS_DIALOG.inputFocusRing}`,
+      `color:${CS_DIALOG.outlineAccentColor}`,
+      "font-weight:600",
+    ]);
+  }
+  return cssJoin([
+    ...base,
+    `border:1px dashed ${CS_DIALOG.inputBorder}`,
+    `background:${CS_DIALOG.btnSecondaryBg}`,
+    `color:${CS_DIALOG.panelMuted}`,
+    "font-weight:500",
+  ]);
+}
+
 const CSS_MODAL_OVERLAY_STANDARD = cssJoin([
   "position:fixed", "top:0", "left:0", "width:100%", "height:100%",
   `background:${CS_DIALOG.overlayDim}`, "z-index:2147483647",
@@ -195,6 +238,9 @@ let backendOnlineMonitorTimer = null;
 let backendOnlineMonitorLcscId = null;
 let backendOnlineMonitorGroupDiv = null;
 let backendOnlineMonitorAttempts = 0;
+/** Debounce product-row refresh when `importDestReady` flips (e.g. user selects a library in the popup). */
+let lastBroadcastImportDestReady = null;
+let importDestRefreshTimer = null;
 
 // =============================================================================
 // Runtime messaging (content script ↔ service worker)
@@ -344,6 +390,10 @@ function getProductBtnShadowStylesheet() {
       border-right: 1px solid rgba(255,255,255,0.2);
       padding-right: 2px;
     }
+    .easyeda2kicad-dl-btn[data-lib-state="no-library"] .dl-icon-wrap {
+      opacity: 0.92;
+    }
+
     .easyeda2kicad-dl-btn[data-lib-state="offline"] .dl-icon-wrap {
       border-right-color: rgba(255,255,255,0.28);
     }
@@ -542,9 +592,27 @@ function ensureSpinnerStyle() {
       width: 100%;
     }
 
+    #easyeda2kicad-progress-bar.status-no-library {
+      background: linear-gradient(90deg, #ca8a04, #d97706);
+      width: 100%;
+    }
+
     /* !important: LCSC/Vue may set parent color to #fff; status line must stay dark/neutral (never white). */
     #easyeda2kicad-status-text.status-offline {
       color: #c2410c !important;
+    }
+
+    #easyeda2kicad-status-text.status-no-library {
+      color: #9a3412 !important;
+      text-align: left !important;
+    }
+
+    #easyeda2kicad-status-text.k2c-status-pre {
+      white-space: pre-wrap;
+      text-align: left;
+      font-weight: 500;
+      line-height: 1.45;
+      max-width: 100%;
     }
 
     /* Light table: force readable slate text (LCSC/Vuetify may inherit light-on-light). */
@@ -618,6 +686,9 @@ function ensureSpinnerStyle() {
       }
       #easyeda2kicad-status-text {
         color: #cbd5e1 !important;
+      }
+      #easyeda2kicad-status-text.status-no-library {
+        color: #fdba74 !important;
       }
       #easyeda2kicad-status-text.k2c-status-progress {
         color: #e2e8f0 !important;
@@ -896,6 +967,18 @@ function formatPartialImportMessage(messages, missing) {
 /** Shared copy for backend-unreachable UI (progress row + titles). */
 const MSG_BACKEND_OFFLINE = formatStatusColon("Download unavailable", "backend offline");
 
+/** Product page: no active non-template library for EasyEDA / template output. */
+const MSG_NO_IMPORT_LIB_TITLE = formatStatusColon("Download unavailable", "no library selected or available");
+const MSG_NO_IMPORT_LIB_DETAIL = [
+  "Add or select a working KiCad library in the extension:",
+  "",
+  "1. Click the KiCad Parts Importer icon in the Chrome toolbar (or the puzzle piece → find the extension, or Menu (⋮) → Extensions).",
+  "2. Open the Library tab.",
+  "3. Use Add to create or import a library folder, then turn on that row's switch so it is the active library (not Template-only).",
+  "",
+  "EasyEDA and template downloads both write into that active library.",
+].join("\n");
+
 const MSG_LIBRARY_TITLE = formatStatusColon("Already in library", "click to update");
 
 function extractLcscId() {
@@ -973,16 +1056,6 @@ function extractVDataTableSpecs() {
     labelsInOrder.push(label);
   }
   return { params, labelsInOrder };
-}
-
-/** LCSC breadcrumb → `A/B/C`. Keep in sync with background.js `normalizeCategoryPath`. */
-function normalizeCategoryPath(raw) {
-  if (raw == null || typeof raw !== "string") return "";
-  return raw
-    .split("/")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .join("/");
 }
 
 function extractPageData() {
@@ -1401,11 +1474,11 @@ function promiseValueParamMismatch(configuredKey) {
 }
 
 /**
- * @param {string} category
+ * @param {string} category Full LCSC path from the product page (slash-separated).
  * @param {string[]} paramKeys
  * @param {{
- *   onSaveAndContinue: (config: { hidePinNumbers: boolean, hidePinNames: boolean, valueParam: string | null }) => void | Promise<void>,
- *   onContinueOnly: (config: { hidePinNumbers: boolean, hidePinNames: boolean, valueParam: string | null }) => void,
+ *   onSaveAndContinue: (payload: { category: string, hidePinNumbers: boolean, hidePinNames: boolean, valueParam: string | null }) => void | Promise<void>,
+ *   onContinueOnly: (payload: { category: string, hidePinNumbers: boolean, hidePinNames: boolean, valueParam: string | null }) => void,
  *   onSkip: () => void,
  *   onCancel: () => void,
  * }} actions
@@ -1426,59 +1499,67 @@ function showCategoryDialog(category, paramKeys, actions) {
   overlay.style.cssText = CSS_MODAL_OVERLAY_STANDARD;
 
   const box = document.createElement("div");
-  box.style.cssText = cssModalPanelLight(420);
+  box.style.cssText = cssModalPanelLight(480);
 
   const title = document.createElement("h3");
   title.style.cssText = `margin:0 0 6px 0;font-size:15px;font-weight:600;letter-spacing:-0.015em;color:${CS_DIALOG.panelText};`;
   title.textContent = "New category detected";
 
-  const subtitle = document.createElement("p");
-  subtitle.style.cssText = `margin:0 0 6px 0;font-size:13px;color:${CS_DIALOG.panelMuted};line-height:1.45;`;
-  subtitle.textContent = `Full LCSC category path: ${category}`;
+  const intro = document.createElement("p");
+  intro.style.cssText = `margin:0 0 8px 0;font-size:13px;color:${CS_DIALOG.panelMuted};line-height:1.45;`;
+  intro.textContent =
+    "Navigate the LCSC path like folders: click a segment to set how much of the path is used when you save (bold = end of path). Deeper rows in Settings override shallower ones.";
 
-  const pathHint = document.createElement("p");
-  pathHint.style.cssText = `margin:0 0 10px 0;font-size:12px;color:${CS_DIALOG.panelMuted2};line-height:1.45;`;
-  pathHint.textContent =
-    "Saved rows use this path. If you add both a parent and a deeper path in Settings, the deepest match applies (e.g. Parent/Child/SMD over Parent/Child).";
+  const breadcrumbWrap = document.createElement("div");
+  breadcrumbWrap.setAttribute("role", "navigation");
+  breadcrumbWrap.setAttribute("aria-label", "Category path");
+  breadcrumbWrap.style.cssText =
+    "margin:0 0 16px 0;display:flex;flex-wrap:wrap;align-items:center;gap:2px 2px;max-width:100%;";
 
-  const helpBlock = document.createElement("div");
-  helpBlock.style.cssText = `margin:0 0 16px 0;font-size:12px;color:${CS_DIALOG.panelMuted2};line-height:1.5;`;
-  const helpRows = [
-    {
-      key: "Skip",
-      text: "Keep defaults and download.",
-    },
-    {
-      key: "Save & continue",
-      text: "Store these defaults under this full path in the extension (Settings → Categories).",
-    },
-    {
-      key: "Continue",
-      text: "Apply only to this download (not saved).",
-    },
-    {
-      key: "Cancel",
-      text: "Close the dialog without importing.",
-    },
-  ];
-  helpRows.forEach((row, i) => {
-    const line = document.createElement("div");
-    line.style.cssText = [
-      "display:flex",
-      "gap:6px",
-      "align-items:flex-start",
-      i < helpRows.length - 1 ? "margin:0 0 8px 0" : "margin:0",
-    ].join(";");
-    const keySpan = document.createElement("span");
-    keySpan.textContent = `${row.key}:`;
-    keySpan.style.cssText = `font-weight:600;color:${CS_DIALOG.labelStrong};white-space:nowrap;flex-shrink:0;`;
-    const textSpan = document.createElement("span");
-    textSpan.textContent = row.text;
-    textSpan.style.cssText = "flex:1;min-width:0;";
-    line.appendChild(keySpan);
-    line.appendChild(textSpan);
-    helpBlock.appendChild(line);
-  });
+  let segments = normalizeCategoryPath(category).split("/").filter(Boolean);
+  if (!segments.length) {
+    segments = [(category || "").trim() || "—"];
+  }
+
+  let selectedEndIndex = Math.max(0, segments.length - 1);
+  let selectedCategoryPath = segments.slice(0, selectedEndIndex + 1).join("/");
+
+  function pathUpTo(i) {
+    return segments.slice(0, i + 1).join("/");
+  }
+
+  function syncSelectedCategoryPath() {
+    selectedCategoryPath = pathUpTo(selectedEndIndex);
+  }
+
+  function rebuildCategoryBreadcrumb() {
+    breadcrumbWrap.innerHTML = "";
+    segments.forEach((seg, i) => {
+      if (i > 0) {
+        const sep = document.createElement("span");
+        sep.textContent = "/";
+        sep.setAttribute("aria-hidden", "true");
+        sep.style.cssText = `color:${CS_DIALOG.panelMuted2};font-weight:600;padding:0 2px;user-select:none;flex-shrink:0;`;
+        breadcrumbWrap.appendChild(sep);
+      }
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = seg;
+      btn.title = `Use path ending here: ${pathUpTo(i)}`;
+      const isLeaf = i === selectedEndIndex;
+      const before = i < selectedEndIndex;
+      const after = i > selectedEndIndex;
+      btn.style.cssText = categoryBreadcrumbBtnStyle({ isLeaf, before, after });
+      btn.addEventListener("click", () => {
+        selectedEndIndex = i;
+        rebuildCategoryBreadcrumb();
+      });
+      breadcrumbWrap.appendChild(btn);
+    });
+    syncSelectedCategoryPath();
+  }
+
+  rebuildCategoryBreadcrumb();
 
   const checkRow = (labelText, id) => {
     const row = document.createElement("label");
@@ -1658,7 +1739,12 @@ function showCategoryDialog(category, paramKeys, actions) {
       rawValueParam = (textEl?.value || "").trim();
     }
     const valueParam = rawValueParam || defaultValueParam || null;
-    return { hidePinNumbers, hidePinNames, valueParam };
+    return {
+      category: selectedCategoryPath,
+      hidePinNumbers,
+      hidePinNames,
+      valueParam,
+    };
   }
 
   const btnRow = document.createElement("div");
@@ -1679,7 +1765,7 @@ function showCategoryDialog(category, paramKeys, actions) {
   skipBtn.textContent = "Skip";
   skipBtn.setAttribute(
     "title",
-    "Do not save this dialog. Use existing or built-in defaults for this category and proceed with the import.",
+    "Do not save this dialog. Proceed with the import; saved category rows in Settings apply when their path matches.",
   );
   skipBtn.style.cssText = dialogButtonStyle("secondary", "dense");
 
@@ -1688,7 +1774,7 @@ function showCategoryDialog(category, paramKeys, actions) {
   saveContinueBtn.textContent = "Save & continue";
   saveContinueBtn.setAttribute(
     "title",
-    "Store under this full LCSC path in Settings → Categories (deepest matching row wins).",
+    "Store under the path shown above in Settings → Categories (deepest matching row wins on import).",
   );
   saveContinueBtn.style.cssText = dialogButtonStyle("primary", "dense");
 
@@ -1713,17 +1799,17 @@ function showCategoryDialog(category, paramKeys, actions) {
   });
 
   saveContinueBtn.addEventListener("click", async () => {
-    const config = collectCategoryFormConfig();
+    const payload = collectCategoryFormConfig();
     removeCategoryDialog();
     if (typeof onSaveAndContinue === "function") {
-      await Promise.resolve(onSaveAndContinue(config));
+      await Promise.resolve(onSaveAndContinue(payload));
     }
   });
 
   continueOnlyBtn.addEventListener("click", () => {
-    const config = collectCategoryFormConfig();
+    const payload = collectCategoryFormConfig();
     removeCategoryDialog();
-    if (typeof onContinueOnly === "function") onContinueOnly(config);
+    if (typeof onContinueOnly === "function") onContinueOnly(payload);
   });
 
   cancelBtn.addEventListener("click", () => {
@@ -1743,9 +1829,8 @@ function showCategoryDialog(category, paramKeys, actions) {
   btnRow.appendChild(continueOnlyBtn);
   btnRow.appendChild(cancelBtn);
   box.appendChild(title);
-  box.appendChild(subtitle);
-  box.appendChild(pathHint);
-  box.appendChild(helpBlock);
+  box.appendChild(intro);
+  box.appendChild(breadcrumbWrap);
   box.appendChild(hideNumRow);
   box.appendChild(hideNameRow);
   box.appendChild(valueRow);
@@ -1946,6 +2031,33 @@ function setGroupBackendOffline() {
 
   // Automatically recover once backend is back online.
   startBackendOnlineMonitor();
+}
+
+function setGroupNoImportLibrary() {
+  const group = document.getElementById(BTN_GROUP_ID);
+  if (!group) return;
+  queryProductGroupButtons(group).forEach((b) => {
+    b.disabled = true;
+    setSpin(b, false);
+    setIcon(b, "currentColor", "download");
+    setBtnLabel(b, "Download");
+    setBtnTheme(b, "warning");
+    b.dataset.libState = "no-library";
+    b.style.cursor = "not-allowed";
+    b.setAttribute("title", MSG_NO_IMPORT_LIB_TITLE);
+    b.querySelectorAll(".easyeda2kicad-icon-path").forEach((p) => {
+      p.setAttribute("fill", "currentColor");
+      p.setAttribute("opacity", "1");
+    });
+  });
+  setProgressUI({
+    visible: true,
+    barClass: "status-no-library",
+    widthPct: 100,
+    message: `${MSG_NO_IMPORT_LIB_TITLE}\n\n${MSG_NO_IMPORT_LIB_DETAIL}`,
+    messageClass: "status-no-library",
+    preformatted: true,
+  });
 }
 
 function showBackendOfflineUIForButton(button, options = {}) {
@@ -2356,7 +2468,15 @@ function getProgressElements() {
   };
 }
 
-function setProgressUI({ visible = true, barClass = "", widthPct = null, message = "", messageClass = "", copyText = null } = {}) {
+function setProgressUI({
+  visible = true,
+  barClass = "",
+  widthPct = null,
+  message = "",
+  messageClass = "",
+  copyText = null,
+  preformatted = false,
+} = {}) {
   if (visible) {
     ensureProductProgressRow();
   }
@@ -2375,7 +2495,8 @@ function setProgressUI({ visible = true, barClass = "", widthPct = null, message
   }
 
   if (text) {
-    text.className = `easyeda2kicad-status-text${messageClass ? ` ${messageClass}` : ""}`;
+    const preClass = preformatted ? " k2c-status-pre" : "";
+    text.className = `easyeda2kicad-status-text${messageClass ? ` ${messageClass}` : ""}${preClass}`;
     text.textContent = message;
 
     if (copyText && messageClass === "status-error") {
@@ -2567,12 +2688,19 @@ async function refreshButtonGroup(lcscId, groupDiv, options = {}) {
     // Bind click handlers (overwrite previous via onclick).
     easyBtn.onclick = () => handleDownloadClick(easyBtn, lcscId, { useTemplate: false });
     if (templateBtn && templateBtn.style.display !== "none") {
-      templateBtn.onclick = () => openTemplateDropdown(templateBtn, groupDiv, lcscId, state);
+      templateBtn.onclick = () => {
+        void openTemplateDropdown(templateBtn, groupDiv, lcscId, state);
+      };
     }
 
     // If backend is offline or state could not be read, grey out buttons and show status.
     if (!backendOnline) {
       setGroupBackendOffline();
+      return;
+    }
+
+    if (!state.importDestReady) {
+      setGroupNoImportLibrary();
       return;
     }
 
@@ -2650,6 +2778,45 @@ async function refreshButtonGroup(lcscId, groupDiv, options = {}) {
 
 const TEMPLATE_DROPDOWN_ID = "easyeda2kicad-template-dropdown";
 
+/**
+ * Keep a fixed dropdown within the viewport; prefer below the anchor, flip above if needed.
+ * Sets top or bottom + maxHeight so the inner scroll area can reach the last row.
+ */
+function positionTemplateDropdown(dropdown, anchorRect) {
+  const edge = 12;
+  const gap = 6;
+  const maxPreferred = 380;
+  const vh = window.innerHeight;
+  const vw = window.innerWidth;
+
+  const spaceBelow = vh - anchorRect.bottom - gap - edge;
+  const spaceAbove = anchorRect.top - gap - edge;
+  const openBelow = spaceBelow >= 140 || spaceBelow >= spaceAbove;
+
+  let maxH;
+  if (openBelow) {
+    maxH = Math.min(maxPreferred, Math.max(96, spaceBelow));
+    dropdown.style.top = `${anchorRect.bottom + gap}px`;
+    dropdown.style.bottom = "";
+  } else {
+    maxH = Math.min(maxPreferred, Math.max(96, spaceAbove));
+    dropdown.style.bottom = `${vh - anchorRect.top + gap}px`;
+    dropdown.style.top = "";
+  }
+  dropdown.style.maxHeight = `${maxH}px`;
+
+  let left = anchorRect.left;
+  dropdown.style.left = `${Math.max(edge, left)}px`;
+
+  requestAnimationFrame(() => {
+    const w = dropdown.getBoundingClientRect().width;
+    const clamped = Math.min(Math.max(edge, left), vw - w - edge);
+    if (Math.abs(clamped - left) > 0.5) {
+      dropdown.style.left = `${clamped}px`;
+    }
+  });
+}
+
 function buildTemplateListItems(templateSymbolsByLib) {
   const items = [];
   Object.entries(templateSymbolsByLib || {}).forEach(([libPath, names]) => {
@@ -2663,7 +2830,55 @@ function buildTemplateListItems(templateSymbolsByLib) {
   return items;
 }
 
-function openTemplateDropdown(anchorButton, groupDiv, lcscId, state) {
+function showTemplateDropdownEmpty(anchorButton, groupDiv, hasTemplateLibraries) {
+  const wrapper = document.getElementById(BUTTON_WRAPPER_ID) || groupDiv.parentElement;
+  const dropdown = document.createElement("div");
+  dropdown.id = TEMPLATE_DROPDOWN_ID;
+  dropdown.setAttribute("role", "dialog");
+  dropdown.setAttribute("aria-label", "Template symbols");
+  dropdown.style.cssText = [
+    "position:fixed",
+    "z-index:2147483646",
+    "min-width:260px",
+    "max-width:min(360px,calc(100vw - 24px))",
+    "background:#ffffff",
+    "border:1px solid #e2e8f0",
+    "border-radius:10px",
+    "box-shadow:0 12px 40px rgba(15,23,42,0.12),0 4px 12px rgba(15,23,42,0.06)",
+    "font-family:system-ui,-apple-system,\"Segoe UI\",Roboto,\"Helvetica Neue\",Arial,sans-serif",
+    "font-size:13px",
+    "color:#0f172a",
+    "padding:14px 16px",
+    "line-height:1.45",
+    "box-sizing:border-box",
+    "overflow-y:auto",
+  ].join(";");
+  const msg = document.createElement("p");
+  msg.style.cssText = "margin:0;font-size:13px;line-height:1.45;color:#334155;";
+  msg.textContent = hasTemplateLibraries
+    ? "No template symbols were found. Check that the backend is running and the template library’s .kicad_sym file is valid. Use the extension popup to refresh libraries if needed, then open this menu again."
+    : "No template library is set. In the extension popup → Library, turn on Template for a library that contains your template symbols.";
+  dropdown.appendChild(msg);
+
+  function closeDropdown() {
+    const el = document.getElementById(TEMPLATE_DROPDOWN_ID);
+    if (el) el.remove();
+    document.removeEventListener("click", outsideClick);
+    unlockOverlayPageScroll();
+  }
+  function outsideClick(e) {
+    if (dropdown.contains(e.target) || (anchorButton && anchorButton.contains(e.target))) return;
+    closeDropdown();
+  }
+
+  const rect = (wrapper || groupDiv).getBoundingClientRect();
+  lockOverlayPageScroll();
+  document.body.appendChild(dropdown);
+  positionTemplateDropdown(dropdown, rect);
+  setTimeout(() => document.addEventListener("click", outsideClick), 0);
+}
+
+async function openTemplateDropdown(anchorButton, groupDiv, lcscId, state) {
   let existing = document.getElementById(TEMPLATE_DROPDOWN_ID);
   if (existing) {
     existing.remove();
@@ -2671,9 +2886,28 @@ function openTemplateDropdown(anchorButton, groupDiv, lcscId, state) {
     return;
   }
 
-  const templateSymbolsByLib = state.templateSymbolsByLib || {};
-  const allItems = buildTemplateListItems(templateSymbolsByLib);
-  if (!allItems.length) return;
+  const hasTplLibs = Array.isArray(state.libraries)
+    && state.libraries.some((l) => Boolean(l && l.isTemplateLibrary));
+
+  let templateSymbolsByLib = { ...(state.templateSymbolsByLib || {}) };
+  let allItems = buildTemplateListItems(templateSymbolsByLib);
+
+  if (!allItems.length && hasTplLibs) {
+    try {
+      const ref = await contentRpc("refreshTemplateSymbols", {}, { retries: 2, delay: 400 });
+      if (ref?.ok && ref.data?.templateSymbolsByLib) {
+        templateSymbolsByLib = ref.data.templateSymbolsByLib;
+        allItems = buildTemplateListItems(templateSymbolsByLib);
+      }
+    } catch (_e) {
+      dbg("refreshTemplateSymbols failed", _e);
+    }
+  }
+
+  if (!allItems.length) {
+    showTemplateDropdownEmpty(anchorButton, groupDiv, hasTplLibs);
+    return;
+  }
 
   const wrapper = document.getElementById(BUTTON_WRAPPER_ID) || groupDiv.parentElement;
   const dropdown = document.createElement("div");
@@ -2684,8 +2918,7 @@ function openTemplateDropdown(anchorButton, groupDiv, lcscId, state) {
     "position:fixed",
     "z-index:2147483646",
     "min-width:260px",
-    "max-width:360px",
-    "max-height:min(320px,calc(100vh - 24px))",
+    "max-width:min(360px,calc(100vw - 24px))",
     "background:#ffffff",
     "border:1px solid #e2e8f0",
     "border-radius:10px",
@@ -2698,10 +2931,11 @@ function openTemplateDropdown(anchorButton, groupDiv, lcscId, state) {
     "color:#0f172a",
   ].join(";");
 
+  const headerBlock = document.createElement("div");
+  headerBlock.style.cssText = "padding:10px 14px 0 14px;flex-shrink:0;";
   const header = document.createElement("div");
   header.textContent = "Template symbol";
   header.style.cssText = [
-    "padding:12px 14px 0 14px",
     "font-size:11px",
     "font-weight:600",
     "color:#64748b",
@@ -2709,6 +2943,20 @@ function openTemplateDropdown(anchorButton, groupDiv, lcscId, state) {
     "letter-spacing:0.06em",
     "line-height:1.2",
   ].join(";");
+  const headerWarn = document.createElement("p");
+  headerWarn.textContent =
+    "Use numeric pin numbers (1, 2, 3…) matching EasyEDA; put G/D/S in the name. On LCSC, check the part pin diagram or EasyEDA symbol vs your template before importing.";
+  headerWarn.style.cssText = [
+    "margin:6px 0 0 0",
+    "padding:0",
+    "font-size:11px",
+    "line-height:1.35",
+    "font-weight:500",
+    "color:#9a3412",
+    "max-width:100%",
+  ].join(";");
+  headerBlock.appendChild(header);
+  headerBlock.appendChild(headerWarn);
 
   const searchBox = document.createElement("input");
   searchBox.type = "search";
@@ -2745,9 +2993,11 @@ function openTemplateDropdown(anchorButton, groupDiv, lcscId, state) {
     "overflow-x:hidden",
     "flex:1",
     "min-height:0",
-    "padding:2px 8px 10px 8px",
+    "padding:2px 8px 14px 8px",
     "scrollbar-width:thin",
     "scrollbar-color:#cbd5e1 #f1f5f9",
+    "overscroll-behavior:contain",
+    "-webkit-overflow-scrolling:touch",
   ].join(";");
 
   function filterList(query) {
@@ -2844,27 +3094,35 @@ function openTemplateDropdown(anchorButton, groupDiv, lcscId, state) {
   searchBox.addEventListener("input", () => filterList(searchBox.value));
   searchBox.addEventListener("click", (e) => e.stopPropagation());
 
-  dropdown.appendChild(header);
+  dropdown.appendChild(headerBlock);
   dropdown.appendChild(searchBox);
   dropdown.appendChild(list);
   filterList("");
 
   const rect = (wrapper || groupDiv).getBoundingClientRect();
-  dropdown.style.top = `${rect.bottom + 6}px`;
-  dropdown.style.left = `${rect.left}px`;
 
   lockOverlayPageScroll();
   document.body.appendChild(dropdown);
+  positionTemplateDropdown(dropdown, rect);
   setTimeout(() => document.addEventListener("click", outsideClick), 0);
   searchBox.focus();
 }
 
 async function onTemplateSelected(button, lcscId, templateName, templateLibPath) {
-  // Keep backend-offline handling consistent with the EasyEDA button.
+  let status;
   try {
-    const status = await contentRpc("getState", {}, { retries: 2, delay: 200 });
+    status = await contentRpc("getState", {}, { retries: 2, delay: 200 });
     if (!status?.ok || !status?.data || status.data.connected !== true) {
       showBackendOfflineUIForButton(button);
+      return;
+    }
+    if (!status.data.importDestReady) {
+      const group = document.getElementById(BTN_GROUP_ID);
+      if (group && btnGroupHostContains(group, button)) {
+        setGroupNoImportLibrary();
+      } else {
+        updateButtonState(button, "error", { message: MSG_NO_IMPORT_LIB_TITLE });
+      }
       return;
     }
   } catch (_e) {
@@ -3208,19 +3466,30 @@ function paramKeysFromPageData(pageData) {
 /**
  * @param {{ value: object | null }} catCfgRef mutable — "Continue only" config or null after save/skip
  */
-function createCategoryDialogCallbacks(category, catCfgRef, resolve) {
+function createCategoryDialogCallbacks(catCfgRef, resolve) {
   return {
-    onSaveAndContinue: async (config) => {
+    onSaveAndContinue: async (payload) => {
+      const {
+        category: savePath,
+        hidePinNumbers,
+        hidePinNames,
+        valueParam,
+      } = payload || {};
+      const cat = normalizeCategoryPath(savePath || "");
       try {
-        await contentRpc("saveCategorySettings", { category, config });
+        await contentRpc("saveCategorySettings", {
+          category: cat,
+          config: { hidePinNumbers, hidePinNames, valueParam },
+        });
       } catch (_err) {
         dbg("saveCategorySettings failed", _err);
       }
       catCfgRef.value = null;
       resolve({ cancelled: false });
     },
-    onContinueOnly: (config) => {
-      catCfgRef.value = config;
+    onContinueOnly: (payload) => {
+      const { hidePinNumbers, hidePinNames, valueParam } = payload || {};
+      catCfgRef.value = { hidePinNumbers, hidePinNames, valueParam };
       resolve({ cancelled: false });
     },
     onSkip: () => {
@@ -3236,7 +3505,7 @@ function openCategoryDialogPromise(category, pageData, catCfgRef) {
     showCategoryDialog(
       category,
       paramKeysFromPageData(pageData),
-      createCategoryDialogCallbacks(category, catCfgRef, resolve),
+      createCategoryDialogCallbacks(catCfgRef, resolve),
     );
   });
 }
@@ -3252,6 +3521,17 @@ async function handleDownloadClick(button, lcscId, overrides = {}) {
     }
     if (!status.data.connected) {
       setButtonOfflineNoBackend(button);
+      return;
+    }
+    if (!status.data.importDestReady) {
+      const group = document.getElementById(BTN_GROUP_ID);
+      if (group && button && btnGroupHostContains(group, button)) {
+        setGroupNoImportLibrary();
+      } else {
+        updateButtonState(button, "error", {
+          message: MSG_NO_IMPORT_LIB_TITLE,
+        });
+      }
       return;
     }
   } catch (_error) {
@@ -3475,6 +3755,11 @@ function cleanupInjectedUi() {
     clearInterval(backendOnlineMonitorTimer);
     backendOnlineMonitorTimer = null;
   }
+  if (importDestRefreshTimer) {
+    clearTimeout(importDestRefreshTimer);
+    importDestRefreshTimer = null;
+  }
+  lastBroadcastImportDestReady = null;
   backendOnlineMonitorLcscId = null;
   backendOnlineMonitorGroupDiv = null;
 }
@@ -3592,6 +3877,17 @@ function init() {
         console.log("[easyeda2kicad] debug logs enabled");
       } else if (previous && !debugEnabled) {
         console.log("[easyeda2kicad] debug logs disabled");
+      }
+      const ready = message.state.importDestReady;
+      if (typeof ready === "boolean" && ready !== lastBroadcastImportDestReady) {
+        lastBroadcastImportDestReady = ready;
+        if (backendOnlineMonitorLcscId && backendOnlineMonitorGroupDiv) {
+          if (importDestRefreshTimer) clearTimeout(importDestRefreshTimer);
+          importDestRefreshTimer = setTimeout(() => {
+            importDestRefreshTimer = null;
+            void refreshButtonGroup(backendOnlineMonitorLcscId, backendOnlineMonitorGroupDiv);
+          }, 250);
+        }
       }
       syncWatchedJobUIFromExtensionState(message.state);
       syncWatchedTerminalFromExtensionState(message.state);
