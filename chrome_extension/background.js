@@ -1,5 +1,7 @@
 "use strict";
 
+importScripts("categoryPath.js");
+
 // Normalize common LCSC parameter label variations to consistent KiCad field names
 const LCSC_PARAMS_MAP = {
   "Power(Watts)": "Power",
@@ -39,19 +41,9 @@ function normalizeSymbolValue(value, valueParam) {
   return value;
 }
 
-/** LCSC category breadcrumb → canonical `A/B/C`. Keep in sync with contentScript `normalizeCategoryPath`. */
-function normalizeCategoryPath(raw) {
-  if (raw == null || typeof raw !== "string") return "";
-  return raw
-    .split("/")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .join("/");
-}
-
 /**
  * Deepest match: longest stored key K with pagePath === K or pagePath.startsWith(K + "/").
- * Legacy: slashless keys match the old 2nd segment (index 1), like built-in Resistors/Capacitors.
+ * Keys are normalized the same way as LCSC paths (see categoryPath.js).
  */
 function resolveCategorySettings(pagePathRaw, categorySettings) {
   const pagePath = normalizeCategoryPath(pagePathRaw);
@@ -84,24 +76,6 @@ function resolveCategorySettings(pagePathRaw, categorySettings) {
     return { key: bestKey, config: categorySettings[bestKey] };
   }
 
-  const segments = pagePath.split("/");
-  if (segments.length >= 2) {
-    const seg1 = segments[1];
-    bestLen = -1;
-    bestKey = null;
-    for (const [keyRaw] of entries) {
-      const K = normalizeCategoryPath(keyRaw);
-      if (!K || K.includes("/")) continue;
-      if (seg1 === K) {
-        bumpPrefixWinner(keyRaw, K);
-      }
-    }
-  }
-
-  if (bestKey != null) {
-    return { key: bestKey, config: categorySettings[bestKey] };
-  }
-
   return null;
 }
 
@@ -124,9 +98,8 @@ const DEFAULT_STATE = {
   projectRelativePath: "",
   libraryTotals: { symbols: 0, footprints: 0, models: 0 },
   categorySettings: {
-    Resistors: { hidePinNumbers: true, hidePinNames: true, valueParam: "Resistance" },
-    Capacitors: { hidePinNumbers: true, hidePinNames: true, valueParam: "Capacitance" },
-    Inductors: { hidePinNumbers: true, hidePinNames: true, valueParam: "Inductance" },
+    // Prefix of typical LCSC resistor breadcrumbs (deepest-prefix match); adjust in popup if your tree differs.
+    "Passives/Resistors": { hidePinNumbers: true, hidePinNames: true, valueParam: "Resistance" },
   },
 };
 
@@ -229,6 +202,14 @@ function normalizePath(path) {
     return "";
   }
   return path.trim().replace(/[\\\/]+$/, "");
+}
+
+/** Compare library paths across Windows/URL-style separators (not case-folded — avoids Unix edge cases). */
+function normalizePathKey(path) {
+  if (!path || typeof path !== "string") {
+    return "";
+  }
+  return path.trim().replace(/[\\/]+$/, "").replace(/\\/g, "/");
 }
 
 function isBackendOfflineError(error) {
@@ -535,13 +516,9 @@ function normalizeLibraryRecord(raw) {
     footprint: Number(raw?.counts?.footprint) || 0,
     model: Number(raw?.counts?.model) || 0,
   };
-  const projectRelative = normalizeBoolean(
-    raw.projectRelative ?? raw.project_relative,
-    false
-  );
-  const projectRelativePath = normalizeProjectRelativePath(
-    raw.projectRelativePath ?? raw.project_relative_path ?? ""
-  );
+  // Project-relative 3D paths are a global import setting (Settings), not per-library metadata.
+  const projectRelative = false;
+  const projectRelativePath = "";
   const modelPath = typeof raw.modelPath === "string"
     ? raw.modelPath.trim()
     : (typeof raw.model_path === "string" ? raw.model_path.trim() : "");
@@ -650,6 +627,20 @@ function extensionWsUrl() {
   }
   const wsProto = u.protocol === "https:" ? "wss:" : "ws:";
   return `${wsProto}//${u.host}/ws/extension`;
+}
+
+/** Same key ⇒ same extension WS endpoint — used to avoid reconnect when only other settings changed. */
+function extensionSocketEndpointKey(baseUrl) {
+  const raw = typeof baseUrl === "string" && baseUrl.trim()
+    ? baseUrl.trim()
+    : DEFAULT_STATE.serverUrl;
+  try {
+    const u = new URL(raw.endsWith("/") ? raw : `${raw}/`);
+    const wsProto = u.protocol === "https:" ? "wss:" : "ws:";
+    return `${wsProto}//${u.host}/ws/extension`;
+  } catch {
+    return raw.replace(/\/+$/, "");
+  }
 }
 
 function closeExtensionSocket() {
@@ -1265,6 +1256,18 @@ function addHistoryEntry(entry) {
   persistState(["jobHistory"]);
 }
 
+/** True when a non-template, non-missing library is selected as the EasyEDA import destination. */
+function computeImportDestinationReady() {
+  const selected = normalizePathKey(state.selectedLibraryPath || "");
+  if (!selected) return false;
+  const libs = Array.isArray(state.libraries) ? state.libraries : [];
+  return libs.some((l) => {
+    if (!l || l.isTemplateLibrary || l.missing) return false;
+    const prefix = normalizePathKey(deriveLibraryPrefix(l));
+    return Boolean(prefix && prefix === selected);
+  });
+}
+
 function snapshotState() {
   const jobsArray = Object.values(state.jobs || {}).map((job) => ({ ...job }));
   const historyArray = (state.jobHistory || []).map((item) => ({ ...item }));
@@ -1276,6 +1279,7 @@ function snapshotState() {
     libraryTotals: { ...state.libraryTotals },
     selectedLibraryPath: state.selectedLibraryPath,
     selectedLibraryName: state.selectedLibraryName,
+    importDestReady: computeImportDestinationReady(),
     overwriteFootprints: state.overwriteFootprints,
     overwriteModels: state.overwriteModels,
     debugLogs: state.debugLogs,
@@ -1441,8 +1445,8 @@ async function submitJob(payload) {
     footprint: Boolean(payload.footprint),
     model: Boolean(payload.model),
     overwrite_model: Boolean(payload.overwrite_model),
-    project_relative: Boolean(payload.projectRelative),
-    project_relative_path: normalizeProjectRelativePath(payload.projectRelativePath),
+    project_relative: Boolean(state.projectRelative),
+    project_relative_path: normalizeProjectRelativePath(state.projectRelativePath),
     model_path: typeof payload.modelPath === "string" ? payload.modelPath : "",
     hide_pin_numbers: hidePinNumbers,
     hide_pin_names: hidePinNames,
@@ -1557,12 +1561,8 @@ async function handleCreateLibrary(payload = {}) {
     symbol: payload.symbol !== false,
     footprint: payload.footprint !== false,
     model: Boolean(payload.model),
-    project_relative: Boolean(payload.projectRelative),
+    project_relative: false,
   });
-  const projectRelative = normalizeBoolean(payload.projectRelative);
-  const projectRelativePath = normalizeProjectRelativePath(
-    payload.projectRelativePath || (projectRelative ? state.projectRelativePath : "")
-  );
   const now = new Date().toISOString();
   const existing = state.libraries.find(
     (library) => library.path === normalizePath(scaffold.resolved_library_prefix),
@@ -1589,8 +1589,6 @@ async function handleCreateLibrary(payload = {}) {
     },
     warnings: [],
     projectId: payload.projectId || existing?.projectId || "default",
-    projectRelative,
-    projectRelativePath,
     modelPath: "",
     missing: false,
     lastValidation: now,
@@ -1629,13 +1627,6 @@ async function handleImportLibrary(payload = {}) {
     const existingSymbol = normalizePath(library.symbolPath || `${existingPrefix}.kicad_sym`);
     return existingSymbol === resolvedSymbol || existingPrefix === stripLibrarySuffix(resolvedSymbol);
   });
-  const projectRelative = normalizeBoolean(
-    payload.projectRelative ?? existing?.projectRelative,
-    false
-  );
-  const projectRelativePath = normalizeProjectRelativePath(
-    payload.projectRelativePath ?? existing?.projectRelativePath ?? ""
-  );
   const parentPath = normalizePath(resolvedSymbol.replace(/[\\/][^\\/]*$/, ""));
   const record = {
     id: existing?.id || createLibraryId(),
@@ -1659,8 +1650,6 @@ async function handleImportLibrary(payload = {}) {
     },
     warnings: Array.isArray(validation.warnings) ? validation.warnings : [],
     projectId: payload.projectId || existing?.projectId || "default",
-    projectRelative,
-    projectRelativePath,
     modelPath: typeof validation.model_path === "string" ? validation.model_path.trim() : "",
     missing: !validation.exists,
     lastValidation: now,
@@ -1724,6 +1713,7 @@ const RUNTIME_MESSAGE_HANDLERS = {
   },
   validateLibrary: async (message) => handleValidateLibrary(message),
   updateSettings: async (message) => {
+    const previousServerUrl = state.serverUrl;
     if (typeof message.serverUrl === "string") {
       state.serverUrl = message.serverUrl.trim() || DEFAULT_STATE.serverUrl;
     }
@@ -1754,7 +1744,10 @@ const RUNTIME_MESSAGE_HANDLERS = {
       "projectRelativePath",
       "categorySettings",
     ]);
-    if (typeof message.serverUrl === "string") {
+    if (
+      typeof message.serverUrl === "string"
+      && extensionSocketEndpointKey(previousServerUrl) !== extensionSocketEndpointKey(state.serverUrl)
+    ) {
       closeExtensionSocket();
       extReconnectDelayMs = EXT_RECONNECT_INITIAL_MS;
       connectExtensionSocket();
@@ -1824,14 +1817,6 @@ const RUNTIME_MESSAGE_HANDLERS = {
     );
 
     const selectedLibrary = getSelectedLibraryRecord();
-    const projectRelative = selectedLibrary
-      ? normalizeBoolean(selectedLibrary.projectRelative, false)
-      : Boolean(state.projectRelative);
-    const projectRelativePath = selectedLibrary
-      ? normalizeProjectRelativePath(
-          selectedLibrary.projectRelativePath || state.projectRelativePath
-        )
-      : normalizeProjectRelativePath(state.projectRelativePath);
     const modelPath = selectedLibrary?.modelPath || "";
 
     const payload = {
@@ -1843,8 +1828,6 @@ const RUNTIME_MESSAGE_HANDLERS = {
       model: true,
       overwrite: message.overwrite !== undefined ? Boolean(message.overwrite) : Boolean(state.overwriteFootprints),
       overwrite_model: message.overwrite_model !== undefined ? Boolean(message.overwrite_model) : Boolean(state.overwriteModels),
-      projectRelative,
-      projectRelativePath,
       modelPath,
       category: typeof message.category === "string" ? message.category : null,
       componentPackage: typeof message.componentPackage === "string" ? message.componentPackage : null,
@@ -2008,6 +1991,13 @@ const RUNTIME_MESSAGE_HANDLERS = {
   },
   getTemplateStatus: async () =>
     Object.fromEntries((state.templateSymbols || []).map((n) => [n, true])),
+  refreshTemplateSymbols: async () => {
+    await refreshTemplateStatus();
+    return {
+      templateSymbolsByLib: state.templateSymbolsByLib ? { ...state.templateSymbolsByLib } : {},
+      templateSymbols: (state.templateSymbols || []).slice(),
+    };
+  },
   templatesPinCheck: async (message) => {
     const lcscId = (message.lcscId || "").trim().toUpperCase();
     const templateName = typeof message.templateName === "string" ? message.templateName.trim() : "";

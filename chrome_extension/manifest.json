@@ -16,6 +16,7 @@
         "https://www.lcsc.com/*"
       ],
       "js": [
+        "categoryPath.js",
         "contentScript.js"
       ],
       "run_at": "document_idle"
