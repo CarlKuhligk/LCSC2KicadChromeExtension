@@ -1,14 +1,6 @@
 "use strict";
 
-/** LCSC category path `A/B/C`. Keep in sync with background.js `normalizeCategoryPath`. */
-function normalizeCategoryPath(raw) {
-  if (raw == null || typeof raw !== "string") return "";
-  return raw
-    .split("/")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .join("/");
-}
+/* normalizeCategoryPath is defined in categoryPath.js (loaded before this module). */
 
 function createSimpleBootstrap(scope) {
   const doc = scope.document;
@@ -153,10 +145,42 @@ const globalScope = typeof window !== "undefined" ? window : globalThis;
 const bootstrap = globalScope.bootstrap || (globalScope.bootstrap = createSimpleBootstrap(globalScope));
 
 const UI_STORAGE_KEY = "popupUiState";
-const TAB_IDS = ["libraries", "settings"];
+const TAB_IDS = ["categories", "libraries", "settings"];
+
+/** Must match background.js DEFAULT_STATE.serverUrl. Used with `extensionWsEndpointKeyFromBaseUrl`. */
+const DEFAULT_SETTINGS_SERVER_URL = "http://localhost:8087";
+
+/**
+ * Same resolution as background.js `extensionSocketEndpointKey` — if equal, the extension WebSocket target is unchanged.
+ */
+function extensionWsEndpointKeyFromBaseUrl(baseUrl) {
+  const raw = typeof baseUrl === "string" && baseUrl.trim()
+    ? baseUrl.trim()
+    : DEFAULT_SETTINGS_SERVER_URL;
+  try {
+    const u = new URL(raw.endsWith("/") ? raw : `${raw}/`);
+    const wsProto = u.protocol === "https:" ? "wss:" : "ws:";
+    return `${wsProto}//${u.host}/ws/extension`;
+  } catch {
+    return raw.replace(/\/+$/, "");
+  }
+}
+
+/** Library row IDs with the read-only details panel open (session only; cleared on reload). */
+const libraryDetailExpandedIds = new Set();
+
+function toggleLibraryEntryDetails(id) {
+  if (!id) return;
+  if (libraryDetailExpandedIds.has(id)) {
+    libraryDetailExpandedIds.delete(id);
+  } else {
+    libraryDetailExpandedIds.add(id);
+  }
+  renderLibraries();
+}
 
 const state = {
-  activeTab: "libraries",
+  activeTab: "categories",
   /** @type {"light"|"dark"} */
   uiTheme: "light",
   connected: false,
@@ -245,7 +269,6 @@ async function init() {
   cacheElements();
   initModals();
   bindEvents();
-  toggleLibraryProjectPath();
   toggleSettingsProjectPath();
   updateBackendControls();
   await loadUiPreferences();
@@ -283,10 +306,11 @@ function cacheElements() {
   elements.libraryCreateSymbol = document.getElementById("library-create-symbol");
   elements.libraryCreateFootprint = document.getElementById("library-create-footprint");
   elements.libraryCreateModel = document.getElementById("library-create-model");
-  elements.libraryCreateProject = document.getElementById("library-create-project");
-  elements.libraryCreateProjectPathGroup = document.getElementById("library-create-project-path-group");
-  elements.libraryCreateProjectPath = document.getElementById("library-create-project-path");
   elements.pickerButtons = Array.from(document.querySelectorAll("[data-picker]"));
+
+  // Categories tab
+  elements.categoryList = document.getElementById("category-list");
+  elements.categoryAdd = document.getElementById("category-add");
 
   // Settings
   elements.settingsForm = document.getElementById("settings-form");
@@ -298,8 +322,6 @@ function cacheElements() {
   elements.settingsProjectRelative = document.getElementById("settings-project-relative");
   elements.settingsProjectRelativePathGroup = document.getElementById("settings-project-relative-path-group");
   elements.settingsProjectRelativePath = document.getElementById("settings-project-relative-path");
-  elements.settingsCategoryList = document.getElementById("settings-category-list");
-  elements.settingsCategoryAdd = document.getElementById("settings-category-add");
   elements.themeOptions = Array.from(document.querySelectorAll(".theme-option"));
 
   // Modals shared
@@ -341,17 +363,10 @@ function initModals() {
       clearLibraryCreateValidation();
       elements.libraryImportForm?.reset();
       elements.libraryCreateForm?.reset();
-      if (elements.libraryCreateProjectPath) {
-        elements.libraryCreateProjectPath.value = "";
-      }
       if (elements.libraryImportInfo) {
         elements.libraryImportInfo.textContent = "";
         elements.libraryImportInfo.className = "form-text";
       }
-      toggleLibraryProjectPath();
-    });
-    elements.libraryModal.addEventListener("shown.bs.modal", () => {
-      toggleLibraryProjectPath();
     });
   }
 }
@@ -399,7 +414,6 @@ function bindEvents() {
     tab.show();
   });
   elements.libraryModalSubmit?.addEventListener("click", submitCreateLibrary);
-  elements.libraryCreateProject?.addEventListener("change", toggleLibraryProjectPath);
   elements.libraryCreateName?.addEventListener("input", () => {
     if (elements.libraryCreateName.value.trim()) {
       elements.libraryCreateName.classList.remove("is-invalid");
@@ -412,7 +426,7 @@ function bindEvents() {
   elements.settingsForm?.addEventListener("change", debounce(handleSettingsChange, 250));
   elements.settingsTest?.addEventListener("click", testServerConnection);
   elements.settingsProjectRelative?.addEventListener("change", toggleSettingsProjectPath);
-  elements.settingsCategoryAdd?.addEventListener("click", addCategoryRow);
+  elements.categoryAdd?.addEventListener("click", addCategoryRow);
 
   elements.themeOptions?.forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -444,34 +458,6 @@ function bindEvents() {
       }
     }
   });
-}
-
-function toggleLibraryProjectPath() {
-  if (!elements.libraryCreateProjectPathGroup || !elements.libraryCreateProject) {
-    return;
-  }
-  const show = elements.libraryCreateProject.checked;
-  elements.libraryCreateProjectPathGroup.hidden = !show;
-  if (show) {
-    syncLibraryCreateDefaults();
-  } else if (elements.libraryCreateProjectPath) {
-    elements.libraryCreateProjectPath.value = "";
-  }
-}
-
-function syncLibraryCreateDefaults() {
-  if (!elements.libraryCreateProjectPath || !elements.libraryCreateProject) {
-    return;
-  }
-  if (!elements.libraryCreateProject.checked) {
-    return;
-  }
-  if (elements.libraryCreateProjectPath.matches(":focus")) {
-    return;
-  }
-  if (!elements.libraryCreateProjectPath.value) {
-    elements.libraryCreateProjectPath.value = state.settings.projectRelativePath || "";
-  }
 }
 
 function applyPopupTheme(theme) {
@@ -589,7 +575,6 @@ function applyState(snapshot = {}) {
   renderConnectionStatus();
   renderLibraries();
   renderSettings();
-  syncLibraryCreateDefaults();
   updateBackendControls();
 
   state.ready = true;
@@ -713,10 +698,35 @@ function renderLibraries() {
     item.dataset.id = library.id;
 
     const info = document.createElement("div");
-    info.className = "library-info";
+    info.className = "library-info library-entry-summary";
 
     const titleRow = document.createElement("div");
-    titleRow.className = "d-flex align-items-center gap-2";
+    titleRow.className = "d-flex align-items-center gap-2 library-entry-title-row";
+
+    const expanded = libraryDetailExpandedIds.has(library.id);
+    const expandBtn = document.createElement("button");
+    expandBtn.type = "button";
+    expandBtn.className = "library-expand-btn";
+    expandBtn.dataset.id = library.id;
+    expandBtn.setAttribute("aria-expanded", expanded ? "true" : "false");
+    expandBtn.setAttribute(
+      "aria-controls",
+      `library-details-${library.id}`,
+    );
+    expandBtn.setAttribute(
+      "title",
+      expanded ? "Hide library details" : "Show library details",
+    );
+    expandBtn.setAttribute(
+      "aria-label",
+      expanded ? "Hide library details" : "Show library details",
+    );
+    const chevron = document.createElement("span");
+    chevron.className = "library-expand-chevron";
+    chevron.setAttribute("aria-hidden", "true");
+    chevron.textContent = "▾";
+    expandBtn.appendChild(chevron);
+    titleRow.appendChild(expandBtn);
 
     const title = document.createElement("span");
     title.className = "fw-semibold fs-6";
@@ -787,7 +797,7 @@ function renderLibraries() {
     info.appendChild(titleRow);
 
     const assets = document.createElement("div");
-    assets.className = "library-assets mb-1 mt-1 d-flex align-items-center gap-2";
+    assets.className = "library-assets mb-1 mt-1 d-flex align-items-center gap-1";
     assets.appendChild(renderAssetBadge("Symbol", library.assets?.symbol, library.counts?.symbol));
     assets.appendChild(renderAssetBadge("Footprint", library.assets?.footprint, library.counts?.footprint));
     assets.appendChild(renderAssetBadge("3D", library.assets?.model, library.counts?.model));
@@ -797,7 +807,7 @@ function renderLibraries() {
     switchLabel.className = "template-switch ms-auto";
     switchLabel.title = library.isTemplateLibrary
       ? "Disable template mode for this library"
-      : "Enable template mode — symbols in this library can be used as templates";
+      : "Enable template mode — symbols in this library can be used as templates on LCSC. Use numeric pin numbers matching EasyEDA; on LCSC, verify against the part pin diagram or EasyEDA symbol (README: Templates & metadata).";
 
     const switchInput = document.createElement("input");
     switchInput.type = "checkbox";
@@ -831,7 +841,22 @@ function renderLibraries() {
       warning.textContent = "Library missing on disk.";
       info.appendChild(warning);
     }
-    item.append(info);
+
+    const details = document.createElement("div");
+    details.className = "library-details";
+    details.id = `library-details-${library.id}`;
+    details.hidden = !expanded;
+    details.setAttribute("role", "region");
+    details.setAttribute(
+      "aria-label",
+      `Paths and settings for ${library.name || "library"}`,
+    );
+    if (expanded) {
+      details.appendChild(buildLibraryDetailsPanel(library));
+    }
+
+    item.appendChild(info);
+    item.appendChild(details);
     elements.libraryList.appendChild(item);
   });
 }
@@ -843,6 +868,101 @@ function renderAssetBadge(label, active, count = 0) {
   badge.className = `badge rounded-pill ${hasEntries ? "text-bg-success" : "text-bg-secondary"}`;
   badge.innerHTML = `<span class="badge-label">${escapeHtml(label)}</span><span class="badge-count">${escapeHtml(displayCount.trim())}</span>`;
   return badge;
+}
+
+function libraryStoragePrefix(lib) {
+  return (lib.path || lib.resolvedPrefix || "").trim();
+}
+
+function libraryFootprintFolderDisplay(lib) {
+  const p = libraryStoragePrefix(lib);
+  return p ? `${p}.pretty` : "—";
+}
+
+function libraryShapesFolderDisplay(lib) {
+  const p = libraryStoragePrefix(lib);
+  return p ? `${p}.3dshapes` : "—";
+}
+
+function formatLibraryDetailTimestamp(iso) {
+  if (!iso || typeof iso !== "string") return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString();
+}
+
+function libraryDetailYesNo(v) {
+  return v ? "Yes" : "No";
+}
+
+function buildLibraryDetailRow(label, valueText) {
+  const row = document.createElement("div");
+  row.className = "library-detail-row";
+  const dt = document.createElement("dt");
+  dt.className = "library-detail-label";
+  dt.textContent = label;
+  const dd = document.createElement("dd");
+  dd.className = "library-detail-value";
+  const text = valueText != null && String(valueText).trim() !== "" ? String(valueText) : "—";
+  dd.textContent = text;
+  row.appendChild(dt);
+  row.appendChild(dd);
+  return row;
+}
+
+function buildLibraryDetailsPanel(library) {
+  const wrap = document.createElement("div");
+  wrap.className = "library-details-inner";
+
+  const dl = document.createElement("dl");
+  dl.className = "library-details-dl";
+
+  const prefix = libraryStoragePrefix(library);
+  const sym = (library.symbolPath || "").trim();
+
+  dl.appendChild(buildLibraryDetailRow("Library prefix", prefix || "—"));
+  dl.appendChild(buildLibraryDetailRow("Symbol file", sym || "—"));
+  dl.appendChild(buildLibraryDetailRow("Footprint folder (.pretty)", libraryFootprintFolderDisplay(library)));
+  dl.appendChild(buildLibraryDetailRow("3D shapes folder (.3dshapes)", libraryShapesFolderDisplay(library)));
+  const modelPath = (library.modelPath || "").trim();
+  if (modelPath) {
+    dl.appendChild(buildLibraryDetailRow("3D path (from footprints)", modelPath));
+  }
+  dl.appendChild(buildLibraryDetailRow("Template library", libraryDetailYesNo(library.isTemplateLibrary)));
+  const basePath = (library.basePath || "").trim();
+  if (basePath) {
+    dl.appendChild(buildLibraryDetailRow("Created under base folder", basePath));
+  }
+  dl.appendChild(buildLibraryDetailRow("Created", formatLibraryDetailTimestamp(library.createdAt)));
+  dl.appendChild(buildLibraryDetailRow("Last validated", formatLibraryDetailTimestamp(library.lastValidation)));
+
+  const counts = library.counts || {};
+  dl.appendChild(
+    buildLibraryDetailRow(
+      "Counts (indexed)",
+      `Symbols ${Number(counts.symbol) || 0} · Footprints ${Number(counts.footprint) || 0} · 3D ${Number(counts.model) || 0}`,
+    ),
+  );
+
+  wrap.appendChild(dl);
+
+  const warnings = Array.isArray(library.warnings) ? library.warnings.filter((w) => w && String(w).trim()) : [];
+  if (warnings.length) {
+    const wTitle = document.createElement("p");
+    wTitle.className = "library-detail-warnings-title";
+    wTitle.textContent = "Warnings";
+    wrap.appendChild(wTitle);
+    const ul = document.createElement("ul");
+    ul.className = "library-detail-warnings";
+    warnings.forEach((w) => {
+      const li = document.createElement("li");
+      li.textContent = String(w);
+      ul.appendChild(li);
+    });
+    wrap.appendChild(ul);
+  }
+
+  return wrap;
 }
 
 function renderSettings() {
@@ -862,18 +982,18 @@ function renderSettings() {
 }
 
 function renderCategoryTable() {
-  if (!elements.settingsCategoryList) return;
+  if (!elements.categoryList) return;
   const cats = state.settings.categorySettings || {};
   const json = JSON.stringify(cats);
   if (json === _lastCategorySettingsJson) return; // unchanged — don't disturb open accordions
   _lastCategorySettingsJson = json;
-  elements.settingsCategoryList.innerHTML = "";
+  elements.categoryList.innerHTML = "";
   Object.entries(cats).forEach(([category, cfg]) => {
-    elements.settingsCategoryList.appendChild(buildCategoryItem(category, cfg));
+    elements.categoryList.appendChild(buildCategoryItem(category, cfg));
   });
 }
 
-/** After expanding a category row, scroll so the full block is visible inside #settings-card-body. */
+/** After expanding a category row, scroll so the full block is visible inside #categories-card-body. */
 function scrollCategoryItemIntoView(item) {
   if (!item) return;
   requestAnimationFrame(() => {
@@ -1075,17 +1195,17 @@ function updateCatSummary(item) {
 }
 
 function addCategoryRow() {
-  if (!elements.settingsCategoryList) return;
+  if (!elements.categoryList) return;
   const item = buildCategoryItem("", { hidePinNumbers: false, hidePinNames: false, valueParam: "" }, true);
-  elements.settingsCategoryList.appendChild(item);
+  elements.categoryList.appendChild(item);
   item.querySelector("input[data-field='category']")?.focus();
   scrollCategoryItemIntoView(item);
 }
 
 function readCategoryTableState() {
-  if (!elements.settingsCategoryList) return {};
+  if (!elements.categoryList) return {};
   const result = {};
-  Array.from(elements.settingsCategoryList.querySelectorAll(".cat-item")).forEach((item) => {
+  Array.from(elements.categoryList.querySelectorAll(".cat-item")).forEach((item) => {
     const category = normalizeCategoryPath(
       item.querySelector("input[data-field='category']")?.value?.trim() || "",
     );
@@ -1114,7 +1234,7 @@ function setActiveTab(tab, options = {}) {
     tab = "libraries";
   }
   if (!TAB_IDS.includes(tab)) {
-    tab = "libraries";
+    tab = TAB_IDS[0];
   }
   state.activeTab = tab;
   elements.tabButtons.forEach((button) => {
@@ -1145,6 +1265,26 @@ function handleLibrarySearch(event) {
 function handleLibraryListChange(event) {
   const input = event.target;
   if (!(input instanceof HTMLInputElement)) return;
+
+  if (input.classList.contains("library-template-toggle")) {
+    const id = input.dataset.id;
+    if (!id) return;
+    const library = state.libraries.find((item) => item.id === id);
+    if (!library) return;
+    const nowTemplate = input.checked;
+    state.libraries = state.libraries.map((item) => ({
+      ...item,
+      isTemplateLibrary: item.id === id ? nowTemplate : (nowTemplate ? false : item.isTemplateLibrary),
+    }));
+    renderLibraries();
+    persistLibraries();
+    const msg = nowTemplate
+      ? `"${library.name}" set as template library.`
+      : "Template mode disabled.";
+    showToast(msg, "success");
+    return;
+  }
+
   if (!input.classList.contains("library-toggle")) return;
   const id = input.dataset.id;
   if (!id) return;
@@ -1178,25 +1318,29 @@ function handleLibraryListChange(event) {
 }
 
 function handleLibraryListClick(event) {
-  // Template toggle switch (checkbox)
-  const checkbox = event.target.closest(".library-template-toggle");
-  if (checkbox) {
-    const id = checkbox.dataset.id;
-    if (!id) return;
-    const library = state.libraries.find((item) => item.id === id);
-    if (!library) return;
-    const nowTemplate = checkbox.checked;
-    state.libraries = state.libraries.map((item) => ({
-      ...item,
-      isTemplateLibrary: item.id === id ? nowTemplate : (nowTemplate ? false : item.isTemplateLibrary),
-    }));
-    renderLibraries();
-    persistLibraries();
-    const msg = nowTemplate
-      ? `"${library.name}" set as template library.`
-      : "Template mode disabled.";
-    showToast(msg, "success");
+  const expandBtn = event.target.closest(".library-expand-btn");
+  if (expandBtn) {
+    event.preventDefault();
+    event.stopPropagation();
+    const eid = expandBtn.dataset.id;
+    if (!eid) return;
+    toggleLibraryEntryDetails(eid);
     return;
+  }
+
+  const entry = event.target.closest(".library-entry");
+  const summary = event.target.closest(".library-entry-summary");
+  if (entry && summary && entry.contains(summary)) {
+    const hitControl = event.target.closest(
+      "button, input.library-toggle, label.template-switch",
+    );
+    if (!hitControl) {
+      const rowId = entry.dataset.id;
+      if (rowId) {
+        toggleLibraryEntryDetails(rowId);
+      }
+      return;
+    }
   }
 
   const button = event.target.closest("button");
@@ -1218,6 +1362,7 @@ function handleLibraryListClick(event) {
           : ""),
       acceptLabel: "Remove",
       onAccept: () => {
+        libraryDetailExpandedIds.delete(libId);
         state.libraries = state.libraries.filter((item) => item.id !== libId);
         if (!state.libraries.some((item) => item.active) && state.libraries.length) {
           state.libraries[0].active = true;
@@ -1280,12 +1425,6 @@ function submitCreateLibrary() {
     symbol: elements.libraryCreateSymbol.checked,
     footprint: elements.libraryCreateFootprint.checked,
     model: elements.libraryCreateModel.checked,
-    projectRelative: elements.libraryCreateProject.checked,
-    projectRelativePath: elements.libraryCreateProject.checked
-      ? (elements.libraryCreateProjectPath?.value.trim()
-          || state.settings.projectRelativePath
-          || "")
-      : "",
   };
 
   elements.libraryModalSubmit.disabled = true;
@@ -1349,8 +1488,15 @@ function handleSettingsChange() {
     ? rawProjectPath
     : (state.settings.projectRelativePath || rawProjectPath);
   const categorySettings = readCategoryTableState();
+  const trimmedServerUrl = elements.settingsServer.value.trim();
+  const resolvedServerUrl = trimmedServerUrl || DEFAULT_SETTINGS_SERVER_URL;
+  const serverUrlPayload =
+    extensionWsEndpointKeyFromBaseUrl(resolvedServerUrl)
+    !== extensionWsEndpointKeyFromBaseUrl(state.settings.serverUrl)
+      ? { serverUrl: resolvedServerUrl }
+      : {};
   const payload = {
-    serverUrl: elements.settingsServer.value.trim(),
+    ...serverUrlPayload,
     overwriteFootprints: elements.settingsOverwrite.checked,
     overwriteModels: elements.settingsOverwriteModel.checked,
     debugLogs: elements.settingsDebug.checked,
@@ -1382,7 +1528,9 @@ function toggleSettingsProjectPath() {
 
 function testServerConnection() {
   setSettingsFeedback("Checking backend…", "text-muted");
-  sendMessage("updateSettings", { serverUrl: elements.settingsServer.value.trim() })
+  sendMessage("updateSettings", {
+    serverUrl: elements.settingsServer.value.trim() || DEFAULT_SETTINGS_SERVER_URL,
+  })
     .then((status) => {
       if (status.connected) setSettingsFeedback("Backend reachable", "text-success");
       else setSettingsFeedback("Backend not reachable", "text-danger");
@@ -1395,14 +1543,15 @@ function setSettingsFeedback(message, cls) {
   let delay = 4000;
   if (cls === "text-danger") {
     variant = "danger";
+    delay = 4500;
   } else if (cls === "text-success") {
     variant = "success";
-    delay = 1000;
+    delay = 2200;
   } else if (cls === "text-muted") {
     variant = "secondary";
-    delay = 1500;
+    delay = 2000;
   }
-  showToast(message, variant, delay);
+  showToast(message, variant, delay, { slot: TOAST_SLOT_SETTINGS });
 }
 
 
@@ -1422,15 +1571,6 @@ function setLibraryModalTab(mode) {
   if (tabTrigger) {
     const tab = new bootstrap.Tab(tabTrigger);
     tab.show();
-  }
-  if (mode === "create") {
-    if (elements.libraryCreateProject) {
-      elements.libraryCreateProject.checked = state.settings.projectRelative;
-    }
-    if (elements.libraryCreateProjectPath) {
-      elements.libraryCreateProjectPath.value = state.settings.projectRelativePath || "";
-    }
-    toggleLibraryProjectPath();
   }
 }
 
@@ -1779,13 +1919,52 @@ function sendMessage(type, payload = {}) {
     });
 }
 
-function showToast(message, variant = "primary", delay = 4000) {
+const TOAST_MAX_VISIBLE = 2;
+/** Replaces the previous settings-area toast so rapid saves do not stack. */
+const TOAST_SLOT_SETTINGS = "settings";
+
+/**
+ * @param {string} message
+ * @param {string} [variant]
+ * @param {number} [delay]
+ * @param {{ slot?: string }} [options] If `slot` is set, replaces any existing toast with the same slot (stops save-spam stacking).
+ */
+function showToast(message, variant = "primary", delay = 4000, options = {}) {
   if (!elements.toastContainer) return;
+  const slot = typeof options.slot === "string" && options.slot ? options.slot : "";
+
+  if (slot) {
+    const prev = elements.toastContainer.querySelector(`[data-toast-slot="${CSS.escape(slot)}"]`);
+    if (prev) {
+      const ctl = prev._toastCtl;
+      if (ctl && typeof ctl.hide === "function") {
+        ctl.hide();
+      } else if (prev.isConnected) {
+        prev.remove();
+      }
+    }
+  }
+
+  while (elements.toastContainer.children.length >= TOAST_MAX_VISIBLE) {
+    const oldest = elements.toastContainer.firstElementChild;
+    if (!oldest) break;
+    const ctl = oldest._toastCtl;
+    if (ctl && typeof ctl.hide === "function") {
+      ctl.hide();
+    } else {
+      oldest.remove();
+    }
+  }
+
   const toastElement = document.createElement("div");
   toastElement.className = `toast align-items-center text-bg-${variant}`;
-  toastElement.role = "status";
-  toastElement.ariaLive = "assertive";
-  toastElement.ariaAtomic = "true";
+  if (slot) {
+    toastElement.dataset.toastSlot = slot;
+  }
+  toastElement.setAttribute("role", "status");
+  const live = variant === "danger" || variant === "warning" ? "assertive" : "polite";
+  toastElement.setAttribute("aria-live", live);
+  toastElement.setAttribute("aria-atomic", "true");
   toastElement.innerHTML = `
     <div class="d-flex">
       <div class="toast-body">${escapeHtml(message)}</div>
@@ -1794,6 +1973,7 @@ function showToast(message, variant = "primary", delay = 4000) {
   `;
   elements.toastContainer.appendChild(toastElement);
   const toast = new bootstrap.Toast(toastElement, { delay });
+  toastElement._toastCtl = toast;
   toast.show();
   toastElement.addEventListener("hidden.bs.toast", () => {
     toastElement.remove();

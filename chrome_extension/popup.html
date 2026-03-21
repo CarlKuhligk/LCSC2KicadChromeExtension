@@ -22,17 +22,50 @@
         <span id="connection-status-dot"></span>
       </span>
     </header>
-    <p id="connection-hint" class="small text-danger mb-2 d-none" role="alert"></p>
+    <p id="connection-hint" class="kpi-inline-msg kpi-inline-msg--danger small d-none" role="alert"></p>
 
     <div class="tab-buttons" role="tablist" aria-label="Main navigation">
-      <button class="tab-button active" type="button" id="tab-button-libraries" data-tab="libraries"
-        aria-controls="tab-panel-libraries" aria-selected="true">Library</button>
+      <button class="tab-button active" type="button" id="tab-button-categories" data-tab="categories"
+        aria-controls="tab-panel-categories" aria-selected="true">Categories</button>
+      <button class="tab-button" type="button" id="tab-button-libraries" data-tab="libraries"
+        aria-controls="tab-panel-libraries" aria-selected="false">Library</button>
       <button class="tab-button" type="button" id="tab-button-settings" data-tab="settings"
         aria-controls="tab-panel-settings" aria-selected="false">Settings</button>
     </div>
 
     <main class="pt-2">
-      <section id="tab-panel-libraries" class="tab-panel active" role="tabpanel" aria-labelledby="tab-button-libraries">
+      <section id="tab-panel-categories" class="tab-panel active" role="tabpanel"
+        aria-labelledby="tab-button-categories">
+        <div class="card">
+          <div class="card-body" id="categories-card-body">
+            <div class="library-panel-section">
+              <div class="library-panel-toolbar">
+                <div class="library-toolbar-grid">
+                  <div class="library-title-block">
+                    <h3 class="library-section-title" id="categories-heading">Categories</h3>
+                    <button type="button" class="settings-section-info" id="categories-info"
+                      aria-label="More about Categories"
+                      title="Categories tab: each row is an LCSC path (e.g. Passives/Resistors/SMD). Deepest matching prefix wins. Set Value Param from LCSC column titles and optional hide pin number/name. Template symbol is chosen on the LCSC product page (Library tab marks template libraries). Changes save as you edit.">
+                      <svg class="settings-section-info-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"
+                        focusable="false">
+                        <path fill-rule="evenodd" clip-rule="evenodd"
+                          d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" />
+                      </svg>
+                    </button>
+                  </div>
+                  <button type="button" class="btn btn-sm btn-primary library-add-btn" id="category-add"
+                    aria-label="Add category">Add</button>
+                </div>
+              </div>
+              <div class="library-list-wrap">
+                <div id="category-list"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-panel-libraries" class="tab-panel" role="tabpanel" aria-labelledby="tab-button-libraries">
         <div class="card">
           <div class="card-body" id="library-card-body">
             <div class="library-panel-section">
@@ -42,7 +75,7 @@
                     <h3 class="library-section-title" id="libraries-heading">Libraries</h3>
                     <button type="button" class="settings-section-info" id="library-info-libraries"
                       aria-label="More about Libraries"
-                      title="Libraries are KiCad symbol/footprint/3D collections on disk. Set one active for imports from LCSC. Use Add to create or import a library folder; search filters the list. Counts show how many assets are indexed.">
+                      title="Libraries are KiCad symbol/footprint/3D collections on disk. Set one active for imports from LCSC. Use Add to create or import a library folder; search filters the list. Counts show how many assets are indexed. For template libraries, use numeric pin numbers and compare with the LCSC pin diagram or EasyEDA symbol (see README Templates & metadata).">
                       <svg class="settings-section-info-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"
                         focusable="false">
                         <path fill-rule="evenodd" clip-rule="evenodd"
@@ -126,7 +159,7 @@
                   <h3 class="settings-section-title" id="settings-heading-import">Import defaults</h3>
                   <button type="button" class="settings-section-info" id="settings-info-import"
                     aria-label="More about Import defaults"
-                    title="Defaults apply when importing parts from LCSC into KiCad unless you change them in the page workflow. Overwrite controls replace existing symbol, footprint, or 3D files. Debug logging adds verbose messages from the backend and extension. Project-relative 3D paths write model references relative to your board using the KiCad project variable prefix shown below.">
+                    title="Defaults apply when importing parts from LCSC into KiCad unless you change them in the page workflow. Overwrite controls replace existing symbol, footprint, or 3D files. Project-relative 3D paths apply to all imports into the active library: footprint model references use ${KIPRJMOD} plus the optional base path below (not stored on individual library entries).">
                     <svg class="settings-section-info-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"
                       focusable="false">
                       <path fill-rule="evenodd" clip-rule="evenodd"
@@ -146,13 +179,9 @@
                       <label class="form-check-label" for="settings-overwrite-model">Overwrite 3D models by default</label>
                     </div>
                     <div class="form-check form-switch">
-                      <input class="form-check-input" type="checkbox" id="settings-debug" />
-                      <label class="form-check-label" for="settings-debug">Enable debug logging</label>
-                    </div>
-                    <div class="form-check form-switch">
                       <input class="form-check-input" type="checkbox" id="settings-project-relative" />
-                      <label class="form-check-label" for="settings-project-relative">Project relative 3D paths by
-                        default</label>
+                      <label class="form-check-label" for="settings-project-relative">Use project-relative 3D paths
+                        (<code>${KIPRJMOD}</code>) in footprints</label>
                     </div>
                     <div class="settings-subfield" id="settings-project-relative-path-group" hidden>
                       <label class="form-label settings-subfield-label" for="settings-project-relative-path"
@@ -167,26 +196,25 @@
                 </div>
               </section>
 
-              <section class="settings-section" aria-labelledby="settings-heading-categories">
-                <div class="settings-category-toolbar library-toolbar-grid">
-                  <div class="library-title-block">
-                    <h3 class="settings-section-title" id="settings-heading-categories">Categories &amp; templates</h3>
-                    <button type="button" class="settings-section-info" id="settings-info-categories"
-                      aria-label="More about Categories and templates"
-                      title="Each row key is the full LCSC category path (e.g. Passives/Resistors/SMD), or a legacy short name matching the 2nd segment. If several rows match a product, the deepest path wins. Map Value from LCSC metadata, hide pin numbers/names, and pick a template symbol from a template library. Changes save as you edit.">
-                      <svg class="settings-section-info-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"
-                        focusable="false">
-                        <path fill-rule="evenodd" clip-rule="evenodd"
-                          d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" />
-                      </svg>
-                    </button>
-                  </div>
-                  <button type="button" class="btn btn-sm btn-primary library-add-btn" id="settings-category-add"
-                    aria-label="Add category">Add</button>
+              <section class="settings-section" aria-labelledby="settings-heading-diagnostics">
+                <div class="settings-section-title-row">
+                  <h3 class="settings-section-title" id="settings-heading-diagnostics">Diagnostics</h3>
+                  <button type="button" class="settings-section-info" id="settings-info-diagnostics"
+                    aria-label="More about Diagnostics"
+                    title="When enabled, the extension service worker and related paths log extra detail to the browser extension console (chrome://extensions → Service worker → Inspect). Use for troubleshooting connection or import issues.">
+                    <svg class="settings-section-info-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"
+                      focusable="false">
+                      <path fill-rule="evenodd" clip-rule="evenodd"
+                        d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" />
+                    </svg>
+                  </button>
                 </div>
                 <div class="row g-3 settings-section-body">
                   <div class="col-12">
-                    <div id="settings-category-list"></div>
+                    <div class="form-check form-switch">
+                      <input class="form-check-input" type="checkbox" id="settings-debug" />
+                      <label class="form-check-label" for="settings-debug">Enable debug logging</label>
+                    </div>
                   </div>
                 </div>
               </section>
@@ -257,19 +285,7 @@
                     <input class="form-check-input" type="checkbox" id="library-create-model" checked />
                     <label class="form-check-label" for="library-create-model">Create 3D folder (.3dshapes)</label>
                   </div>
-                  <div class="form-check form-switch">
-                    <input class="form-check-input" type="checkbox" id="library-create-project" checked />
-                    <label class="form-check-label" for="library-create-project">Project relative 3D paths</label>
-                  </div>
-                  <div class="settings-subfield" id="library-create-project-path-group" hidden>
-                    <label class="form-label settings-subfield-label" for="library-create-project-path"
-                      title="Folder relative to the KiCad project (${KIPRJMOD}) for 3D model paths.">3D base path</label>
-                    <div class="input-group input-group-sm settings-subfield-input">
-                      <span class="input-group-text">${KIPRJMOD}</span>
-                      <input class="form-control" id="library-create-project-path" type="text"
-                        placeholder="../../library" />
-                    </div>
-                  </div>
+                  <p class="form-text small text-muted mb-0">Project-relative 3D paths (<code>${KIPRJMOD}</code>) are configured under <strong>Settings → Import defaults</strong>, not per library.</p>
                 </div>
               </form>
             </div>
@@ -329,6 +345,7 @@
     </div>
   </div>
 
+  <script src="categoryPath.js"></script>
   <script src="popup.js" type="module"></script>
 </body>
 
