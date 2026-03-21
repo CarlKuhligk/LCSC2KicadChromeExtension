@@ -35,6 +35,10 @@ from easyeda2kicad.service import (
 )
 
 log = logging.getLogger(__name__)
+
+# KiCad 3D package folder: count geometry KiCad can reference (not only legacy WRL).
+_MODEL_FILE_SUFFIXES = frozenset({".wrl", ".step", ".stp", ".igs", ".iges"})
+
 _WS_JOB_TRACE = os.environ.get("EASYEDA2KICAD_WS_JOB_TRACE", "").strip().lower() in (
     "1",
     "true",
@@ -431,7 +435,11 @@ def _inspect_library(path: str) -> LibraryValidateResponse:
     model_exists = model_dir.is_dir()
     if model_exists:
         assets["model"] = True
-        counts["model"] = sum(1 for item in model_dir.iterdir() if item.is_file() and item.suffix.lower() == ".wrl")
+        counts["model"] = sum(
+            1
+            for item in model_dir.iterdir()
+            if item.is_file() and item.suffix.lower() in _MODEL_FILE_SUFFIXES
+        )
 
     exists = resolved.exists() or bool(symbol_exists) or footprint_exists or model_exists
 
@@ -745,12 +753,28 @@ def _check_components_in_library(path: str, lcsc_ids: List[str]) -> ComponentBat
     return ComponentBatchResponse(results=results)
 
 
-def _count_symbols_in_file(path: Path) -> int:
+def _count_symbols_legacy_lib(path: Path) -> int:
+    """Count DEF entries in a KiCad v5 legacy .lib file."""
     try:
         content = path.read_text(encoding="utf-8", errors="ignore")
     except OSError:
-        return 1
+        return 0
+    return len(re.findall(r"^\s*DEF\s+", content, flags=re.MULTILINE))
 
+
+def _count_symbols_in_file(path: Path) -> int:
+    """
+    Count library symbols (components), not nested KiCad 6+ graphic (symbol "Name_N_M") blocks.
+    """
+    lower = path.suffix.lower()
+    if lower == ".kicad_sym":
+        return len(list_symbols_in_lib(str(path)))
+    if lower == ".lib":
+        return _count_symbols_legacy_lib(path)
+    try:
+        content = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return 0
     matches = re.findall(r"\(\s*symbol\b", content)
     return len(matches) or 1
 

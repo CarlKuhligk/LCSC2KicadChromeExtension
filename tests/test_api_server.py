@@ -172,3 +172,51 @@ class TaskApiTest(unittest.TestCase):
             data = _ws_rpc(ws, "v", "libraries_validate", {"path": str(sym_path)})
             self.assertTrue(data["assets"]["symbol"])
             self.assertEqual(data["counts"].get("symbol"), 2)
+
+    def test_symbol_counts_ignore_nested_kicad_graphics(self) -> None:
+        """KiCad nests (symbol "Name_N_M") inside each part; only top-level parts should count."""
+        app = create_app(conversion_runner=_dummy_runner)
+        with tempfile.TemporaryDirectory() as tmpdir, TestClient(app) as client, client.websocket_connect(
+            "/ws/extension"
+        ) as ws:
+            sym_path = Path(tmpdir) / "nested.kicad_sym"
+            sym_path.write_text(
+                """
+(kicad_symbol_lib (version 20211014) (generator test)
+  (symbol "Device:R" (property "Reference" "R" (id 0))
+    (symbol "Device:R_0_0" (rectangle (start -1 -1) (end 1 1)))
+    (symbol "Device:R_1_1" (rectangle (start -1 -1) (end 1 1)))
+  )
+  (symbol "Device:C" (property "Reference" "C" (id 0))
+    (symbol "Device:C_0_0" (rectangle (start -1 -1) (end 1 1)))
+  )
+)
+""".strip(),
+                encoding="utf-8",
+            )
+
+            data = _ws_rpc(ws, "v", "libraries_validate", {"path": str(sym_path)})
+            self.assertTrue(data["assets"]["symbol"])
+            self.assertEqual(data["counts"].get("symbol"), 2)
+
+    def test_model_counts_includes_step_and_wrl(self) -> None:
+        app = create_app(conversion_runner=_dummy_runner)
+        with tempfile.TemporaryDirectory() as tmpdir, TestClient(app) as client, client.websocket_connect(
+            "/ws/extension"
+        ) as ws:
+            root = Path(tmpdir) / "Mixed3D"
+            root.mkdir()
+            (root.with_suffix(".kicad_sym")).write_text(
+                "(kicad_symbol_lib (version 20211014) (generator test)\n)",
+                encoding="utf-8",
+            )
+            shapes = root.with_suffix(".3dshapes")
+            shapes.mkdir()
+            for i in range(3):
+                (shapes / f"a{i}.wrl").write_text("#", encoding="utf-8")
+            for i in range(4):
+                (shapes / f"b{i}.step").write_bytes(b"")
+
+            data = _ws_rpc(ws, "v", "libraries_validate", {"path": str(root)})
+            self.assertTrue(data["assets"]["model"])
+            self.assertEqual(data["counts"].get("model"), 7)
