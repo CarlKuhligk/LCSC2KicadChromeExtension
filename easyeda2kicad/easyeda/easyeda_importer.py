@@ -208,6 +208,9 @@ class EasyedaFootprintImporter:
             ee_fields = line.split("~")[1:]
 
             if ee_designator == "PAD":
+                # ``PAD~`` fields (after leading ``PAD``): shape, cx, cy, w, h, layer, net,
+                # number, holeR, points, rot, id, holeLen, holePt, plated, … — must match
+                # ``EeFootprintPad`` field order (see LCSC ``packageDetail.dataStr.shape``).
                 ee_pad = EeFootprintPad(
                     **dict(zip(EeFootprintPad.__fields__, ee_fields[:18]))
                 )
@@ -301,16 +304,26 @@ class Easyeda3dModelImporter:
         return {}
 
     def parse_3d_model_info(self, info: dict) -> Ee3dModel:
+        def _sf(v, default=0.0) -> float:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return default
+
+        co = str(info.get("c_origin", "0,0")).split(",")
+        cr = str(info.get("c_rotation", "0,0,0")).split(",")
         return Ee3dModel(
-            name=info["title"],
-            uuid=info["uuid"],
+            name=str(info.get("title", "")),
+            uuid=str(info.get("uuid", "")),
             translation=Ee3dModelBase(
-                x=info["c_origin"].split(",")[0],
-                y=info["c_origin"].split(",")[1],
-                z=info["z"],
+                x=_sf(co[0] if len(co) > 0 else 0),
+                y=_sf(co[1] if len(co) > 1 else 0),
+                z=_sf(info.get("z", 0)),
             ),
             rotation=Ee3dModelBase(
-                **dict(zip(Ee3dModelBase.__fields__, info["c_rotation"].split(",")))
+                x=_sf(cr[0] if len(cr) > 0 else 0),
+                y=_sf(cr[1] if len(cr) > 1 else 0),
+                z=_sf(cr[2] if len(cr) > 2 else 0),
             ),
         )
 
