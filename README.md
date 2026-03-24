@@ -9,41 +9,73 @@
   <img src="img/store_images/store-card.jpg" alt="KiCad Parts Importer" />
 </p>
 
-## Architecture & data exchange
+## Features
+
+What you get, in everyday terms:
+
+- **Import from LCSC** — On a part’s product page, choose **EasyEDA** (standard conversion) or **Template** (your own symbol shape). Progress shows on the page until the part is saved.
+- **Works in Chrome** — The extension adds buttons and dialogs on LCSC and a **popup** for libraries and rules. Optional **PDF datasheet** viewer for LCSC links.
+- **Your KiCad libraries** — New **Symbol**, **Footprint**, and **3D Model** files go into folders you pick. Open **KiCad** and use those libraries like any other.
+- **Smarter imports** — Popup **Categories** tab matches LCSC product paths so **Value** and pin visibility follow your rules. **Template** mode can ask you to match pins to footprint pads when needed.
+
+---
+
+## How it works
+
+**Browser → extension → backend (on your PC) → KiCad library folders → KiCad.** The backend also pulls each part’s data from **EasyEDA** (LCSC’s design source).
 
 ```mermaid
-flowchart LR
-  lcsc[LCSC website] <--> ext[Chrome extension]
-  ext <-->|WebSocket JSON-RPC and task push| api[Local backend]
-  api --> easyeda[EasyEDA API]
-  api --> disk[KiCad libraries on disk]
+flowchart TB
+  lcsc["Browser<br>LCSC website"]
 
-  classDef clientSide fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a
-  classDef serverSide fill:#ffedd5,stroke:#c2410c,color:#7c2d12
+  extension["Extension<br>KiCad Parts Importer in Chrome"]
 
-  class lcsc,ext clientSide
-  class api,easyeda,disk serverSide
+  backend["Backend<br>KiCad Importer on your computer"]
+
+  ee["EasyEDA<br>Part data online"]
+
+  libs[("KiCad library<br>Symbol · Footprint · 3D Model")]
+
+  kicad["KiCad<br>Schematic & PCB software"]
+
+  lcsc <--> extension
+  extension <--> backend
+  backend -->|Downloads for each part| ee
+  backend -->|Writes & updates files| libs
+  libs <-->|Uses these folders<br>in your projects| kicad
+
+  classDef browser fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a
+  classDef extmod fill:#e0e7ff,stroke:#4338ca,color:#312e81
+  classDef server fill:#ffedd5,stroke:#c2410c,color:#7c2d12
+  classDef cloud fill:#fce7f3,stroke:#be185d,color:#831843
+  classDef storage fill:#d1fae5,stroke:#047857,color:#064e3b
+  classDef cadapp fill:#e8f4fc,stroke:#0369a1,color:#0c4a6e
+
+  class lcsc browser
+  class extension extmod
+  class backend server
+  class ee cloud
+  class libs storage
+  class kicad cadapp
 ```
 
-| Path | What flows |
+| Step | In plain terms |
 | --- | --- |
-| **LCSC ↔ extension** | The **content script** reads product pages and renders download UI; user actions trigger messages to the **service worker**. |
-| **Extension ↔ backend** | The **service worker** opens one **WebSocket** to **`/ws/extension`** (`ws://` or `wss://`, same **host and port** as **API base URL**, e.g. `http://localhost:8087` → `ws://localhost:8087/ws/extension`). Requests use **JSON-RPC**-style methods (enqueue jobs, health, library/fs helpers, template pin-check, etc.). The backend **pushes** **`task_update`** (and related) messages so job progress reaches the UI **without polling**. |
-| **Backend ↔ EasyEDA / disk** | The Python server fetches EasyEDA CAD data and writes symbols, footprints, and 3D files into the library paths you configure. |
+| **Browser (LCSC)** | You browse and search parts on the LCSC site in Chrome. |
+| **Extension** | Adds **Download** actions and dialogs on LCSC, and a **popup** to pick libraries and category rules. |
+| **Backend** | The **KiCad Importer** program on your PC: it converts each part and saves files. It talks to the extension while you import. |
+| **EasyEDA** | LCSC parts are backed by **EasyEDA** data; the backend **downloads** symbol, footprint, and 3D data for the component you chose. |
+| **KiCad library** | Folders on disk for **Symbol**, **Footprint**, and **3D Model**—where the backend writes, and where you point KiCad’s library tables. |
+| **KiCad** | The **KiCad** application (schematic & board editors). It **loads** symbols and footprints from your library paths so you can place imported parts on a design. |
 
-There is **no separate HTTP REST API** for application logic: extension and backend coordinate **only** on that WebSocket (aside from the browser loading normal LCSC pages).
-
-## Overview
-
-- **Extension** (Chrome, Manifest V3) adds controls on LCSC and a **popup** with three tabs — **Categories**, **Library**, and **Settings** — for import rules, KiCad libraries, and backend/defaults.
-- **Backend** (Python, same repo) performs conversion and talks to EasyEDA; it stores files under your chosen library folders.
-- Details of the wire protocol are summarized in [Architecture & data exchange](#architecture--data-exchange) above.
+**KiCad version:** Imports use modern library files (`.kicad_sym`, `.kicad_mod`, etc.). Day-to-day testing targets **KiCad 9.x**; the same formats generally work with **KiCad 6+**.
 
 ## Contents
 
-- [Architecture & data exchange](#architecture--data-exchange)
+- [Features](#features)
+- [How it works](#how-it-works)
 - [Getting started](#getting-started)
-- [Understanding settings & parameters](#understanding-settings--parameters)
+- [Using the popup and LCSC dialogs](#using-the-popup-and-lcsc-dialogs)
 - [Import workflow on LCSC](#import-workflow-on-lcsc)
 - [Templates & metadata](#templates--metadata)
   - [What templates are for](#what-templates-are-for)
@@ -51,10 +83,11 @@ There is **no separate HTTP REST API** for application logic: extension and back
   - [Merge behavior](#merge-behavior)
   - [Metadata and symbol properties](#metadata-and-symbol-properties)
   - [Pin numbers (check before import)](#pin-numbers-check-before-import)
-  - [Possible future enhancement (not scheduled)](#possible-future-enhancement-not-scheduled)
+  - [Template list hover preview](#template-list-hover-preview-limitations)
 - [Screenshots](#screenshots)
 - [Credits & license](#credits--license)
 - [Changelog](#changelog)
+- [For developers](#for-developers)
 
 ## Getting started
 
@@ -66,7 +99,7 @@ There is **no separate HTTP REST API** for application logic: extension and back
 ### 1. Install the extension
 
 - **Chrome Web Store:** [KiCad Parts Importer](https://chromewebstore.google.com/detail/ojkpgmndjlkghmaccanfophkcngdkpmi)  
-- **From source:** open `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select the `chrome_extension/` folder in this repository.
+- **From source:** open `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select the **`chrome_extension/`** folder. After code changes, reload the extension and refresh LCSC tabs. (Module loading details: [For developers](#for-developers).)
 
 ### 2. Install and run the backend
 
@@ -83,7 +116,7 @@ If you run the backend **from source**, install the project’s Python dependenc
 1. Open the extension **popup** → **Settings** tab.  
 2. Set **API base URL** to match the server (e.g. `http://localhost:8087`).  
 3. Click **Test** to confirm the backend is reachable.  
-4. The header should show the backend as connected; if not, check firewalls, proxies, or software blocking **WebSockets** to `localhost`.
+4. The header should show the backend as connected; if not, check firewalls or anything blocking the extension from reaching `localhost`.
 
 ### 4. Add or select a KiCad library
 
@@ -99,9 +132,9 @@ If you run the backend **from source**, install the project’s Python dependenc
 
 **List pages** may show a compact download control; the full **Template** choice is on product pages.
 
-## Understanding settings & parameters
+## Using the popup and LCSC dialogs
 
-Two surfaces matter: the **extension popup** (three tabs below) and **LCSC product pages** (where you run imports and sometimes see category/value dialogs). LCSC table columns feed KiCad fields; the **Categories** tab decides how **Value** and pin visibility apply per product category.
+Use the **extension popup** for libraries and rules, and **LCSC product pages** to run imports. The **Categories** tab maps LCSC product paths to **Value** and pin visibility; on-page LCSC tables supply parameter text when you import.
 
 ### Popup: Categories · Library · Settings
 
@@ -125,7 +158,7 @@ Each **row** is one saved rule. Expand a row to edit details; changes save as yo
 | **Value Param** | **Exact** LCSC parameter **column title** for the KiCad symbol **Value**. If missing or empty on a part, you get a **Value parameter not found** dialog (default Value, reconfigure, or cancel). |
 | **Hide pin numbers / Hide pin names** | Passed to conversion when this row wins the match below. |
 
-**Matching:** **Deepest-prefix** — among all rows, the **longest** key that **equals** the product path or is a **strict prefix** (`key + "/"`) wins. There is no separate short-name or second-segment shortcut.
+**Matching:** **Deepest-prefix** — among all rows, the **longest** key that **equals** the product path or is a **strict prefix** (`key + "/"`) wins. There is no separate short-name or second-segment shortcut. A single segment like **`Resistors`** only matches paths that are exactly `Resistors` or start with `Resistors/`; nested LCSC categories usually need a longer prefix (e.g. **`Passives/Resistors`**, included by default on new installs).
 
 **Default row:** New installs include **`Passives/Resistors`** so typical resistor paths match by prefix; adjust or add rows if your LCSC locale uses a different tree.
 
@@ -153,7 +186,7 @@ Each **row** is one saved rule. Expand a row to edit details; changes save as yo
 
 | Item | Purpose |
 | --- | --- |
-| **API base URL** | Host and port of the conversion server; drives WebSocket and health checks. |
+| **API base URL** | Address of the KiCad Importer program on your PC (must match where the backend listens). |
 | **Test** | Verifies reachability (not a full conversion). |
 | **Light / Dark** | Theme for the **popup only** (not LCSC). |
 
@@ -166,19 +199,19 @@ These apply to **product-page imports** unless a dialog offers a one-off choice 
 | **Overwrite footprints & symbols** | Replace existing symbol/footprint files without asking each time when appropriate. |
 | **Overwrite 3D models** | Same for 3D files. |
 | **Project relative 3D paths** | Default for new libraries and fallback path segment for `${KIPRJMOD}`-based model references. |
-| **Enable debug logging** | Optional: more detailed extension logs for troubleshooting (extension/service worker console). |
+| **Enable debug logging** | Optional: extra detail in the extension’s logs (see **For developers** to open the service worker console). |
 
 ---
 
 ### Category and value dialogs on LCSC
 
-- **New category:** No saved **Categories** row matches this product’s path — skip once, save for the path shown, continue without saving, or cancel.  
+- **New category:** No saved **Categories** row matches this product’s path — skip once, save for the path shown, continue without saving, or cancel. **Hide pin numbers** and **Hide pin names** start **off** (pins visible); turn them on in the dialog if you want them hidden for that category.  
 - **No parameters:** Attribute tables could not be read — default Value or add a **Categories** row.  
 - **Value mismatch:** The saved **Value Param** is missing or empty on this page — default, reconfigure in **Categories**, or cancel.
 
-### Where configuration is stored
+### Where your settings live
 
-**Categories** rows, **Library** list, **Settings** (URL, toggles, theme, import defaults), and related state live in **Chrome extension storage** and the **service worker**. When the backend is connected, the extension keeps this in sync so conversions use the same configuration.
+**Categories**, **Library** list, and **Settings** are saved in **Chrome** (extension storage). When the backend is connected, the extension keeps the backend aligned so imports use the same choices.
 
 ## Import workflow on LCSC
 
@@ -187,7 +220,7 @@ When you start a download on a **product page**, the extension roughly:
 1. Confirms the **backend** is connected.  
 2. If the part **already exists** and overwrites are off, may ask **Overwrite?** (once, permanently, or cancel).  
 3. Resolves **category** and **Value** using the **Categories** tab rules and on-page tables (dialogs if needed).  
-4. For **Template**, may run a **pin-count check** against EasyEDA; you can continue with constraints or fall back to EasyEDA.  
+4. **Template** only: checks pin count vs EasyEDA, then a **pin ↔ pad** screen (previews + table). **Back** / **Cancel** / **Confirm** to finish or return to the template list; you can continue with a warning if counts differ. **EasyEDA** skips this step.  
 5. Submits a **job** and shows **progress** on the page until success or error.
 
 Cancelling a blocking dialog returns you to a normal button state; **in library** state is refreshed where applicable.
@@ -215,11 +248,6 @@ Any difference between your numbering and EasyEDA’s therefore shows up as extr
 
 The template does **not** describe how schematic pins attach to the **footprint**. Pad shapes, positions, and pad numbers always come from EasyEDA for the part you import. You cannot infer package numbering from the template alone, and datasheets or vendor drawings sometimes use a pad order that feels “wrong” or confusing next to your symbol. If symbol pin numbers and footprint pad numbers are misaligned with what you expected, nets can look correct on the schematic but connect to the wrong pads—so it is worth re-checking the mapping after import (schematic, footprint editor, and datasheet) even when the merger ran cleanly.
 
-### Possible future enhancement (not scheduled)
-
-> [!NOTE]
-> This is an idea only: there is **no** release date and **no** entry on a committed roadmap. A later version of the extension could, in principle, add a step during the LCSC download flow that walks through symbol pin ↔ footprint pad mapping and asks you to confirm before files are written, so the assignment is unambiguous and less follow-up work is needed. Nothing like that ships today; verification remains manual.
-
 ### Metadata and symbol properties
 
 The extension reads LCSC product data—datasheet link, description, manufacturer, package, and the attribute tables—and writes them into KiCad symbol properties. A small mapping table rewrites common LCSC column titles into shorter, stable names (for example power, tolerance, voltage ratings) so properties stay consistent across parts.
@@ -229,15 +257,19 @@ The extension reads LCSC product data—datasheet link, description, manufacture
 > [!WARNING]
 > Use real numeric pin numbers in KiCad (1, 2, 3, …) that match EasyEDA for the devices you care about, and put text like G, D, or S in the pin name field, not in the number field. On the LCSC product page, use the pinout diagram or package illustration, or open the EasyEDA schematic view for that component, and confirm each pad matches the digit you used in the template. If anything disagrees, fix the template before importing; otherwise the merger will add or move pins and you will need to clean up the symbol by hand.
 
+### Template list hover preview (limitations)
+
+While the **Template** picker is open, hovering or focusing a row requests a **small SVG** of that template symbol from the backend. It is a **subset** of KiCad graphics (no `extends` inheritance, limited primitives); huge symbols may be capped. It is meant as a quick visual hint, not a full editor preview.
+
 ## Screenshots
 
 The picture at the top of this page is the **Chrome Web Store** style card (`img/store_images/store-card.jpg`). Other files under `img/` are not shown here because they no longer match the current extension UI.
 
-## Credits
+## Credits & license
 
 Based on [easyeda2kicad](https://github.com/uPesy/easyeda2kicad.py) by uPesy.
 
-## License
+### License
 
 > [!NOTE]
 > This repository includes **AGPL-3.0** code from the upstream project; that license still applies to those parts. See `LICENSE`.
@@ -252,18 +284,23 @@ Summary of changes **since [v1.0.1](https://github.com/theautomatist/KiCad-Parts
 - **Popup:** redesigned **Categories**, **Library**, and **Settings**; theme tokens; library create/import and category table UX.
 - **LCSC product pages:** Shadow DOM download controls, **EasyEDA** vs **Template** flows, progress and **confetti** on success; category / value dialogs with full breadcrumb path.
 - **Categories:** normalized paths and **deepest-prefix** resolution only (legacy second-segment matching removed); shared **`categoryPath.js`** for path normalization across service worker, content script, and popup; default starter row **`Passives/Resistors`** so prefix matching works on typical LCSC resistor paths.
-- **Templates:** per-library template mode, LCSC template picker, **pin-count check** vs EasyEDA with optional continue.
+- **Templates:** per-library template mode, LCSC template picker with **hover SVG preview**, **pin-count check** vs EasyEDA, **pin ↔ pad assignment** modal (previews + remap sent as `template_pin_map`), optional continue when counts differ.
 - **Other:** backend **connection hint** when offline; **`notifications`** permission removed.
 
 ### Backend & conversion
 
 - **Template symbols:** merge LCSC metadata into user templates; **pin table** synced with EasyEDA (add/remove pins); optional **`force_template`** and **`/templates/pin-check`**.
-- **LCSC → KiCad:** richer metadata as symbol properties; EasyEDA API **retries**, timeouts, and calmer logging for missing 3D models.
+- **LCSC → KiCad:** richer metadata as symbol properties; EasyEDA API **retries**, timeouts, and calmer logging for missing 3D models; docs call out **KiCad 9.x** as the primary target (modern ``.kicad_sym`` / ``.kicad_mod``).
 - **Tests:** template merger unit tests.
 
 ### Docs & tooling
 
-- README **architecture** diagram (mermaid), import workflow, settings overview; developer **playbook** and popup settings reference under `docs/`.
+- README **How it works** diagram, import workflow, popup overview; developer **playbook** and settings reference under `docs/`.
 - **GitHub Actions:** manual workflow for releases/CI.
 
-*If you still have a single-segment row like `Resistors`, it only matches paths that are exactly `Resistors` or start with `Resistors/`. For nested LCSC paths, use a prefix such as `Passives/Resistors` (the default for new installs).*
+## For developers
+
+- **Extension ↔ backend** — One **WebSocket** to **`/ws/extension`** (same host and port as the API base URL, e.g. `http://localhost:8087` → `ws://localhost:8087/ws/extension`). **JSON-RPC–style** methods plus server push for jobs and state. No separate REST API for that control plane. Full method list: [`chrome_extension/EXTENSION_WS_RPC_CONTRACT.md`](chrome_extension/EXTENSION_WS_RPC_CONTRACT.md).
+- **Chrome extension layout** — Unpacked root is **`chrome_extension/`**. MV3 **service worker** (`background.js`) holds the socket; LCSC UI lives under **`src/content/`**. Entry: **`inject.js`** loads **`main.js`** as a module (so static `import` works reliably); after edits, reload the extension.
+- **Backend** — Python package **`easyeda2kicad/`**; run **`python run_server.py`** from the repo. EasyEDA is called over **HTTPS** from the server.
+- **Docs in repo** — Extra notes under **`docs/`** (playbook, settings reference, etc.).
