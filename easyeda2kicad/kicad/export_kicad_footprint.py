@@ -2,12 +2,203 @@
 import logging
 import os
 from math import acos, cos, isnan, pi, sin, sqrt
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple
 
 from easyeda2kicad.easyeda.parameters_easyeda import EeFootprint
+from easyeda2kicad.kicad.footprint_pad_remap import normalize_easyeda_pad_number
 from easyeda2kicad.kicad.parameters_kicad_footprint import *
 
 # ---------------------------------------
+
+
+def easyeda_pad_shape_to_kicad(shape: str) -> str:
+    """Map EasyEDA / LCSC ``PAD~`` shape token to KiCad pad shape name."""
+    raw = (shape or "").strip()
+    if not raw:
+        return "rect"
+    up = raw.upper()
+    if up in KI_PAD_SHAPE:
+        return KI_PAD_SHAPE[up]
+    return "custom"
+
+
+def easyeda_ki_shape_for_footprint_pad(ee_pad) -> str:
+    """
+    Map EasyEDA pad → KiCad *pad shape* for footprint export and preview.
+
+    EasyEDA ``ROUND`` on a non-square pad is almost always a **rounded rectangle**; our
+    old mapping to ``circle`` drew a **stretched ellipse** (rx≠ry). Elongated ``OVAL``
+    pads from LCSC are usually **stadium / pill** shapes, which match KiCad ``roundrect``
+    with ``roundrect_rratio`` 1.0 better than a mathematical ellipse.
+    """
+    shape_up = (ee_pad.shape or "").strip().upper()
+    w = max(float(ee_pad.width), 0.01)
+    h = max(float(ee_pad.height), 0.01)
+    short = min(w, h)
+    long_side = max(w, h)
+
+    if shape_up == "ROUND":
+        # Square → keep circular pad; rectangle → rounded rect (not ellipse).
+        if abs(w - h) > max(0.05, short * 0.08):
+            return "roundrect"
+        return "circle"
+
+    if shape_up == "OVAL":
+        # Nearly square: true elliptical pad; elongated: pill / stadium as roundrect.
+        if long_side > 0 and (short / long_side) < 0.72:
+            return "roundrect"
+        return "oval"
+
+    return easyeda_pad_shape_to_kicad(ee_pad.shape)
+
+
+def easyeda_pad_has_through_hole(ee_pad) -> bool:
+    """Plated through-hole or slotted hole (hole length used for oval drills)."""
+    try:
+        r = float(ee_pad.hole_radius)
+    except (TypeError, ValueError):
+        r = 0.0
+    try:
+        hl = float(ee_pad.hole_length)
+    except (TypeError, ValueError):
+        hl = 0.0
+    return r > 0 or hl > 0
+
+
+_DEFAULT_EASYEDA_ROUNDRECT_RRATIO = 0.25
+
+
+def _easyeda_roundrect_rratio_from_points(
+    ee_pad, width_mm: float, height_mm: float
+) -> float | None:
+    """
+    KiCad ``roundrect_rratio`` from EasyEDA ``points`` on RECT / ROUNDRECT pads.
+
+    - One value in (0, 1]: treated as KiCad rratio directly.
+    - One value in (1, 100]: corner radius as % of the shorter pad side (EasyEDA Pro style).
+    - Explicit ROUNDRECT / RRECT with empty ``points``: use module default ratio.
+    """
+    shape_up = (ee_pad.shape or "").strip().upper()
+    explicit = shape_up in ("ROUNDRECT", "RRECT", "ROUND_RECT")
+    rect_family = shape_up in ("RECT", "RECTANGLE", "SQUARE")
+    non_square = abs(width_mm - height_mm) > max(
+        0.05, min(width_mm, height_mm) * 0.08
+    )
+    round_means_roundrect = shape_up == "ROUND" and non_square
+    if not explicit and not rect_family and not round_means_roundrect:
+        return None
+    tokens = [t for t in (ee_pad.points or "").strip().split() if t]
+    short = min(width_mm, height_mm)
+    half = short / 2.0 if short > 0 else 0.0
+    if not tokens:
+        if explicit or round_means_roundrect:
+            return _DEFAULT_EASYEDA_ROUNDRECT_RRATIO
+        return None
+    # Four tokens are interpreted as chamfer ratios elsewhere, not corner radii.
+    if len(tokens) == 4:
+        return None
+
+    def _one_radius_value(v: float) -> float | None:
+        if v <= 0:
+            return None
+        if v <= 1.0:
+            return max(0.0, min(1.0, v))
+        if v <= 100 and half > 0:
+            r_mm = min(short * (v / 100.0), half * 0.999)
+            return max(0.0, min(1.0, r_mm / half))
+        return None
+
+    _rr_fallback = explicit or round_means_roundrect
+
+    if len(tokens) == 2:
+        try:
+            v1, v2 = float(tokens[0]), float(tokens[1])
+        except ValueError:
+            return _DEFAULT_EASYEDA_ROUNDRECT_RRATIO if _rr_fallback else None
+        a, b = _one_radius_value(v1), _one_radius_value(v2)
+        if a is None and b is None:
+            return _DEFAULT_EASYEDA_ROUNDRECT_RRATIO if _rr_fallback else None
+        return max(a or 0.0, b or 0.0)
+
+    if len(tokens) != 1:
+        return _DEFAULT_EASYEDA_ROUNDRECT_RRATIO if _rr_fallback else None
+    try:
+        v = float(tokens[0])
+    except ValueError:
+        return _DEFAULT_EASYEDA_ROUNDRECT_RRATIO if _rr_fallback else None
+    parsed = _one_radius_value(v)
+    if parsed is None:
+        return _DEFAULT_EASYEDA_ROUNDRECT_RRATIO if _rr_fallback else None
+    return parsed
+
+
+def _apply_easyeda_chamfer_from_points(ee_pad, ki_pad: KiFootprintPad) -> bool:
+    """
+    EasyEDA sometimes encodes corner chamfers as four ratios in ``points`` (rect family).
+    KiCad order: top_left, top_right, bottom_right, bottom_left.
+    Returns True if a chamfrect style was applied.
+    """
+    if ki_pad.shape == "custom":
+        return False
+    shape_up = (ee_pad.shape or "").strip().upper()
+    chamfer_named = shape_up in (
+        "CHAMFER",
+        "CHAMFERED",
+        "CHAMFER_RECT",
+        "CHAMFERED_RECT",
+    )
+    rect_family = shape_up in ("RECT", "RECTANGLE", "SQUARE")
+    if not chamfer_named and not rect_family:
+        return False
+    tokens = [t for t in (ee_pad.points or "").strip().split() if t]
+    if len(tokens) != 4:
+        return False
+    try:
+        vals = [float(t) for t in tokens]
+    except ValueError:
+        return False
+
+    def _norm_ratio(v: float) -> float:
+        av = abs(v)
+        if av <= 1.0:
+            return max(0.0, min(1.0, av))
+        return max(0.0, min(1.0, av / 100.0))
+
+    if chamfer_named:
+        # Reject values that look like polygon coordinates (mm), not 0..100 ratios.
+        if any(abs(v) > 100.0 for v in vals):
+            return False
+        ctl, ctr, cbr, cbl = (_norm_ratio(v) for v in vals)
+    else:
+        # Plain RECT: only treat as chamfer when all values are direct 0..1 ratios (avoids
+        # confusing mm coordinates such as "10 10 0 0" with 10% chamfers).
+        if any(v <= 0 or v > 1.0 for v in vals):
+            return False
+        ctl, ctr, cbr, cbl = (
+            max(0.0, min(1.0, v)) for v in vals
+        )
+    if ctl + ctr + cbr + cbl < 1e-9:
+        return False
+    ki_pad.shape = "chamfrect"
+    ki_pad.chamfer_tl, ki_pad.chamfer_tr, ki_pad.chamfer_br, ki_pad.chamfer_bl = (
+        ctl,
+        ctr,
+        cbr,
+        cbl,
+    )
+    ki_pad.roundrect_rratio = 0.0
+    return True
+
+
+def _apply_easyeda_roundrect_from_points(ee_pad, ki_pad: KiFootprintPad) -> None:
+    if ki_pad.shape == "custom":
+        return
+    rr = _easyeda_roundrect_rratio_from_points(ee_pad, ki_pad.width, ki_pad.height)
+    if rr is None or rr <= 0:
+        return
+    ki_pad.shape = "roundrect"
+    ki_pad.roundrect_rratio = rr
+    ki_pad.chamfer_tl = ki_pad.chamfer_tr = ki_pad.chamfer_br = ki_pad.chamfer_bl = 0.0
 
 
 def to_radians(n: float) -> float:
@@ -118,9 +309,6 @@ def fp_to_ki(dim: float) -> float:
     return dim
 
 
-# ---------------------------------------
-
-
 def drill_to_ki(
     hole_radius: float, hole_length: float, pad_height: float, pad_width: float
 ) -> str:
@@ -141,16 +329,23 @@ def drill_to_ki(
             return f"(drill oval {hole_length} {hole_radius*2})"
     if hole_radius > 0:
         return f"(drill {2 * hole_radius})"
+    try:
+        hl_only = float(hole_length or 0)
+    except (TypeError, ValueError):
+        hl_only = 0.0
+    # Rare LCSC/EasyEDA rows: slot length set with zero hole_radius — still emit a drill.
+    if hl_only > 0:
+        return f"(drill {hl_only})"
     return ""
 
 
 # ---------------------------------------
 
 
-def angle_to_ki(rotation: float) -> Union[float, str]:
+def angle_to_ki(rotation: float) -> float:
     if isnan(rotation) is False:
-        return -(360 - rotation) if rotation > 180 else rotation
-    return ""
+        return float(-(360 - rotation) if rotation > 180 else rotation)
+    return 0.0
 
 
 # ---------------------------------------
@@ -161,6 +356,37 @@ def rotate(x: float, y: float, degrees: float) -> Tuple[float, float]:
     new_x = x * cos(radians) - y * sin(radians)
     new_y = x * sin(radians) + y * cos(radians)
     return new_x, new_y
+
+
+def mesh_z_rotation_xy_offset_adjustment_mm(
+    mesh_center_x: float,
+    mesh_center_y: float,
+    easyeda_rz_deg: float,
+    kicad_rz_deg: float,
+) -> Tuple[float, float]:
+    """Extra (model) offset XY in mm for non‑zero EasyEDA ``c_rotation`` Z.
+
+    ``c_origin`` is in the same mm space as the 2D footprint (``convert_to_mm``), while OBJ
+    vertices are converted with legacy ``/ 2.54`` in ``compute_obj_center`` / WRL export.
+    For **Z rotation only**, KiCad then rotates the mesh in a space that effectively differs
+    by a **2.54×** factor on XY vs footprint mm, which shows up as a shifted body (e.g. LCSC
+    **C841795**: manual fix ``(4.0, -2.3)`` vs raw ``c_origin`` offset ``(-1, 0)``).
+
+    When EasyEDA Z rotation is 0, return ``(0, 0)`` so packages like TQFN stay unchanged.
+    """
+    ez = float(easyeda_rz_deg) % 360.0
+    if ez < 0:
+        ez += 360.0
+    if ez <= 1e-6 or ez >= 360.0 - 1e-6:
+        return (0.0, 0.0)
+    # Do not use ``rotate()`` here: it uses ``(deg/180)*2*pi`` radians (double angle) for legacy
+    # arc math. We need true CCW rotation in the footprint XY plane by ``kicad_rz_deg``.
+    rad = (float(kicad_rz_deg) / 180.0) * pi
+    c, s = cos(rad), sin(rad)
+    rx = mesh_center_x * c - mesh_center_y * s
+    ry = mesh_center_x * s + mesh_center_y * c
+    scale = 2.54
+    return (scale * rx, scale * ry)
 
 
 # ---------------------------------------
@@ -281,95 +507,6 @@ def sanitize_model_filename(name: str) -> str:
     return base.replace("\\", "_").replace("/", "_")
 
 
-def compute_geometry_center(footprint: EeFootprint) -> Tuple[float, float]:
-    min_x = float("inf")
-    max_x = float("-inf")
-    min_y = float("inf")
-    max_y = float("-inf")
-
-    def update_bounds(x: float, y: float) -> None:
-        nonlocal min_x, max_x, min_y, max_y
-        if x < min_x:
-            min_x = x
-        if x > max_x:
-            max_x = x
-        if y < min_y:
-            min_y = y
-        if y > max_y:
-            max_y = y
-
-    def update_box(x1: float, y1: float, x2: float, y2: float) -> None:
-        update_bounds(x1, y1)
-        update_bounds(x2, y2)
-
-    for pad in footprint.pads:
-        half_w = pad.width / 2
-        half_h = pad.height / 2
-        update_box(
-            pad.center_x - half_w,
-            pad.center_y - half_h,
-            pad.center_x + half_w,
-            pad.center_y + half_h,
-        )
-
-    for track in footprint.tracks:
-        if not track.points:
-            continue
-        points = [fp_to_ki(point) for point in track.points.split(" ") if point != ""]
-        for idx in range(0, len(points), 2):
-            try:
-                update_bounds(points[idx], points[idx + 1])
-            except IndexError:
-                break
-
-    for circle in footprint.circles:
-        update_box(
-            circle.cx - circle.radius,
-            circle.cy - circle.radius,
-            circle.cx + circle.radius,
-            circle.cy + circle.radius,
-        )
-
-    for rectangle in footprint.rectangles:
-        update_box(
-            rectangle.x,
-            rectangle.y,
-            rectangle.x + rectangle.width,
-            rectangle.y + rectangle.height,
-        )
-
-    for hole in footprint.holes:
-        update_box(
-            hole.center_x - hole.radius,
-            hole.center_y - hole.radius,
-            hole.center_x + hole.radius,
-            hole.center_y + hole.radius,
-        )
-
-    for via in footprint.vias:
-        update_box(
-            via.center_x - via.radius,
-            via.center_y - via.radius,
-            via.center_x + via.radius,
-            via.center_y + via.radius,
-        )
-
-    if min_x == float("inf") or min_y == float("inf"):
-        min_x = footprint.bbox.x
-        max_x = footprint.bbox.x
-        min_y = footprint.bbox.y
-        max_y = footprint.bbox.y
-
-    return (
-        (min_x + max_x) / 2,
-        (min_y + max_y) / 2,
-        min_x,
-        max_x,
-        min_y,
-        max_y,
-    )
-
-
 class ExporterFootprintKicad:
     def __init__(self, footprint: EeFootprint):
         self.input = footprint
@@ -400,21 +537,33 @@ class ExporterFootprintKicad:
 
         if self.input.model_3d is not None:
             self.input.model_3d.convert_to_mm()
-            (
-                footprint_center_x,
-                footprint_center_y,
-                footprint_min_x,
-                footprint_max_x,
-                footprint_min_y,
-                footprint_max_y,
-            ) = compute_geometry_center(self.input)
             footprint_origin_x = self.input.bbox.x
             footprint_origin_y = self.input.bbox.y
 
-            local_center_x = footprint_center_x - footprint_origin_x
-            local_center_y = footprint_center_y - footprint_origin_y
-            footprint_width = footprint_max_x - footprint_min_x
-            footprint_height = footprint_max_y - footprint_min_y
+            # XY: always use EasyEDA ``c_origin`` (``translation``) relative to the footprint
+            # bbox corner — same coordinate frame as pads. Older logic aligned the 2D geometry
+            # hull center to the OBJ AABB center using *different* X/Y scale factors; the WRL is
+            # not stretched, so that skewed placement whenever footprint vs mesh aspect ratios
+            # differed.
+            api_translation_x = self.input.model_3d.translation.x
+            api_translation_y = self.input.model_3d.translation.y
+            model_translation_x = round(api_translation_x - footprint_origin_x, 2)
+            model_translation_y = -round(api_translation_y - footprint_origin_y, 2)
+
+            rot_ki_x = (360 - self.input.model_3d.rotation.x) % 360
+            rot_ki_y = (360 - self.input.model_3d.rotation.y) % 360
+            rot_ki_z = (360 - self.input.model_3d.rotation.z) % 360
+
+            c3 = self.input.model_3d.center
+            if c3 is not None and len(c3) >= 2:
+                adx, ady = mesh_z_rotation_xy_offset_adjustment_mm(
+                    c3[0],
+                    c3[1],
+                    self.input.model_3d.rotation.z,
+                    rot_ki_z,
+                )
+                model_translation_x = round(model_translation_x + adx, 2)
+                model_translation_y = round(model_translation_y + ady, 2)
 
             model_translation_z = 0.0
             if (
@@ -422,31 +571,14 @@ class ExporterFootprintKicad:
                 and self.input.model_3d.size is not None
                 and len(self.input.model_3d.center) == 3
                 and len(self.input.model_3d.size) == 3
-                and all(axis != 0 for axis in self.input.model_3d.size[:2])
                 and self.input.model_3d.size[2] != 0
             ):
-                model_center_x, model_center_y, model_center_z = self.input.model_3d.center
-                model_size_x, model_size_y, model_size_z = self.input.model_3d.size
-                scale_x = footprint_width / model_size_x if model_size_x else 1.0
-                scale_y = footprint_height / model_size_y if model_size_y else 1.0
-                model_translation_x = round(local_center_x - model_center_x * scale_x, 2)
-                model_translation_y = -round(local_center_y - model_center_y * scale_y, 2)
+                model_center_z = self.input.model_3d.center[2]
+                model_size_z = self.input.model_3d.size[2]
                 model_bottom_z = model_center_z - (model_size_z / 2)
                 model_translation_z = -round(model_bottom_z, 2)
-            else:
-                api_translation_x = self.input.model_3d.translation.x
-                api_translation_y = self.input.model_3d.translation.y
-                model_translation_x = round(
-                    api_translation_x - footprint_origin_x, 2
-                )
-                model_translation_y = -round(
-                    api_translation_y - footprint_origin_y, 2
-                )
-                model_translation_z = (
-                    -round(self.input.model_3d.translation.z, 2)
-                    if self.input.info.fp_type == "smd"
-                    else 0
-                )
+            elif self.input.info.fp_type == "smd":
+                model_translation_z = -round(self.input.model_3d.translation.z, 2)
 
             ki_3d_model_info = Ki3dModel(
                 name=self.input.model_3d.name,
@@ -456,9 +588,9 @@ class ExporterFootprintKicad:
                     z=model_translation_z,
                 ),
                 rotation=Ki3dModelBase(
-                    x=(360 - self.input.model_3d.rotation.x) % 360,
-                    y=(360 - self.input.model_3d.rotation.y) % 360,
-                    z=(360 - self.input.model_3d.rotation.z) % 360,
+                    x=rot_ki_x,
+                    y=rot_ki_y,
+                    z=rot_ki_z,
                 ),
                 raw_wrl=None,
             )
@@ -469,22 +601,20 @@ class ExporterFootprintKicad:
 
         # For pads
         for ee_pad in self.input.pads:
+            is_th = easyeda_pad_has_through_hole(ee_pad)
+            ee_shape_up = (ee_pad.shape or "").strip().upper()
             ki_pad = KiFootprintPad(
-                type="thru_hole" if ee_pad.hole_radius > 0 else "smd",
-                shape=(
-                    KI_PAD_SHAPE[ee_pad.shape]
-                    if ee_pad.shape in KI_PAD_SHAPE
-                    else "custom"
-                ),
+                type="thru_hole" if is_th else "smd",
+                shape=easyeda_ki_shape_for_footprint_pad(ee_pad),
                 pos_x=ee_pad.center_x - self.input.bbox.x,
                 pos_y=ee_pad.center_y - self.input.bbox.y,
                 width=max(ee_pad.width, 0.01),
                 height=max(ee_pad.height, 0.01),
                 layers=(
-                    KI_PAD_LAYER if ee_pad.hole_radius <= 0 else KI_PAD_LAYER_THT
+                    KI_PAD_LAYER_THT if is_th else KI_PAD_LAYER
                 ).get(ee_pad.layer_id, ""),
                 number=ee_pad.number,
-                drill=0.0,
+                drill="",
                 orientation=angle_to_ki(ee_pad.rotation),
                 polygon="",
             )
@@ -492,8 +622,24 @@ class ExporterFootprintKicad:
             ki_pad.drill = drill_to_ki(
                 ee_pad.hole_radius, ee_pad.hole_length, ki_pad.height, ki_pad.width
             )
-            if "(" in ki_pad.number and ")" in ki_pad.number:
-                ki_pad.number = ki_pad.number.split("(")[1].split(")")[0]
+            ki_pad.number = normalize_easyeda_pad_number(ki_pad.number)
+            if not _apply_easyeda_chamfer_from_points(ee_pad, ki_pad):
+                _apply_easyeda_roundrect_from_points(ee_pad, ki_pad)
+            if (
+                ee_shape_up == "OVAL"
+                and ki_pad.shape == "roundrect"
+                and float(ki_pad.roundrect_rratio or 0) < 1e-6
+            ):
+                ki_pad.roundrect_rratio = 1.0
+            if ki_pad.shape == "chamfrect":
+                _ch = (
+                    float(ki_pad.chamfer_tl or 0)
+                    + float(ki_pad.chamfer_tr or 0)
+                    + float(ki_pad.chamfer_br or 0)
+                    + float(ki_pad.chamfer_bl or 0)
+                )
+                if _ch < 1e-9:
+                    ki_pad.shape = "rect"
 
             # For custom polygon
             is_custom_shape = ki_pad.shape == "custom"
@@ -771,7 +917,34 @@ class ExporterFootprintKicad:
                 )
 
         for pad in ki.pads:
-            ki_lib += KI_PAD.format(**vars(pad))
+            rr_s = ""
+            chamfer_s = ""
+            if pad.shape == "roundrect":
+                rrv = max(0.0, min(1.0, float(pad.roundrect_rratio or 0.0)))
+                if rrv > 0:
+                    rr_s = f" (roundrect_rratio {rrv:.4f})"
+            elif pad.shape == "chamfrect":
+                tl = max(0.0, min(1.0, float(pad.chamfer_tl or 0.0)))
+                tr = max(0.0, min(1.0, float(pad.chamfer_tr or 0.0)))
+                br = max(0.0, min(1.0, float(pad.chamfer_br or 0.0)))
+                bl = max(0.0, min(1.0, float(pad.chamfer_bl or 0.0)))
+                if tl + tr + br + bl > 1e-9:
+                    chamfer_s = f" (chamfer {tl:.4f} {tr:.4f} {br:.4f} {bl:.4f})"
+            ki_lib += KI_PAD.format(
+                number=pad.number,
+                type=pad.type,
+                shape=pad.shape,
+                pos_x=pad.pos_x,
+                pos_y=pad.pos_y,
+                orientation=pad.orientation,
+                width=pad.width,
+                height=pad.height,
+                roundrect=rr_s,
+                chamfer=chamfer_s,
+                layers=pad.layers,
+                drill=pad.drill or "",
+                polygon=pad.polygon or "",
+            )
 
         for hole in ki.holes:
             ki_lib += KI_HOLE.format(**vars(hole))

@@ -26,7 +26,7 @@ KI_PAD_SIZE_MIN = 0.001
 
 KI_PAD = (
     "\t(pad {number} {type} {shape} (at {pos_x:.2f} {pos_y:.2f} {orientation:.2f})"
-    " (size {width:.2f} {height:.2f}) (layers {layers}){drill}{polygon})\n"
+    " (size {width:.2f} {height:.2f}){roundrect}{chamfer} (layers {layers}){drill}{polygon})\n"
 )
 KI_LINE = (
     "\t(fp_line (start {start_x:.2f} {start_y:.2f}) (end {end_x:.2f} {end_y:.2f})"
@@ -64,9 +64,21 @@ KI_MODEL_3D = (
 
 KI_PAD_SHAPE = {
     "ELLIPSE": "circle",
+    "CIRCLE": "circle",
+    "ROUND": "circle",
     "RECT": "rect",
+    "RECTANGLE": "rect",
+    "SQUARE": "rect",
     "OVAL": "oval",
+    "ROUNDRECT": "roundrect",
+    "RRECT": "roundrect",
+    "ROUND_RECT": "roundrect",
+    "CHAMFER": "chamfrect",
+    "CHAMFERED": "chamfrect",
+    "CHAMFER_RECT": "chamfrect",
+    "CHAMFERED_RECT": "chamfrect",
     "POLYGON": "custom",
+    "POLY": "custom",
 }
 KI_PAD_LAYER = {
     1: "F.Cu F.Paste F.Mask",
@@ -124,9 +136,16 @@ class KiFootprintPad:
     height: float
     layers: str
     number: str
-    drill: float
+    drill: str
     orientation: float
     polygon: str
+    # KiCad ``(roundrect_rratio r)`` where corner radius = r * min(w/2, h/2); 0 = sharp rect
+    roundrect_rratio: float = 0.0
+    # KiCad ``(chamfer tl tr br bl)`` ratios 0..1 for chamfrect pads (top-left … in footprint coords).
+    chamfer_tl: float = 0.0
+    chamfer_tr: float = 0.0
+    chamfer_br: float = 0.0
+    chamfer_bl: float = 0.0
 
     def __post_init__(self) -> None:
         round_float_values(self)
