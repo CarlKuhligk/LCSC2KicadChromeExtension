@@ -24,7 +24,7 @@ from easyeda2kicad.helpers import (
 from easyeda2kicad.kicad.export_kicad_3d_model import Exporter3dModelKicad
 from easyeda2kicad.kicad.export_kicad_footprint import ExporterFootprintKicad
 from easyeda2kicad.kicad.export_kicad_symbol import ExporterSymbolKicad
-from easyeda2kicad.kicad.parameters_kicad_symbol import KicadVersion, sanitize_fields
+from easyeda2kicad.kicad.parameters_kicad_symbol import sanitize_fields
 
 
 def get_parser() -> argparse.ArgumentParser:
@@ -82,13 +82,6 @@ def get_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
-        "--v5",
-        required=False,
-        help="Convert library in legacy format for KiCad 5.x",
-        action="store_true",
-    )
-
-    parser.add_argument(
         "--project-relative",
         required=False,
         help="Sets the 3D file path stored relative to the project",
@@ -122,9 +115,6 @@ def valid_arguments(arguments: dict) -> bool:
             "  easyeda2kicad --lcsc_id=C2040 --symbol"
         )
         return False
-
-    kicad_version = KicadVersion.v5 if arguments.get("v5") else KicadVersion.v6
-    arguments["kicad_version"] = kicad_version
 
     if arguments["project_relative"] and not arguments["output"]:
         logging.error(
@@ -175,7 +165,7 @@ def valid_arguments(arguments: dict) -> bool:
         os.mkdir(f"{arguments['output']}.3dshapes")
         logging.info(f"Create {lib_name}.3dshapes 3D model folder in {base_folder}")
 
-    lib_extension = "kicad_sym" if kicad_version == KicadVersion.v6 else "lib"
+    lib_extension = "kicad_sym"
     if not os.path.isfile(f"{arguments['output']}.{lib_extension}"):
         with open(
             file=f"{arguments['output']}.{lib_extension}", mode="w+", encoding="utf-8"
@@ -188,8 +178,6 @@ def valid_arguments(arguments: dict) -> bool:
                   (generator https://github.com/uPesy/easyeda2kicad.py)
                 )"""
                 )
-                if kicad_version == KicadVersion.v6
-                else "EESchema-LIBRARY Version 2.4\n#encoding utf-8\n"
             )
         logging.info(f"Create {lib_name}.{lib_extension} symbol lib in {base_folder}")
 
@@ -223,8 +211,7 @@ def main(argv: List[str] = sys.argv[1:]) -> int:
         return 1
 
     component_id = arguments["lcsc_id"]
-    kicad_version = arguments["kicad_version"]
-    sym_lib_ext = "kicad_sym" if kicad_version == KicadVersion.v6 else "lib"
+    sym_lib_ext = "kicad_sym"
 
     # Get CAD data of the component using easyeda API
     api = EasyedaApi()
@@ -259,25 +246,20 @@ def main(argv: List[str] = sys.argv[1:]) -> int:
         is_id_already_in_symbol_lib = id_already_in_symbol_lib(
             lib_path=f"{arguments['output']}.{sym_lib_ext}",
             component_name=sanitized_component_name,
-            kicad_version=kicad_version,
         )
 
         if not arguments["overwrite"] and is_id_already_in_symbol_lib:
             logging.error("Use --overwrite to update the older symbol lib")
             return 1
 
-        exporter = ExporterSymbolKicad(
-            symbol=easyeda_symbol, kicad_version=kicad_version
-        )
+        exporter = ExporterSymbolKicad(symbol=easyeda_symbol)
         kicad_symbol_lib = exporter.export(
             footprint_lib_name=arguments["output"].split("/")[-1].split(".")[0],
         )
 
         kicad_sub_symbols_lib: List[str] = []
         for sub_symbol in easyeda_sub_symbols:
-            sub_exporter = ExporterSymbolKicad(
-                symbol=sub_symbol, kicad_version=kicad_version
-            )
+            sub_exporter = ExporterSymbolKicad(symbol=sub_symbol)
             exported_content = sub_exporter.export(
                 footprint_lib_name=arguments["output"].split("/")[-1].split(".")[0]
             )
@@ -289,25 +271,17 @@ def main(argv: List[str] = sys.argv[1:]) -> int:
                 lib_path=f"{arguments['output']}.{sym_lib_ext}",
                 component_name=sanitized_component_name,
                 component_content=kicad_symbol_lib,
-                kicad_version=kicad_version,
             )
         else:
             add_component_in_symbol_lib_file(
                 lib_path=f"{arguments['output']}.{sym_lib_ext}",
                 component_content=kicad_symbol_lib,
-                kicad_version=kicad_version,
             )
-        if kicad_sub_symbols_lib and kicad_version == KicadVersion.v6:
+        if kicad_sub_symbols_lib:
             add_sub_components_in_symbol_lib_file(
                 lib_path=f"{arguments['output']}.{sym_lib_ext}",
                 component_name=sanitized_component_name,
                 sub_components_content=kicad_sub_symbols_lib,
-                kicad_version=kicad_version,
-            )
-        elif kicad_sub_symbols_lib:
-            logging.warning(
-                "Multi-unit symbols are only supported for KiCad v6 libraries; "
-                "skipping additional units."
             )
 
         logging.info(
