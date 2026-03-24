@@ -3,17 +3,14 @@ import math
 import os
 import re
 import textwrap
-from typing import TYPE_CHECKING
-
-from easyeda2kicad.kicad.parameters_kicad_symbol import KicadVersion
+from typing import TYPE_CHECKING, Any, List, Tuple
 
 if TYPE_CHECKING:
     from easyeda2kicad.easyeda.parameters_easyeda import EeSymbol
 
-sym_lib_regex_pattern = {
-    "v5": r"(#\n# {component_name}\n#\n.*?ENDDEF\n)",
-    "v6": r'\n(?P<indent>[ \t]*)\(symbol "{component_name}".*?\n(?P=indent)\)',
-}
+sym_lib_regex_kicad_sym = (
+    r'\n(?P<indent>[ \t]*)\(symbol "{component_name}".*?\n(?P=indent)\)'
+)
 
 
 def symbol_is_empty(symbol: "EeSymbol") -> bool:
@@ -28,6 +25,33 @@ def symbol_is_empty(symbol: "EeSymbol") -> bool:
         symbol.polygons,
         symbol.paths,
     ))
+
+
+def lcsc_primary_and_sub_symbols(cad_data: dict) -> Tuple[Any, List[Any]]:
+    """
+    Resolve the same primary symbol (and extra sub-units) as ``run_conversion``.
+
+    When the root EasyEDA symbol is empty, LCSC uses the first ``subparts`` entry as the
+    primary — the template gallery and footprint preview must use that symbol for pin
+    numbers or ``template_pin_map`` keys (template symbol pin numbers) never match merged pins.
+    """
+    from easyeda2kicad.easyeda.easyeda_importer import EasyedaSymbolImporter
+
+    primary = EasyedaSymbolImporter(easyeda_cp_cad_data=cad_data).get_symbol()
+    subparts_data = cad_data.get("subparts") or []
+    sub_symbols: List[Any] = []
+    iterable = list(subparts_data)
+    if iterable:
+        if symbol_is_empty(primary):
+            primary = EasyedaSymbolImporter(
+                easyeda_cp_cad_data=iterable[0]
+            ).get_symbol()
+            iterable = iterable[1:]
+        for sp in iterable:
+            sub_symbols.append(
+                EasyedaSymbolImporter(easyeda_cp_cad_data=sp).get_symbol()
+            )
+    return primary, sub_symbols
 
 
 def set_logger(log_file: str, log_level: int) -> None:
@@ -103,7 +127,7 @@ def extract_symbol_from_lib(lib_path: str, symbol_name: str) -> str | None:
             content = f.read()
     except OSError:
         return None
-    pattern = sym_lib_regex_pattern["v6"].format(
+    pattern = sym_lib_regex_kicad_sym.format(
         component_name=sanitize_for_regex(symbol_name)
     )
     # re.findall with a named group returns only the captured text (the indent),
@@ -112,14 +136,12 @@ def extract_symbol_from_lib(lib_path: str, symbol_name: str) -> str | None:
     return m.group(0).strip() if m else None
 
 
-def id_already_in_symbol_lib(
-    lib_path: str, component_name: str, kicad_version: KicadVersion
-) -> bool:
+def id_already_in_symbol_lib(lib_path: str, component_name: str) -> bool:
     with open(lib_path, encoding="utf-8") as lib_file:
         current_lib = lib_file.read()
         for variant in _component_name_variants(component_name):
             component = re.findall(
-                sym_lib_regex_pattern[kicad_version.name].format(
+                sym_lib_regex_kicad_sym.format(
                     component_name=sanitize_for_regex(variant)
                 ),
                 current_lib,
@@ -137,11 +159,10 @@ def update_component_in_symbol_lib_file(
     lib_path: str,
     component_name: str,
     component_content: str,
-    kicad_version: KicadVersion,
 ) -> None:
     with open(file=lib_path, encoding="utf-8") as lib_file:
         current_lib = lib_file.read()
-        pattern_template = sym_lib_regex_pattern[kicad_version.name]
+        pattern_template = sym_lib_regex_kicad_sym
 
     new_lib = current_lib
     match_found = False
@@ -162,7 +183,6 @@ def update_component_in_symbol_lib_file(
         add_component_in_symbol_lib_file(
             lib_path=lib_path,
             component_content=component_content,
-            kicad_version=kicad_version,
         )
         return
 
@@ -177,64 +197,53 @@ def update_component_in_symbol_lib_file(
     add_component_in_symbol_lib_file(
         lib_path=lib_path,
         component_content=component_content,
-        kicad_version=kicad_version,
     )
 
 
 def add_component_in_symbol_lib_file(
-    lib_path: str, component_content: str, kicad_version: KicadVersion
+    lib_path: str, component_content: str
 ) -> None:
+    with open(file=lib_path, encoding="utf-8") as lib_file:
+        current_lib_data = lib_file.read()
 
-    if kicad_version == KicadVersion.v5:
-        with open(file=lib_path, mode="a+", encoding="utf-8") as lib_file:
-            lib_file.write(component_content)
-    elif kicad_version == KicadVersion.v6:
-        with open(file=lib_path, encoding="utf-8") as lib_file:
-            current_lib_data = lib_file.read()
-
-        last_paren_pos = current_lib_data.rfind(")")
-        if last_paren_pos == -1:
-            raise ValueError(
-                "Invalid KiCad library file: unable to locate closing parenthesis"
-            )
-
-        component_lines = component_content.split("\n")
-        indented_component = "\n".join(
-            f"  {line}" if line.strip() else line for line in component_lines
+    last_paren_pos = current_lib_data.rfind(")")
+    if last_paren_pos == -1:
+        raise ValueError(
+            "Invalid KiCad library file: unable to locate closing parenthesis"
         )
 
-        new_lib_data = (
-            current_lib_data[:last_paren_pos]
-            + indented_component
-            + "\n"
-            + current_lib_data[last_paren_pos:]
-        )
+    component_lines = component_content.split("\n")
+    indented_component = "\n".join(
+        f"  {line}" if line.strip() else line for line in component_lines
+    )
 
-        with open(file=lib_path, mode="w", encoding="utf-8") as lib_file:
-            lib_file.write(
-                new_lib_data.replace(
-                    "(generator kicad_symbol_editor)",
-                    "(generator https://github.com/uPesy/easyeda2kicad.py)",
-                )
+    new_lib_data = (
+        current_lib_data[:last_paren_pos]
+        + indented_component
+        + "\n"
+        + current_lib_data[last_paren_pos:]
+    )
+
+    with open(file=lib_path, mode="w", encoding="utf-8") as lib_file:
+        lib_file.write(
+            new_lib_data.replace(
+                "(generator kicad_symbol_editor)",
+                "(generator https://github.com/uPesy/easyeda2kicad.py)",
             )
+        )
 
 
 def add_sub_components_in_symbol_lib_file(
     lib_path: str,
     component_name: str,
     sub_components_content: list[str],
-    kicad_version: KicadVersion,
 ) -> None:
-    if kicad_version != KicadVersion.v6:
-        logging.error("Multi-unit symbol insertion currently supported only for KiCad v6")
-        return
-
     with open(file=lib_path, encoding="utf-8") as lib_file:
         current_lib = lib_file.read()
 
     symbol_match = None
     for variant in _component_name_variants(component_name):
-        symbol_pattern = sym_lib_regex_pattern[kicad_version.name].format(
+        symbol_pattern = sym_lib_regex_kicad_sym.format(
             component_name=sanitize_for_regex(variant)
         )
         symbol_match = re.search(symbol_pattern, current_lib, flags=re.DOTALL)
