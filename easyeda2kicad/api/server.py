@@ -12,19 +12,20 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple
+from typing import Any, Awaitable, Callable, Deque, Dict, List, Optional, Set, Tuple
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import ValidationError
 
 from easyeda2kicad.easyeda.easyeda_api import EasyedaApi
-from easyeda2kicad.easyeda.easyeda_importer import EasyedaSymbolImporter
 from easyeda2kicad.helpers import (
     count_pins_in_symbol_string,
     extract_symbol_from_lib,
+    lcsc_primary_and_sub_symbols,
     list_symbols_in_lib,
 )
-from easyeda2kicad.kicad.parameters_kicad_symbol import KicadVersion
+from easyeda2kicad.kicad.symbol_pin_remap import list_pins_from_symbol_block
+from easyeda2kicad.kicad.symbol_preview_svg import symbol_block_to_svg
 from easyeda2kicad.kicad.template_merger import KNOWN_TEMPLATE_NAMES
 from easyeda2kicad.service import (
     ConversionError,
@@ -32,6 +33,31 @@ from easyeda2kicad.service import (
     ConversionResult,
     ConversionStage,
     run_conversion,
+)
+from easyeda2kicad.service.lcsc_preview import (
+    easyeda_pins_from_cad,
+    footprint_preview_bundle,
+    suggested_pad_to_symbol_map,
+)
+from easyeda2kicad.api.models import (
+    ComponentCheckRequest,
+    ComponentCheckResponse,
+    ConversionResultModel,
+    GalleryTemplateRef,
+    LcscFootprintPreviewPayload,
+    LibraryScaffoldRequest,
+    LibraryScaffoldResponse,
+    LibraryValidateRequest,
+    LibraryValidateResponse,
+    PathRequest,
+    TaskCreatePayload,
+    TaskDetail,
+    TaskSummary,
+    TemplatePinCheckPayload,
+    TemplatePinCheckResponse,
+    TemplatePinMapContextPayload,
+    TemplatePreviewPayload,
+    TemplatesGalleryPinSummaryPayload,
 )
 
 log = logging.getLogger(__name__)
@@ -74,193 +100,8 @@ class TaskRecord:
     log: List[dict[str, Any]] = field(default_factory=list)
 
 
-class TaskCreatePayload(BaseModel):
-    lcsc_id: str = Field(..., description="LCSC component identifier (e.g. C8733)")
-    output_path: str = Field(
-        ..., description="Library prefix path (e.g. /path/to/MyLib)"
-    )
-    overwrite: bool = False
-    overwrite_model: bool = Field(
-        False, description="Overwrite existing 3D models even if files exist already."
-    )
-    symbol: bool = False
-    footprint: bool = False
-    model: bool = Field(False, description="Export 3D model")
-    kicad_version: str = Field("v6", pattern=r"^v[56]$")
-    project_relative: bool = Field(
-        False, description="Store 3D model path relative to project"
-    )
-    project_relative_path: Optional[str] = Field(
-        None, description="Project-relative 3D model path suffix (prefixed by ${KIPRJMOD})"
-    )
-    model_path: Optional[str] = Field(
-        None, description="Explicit 3D model base path to use as-is."
-    )
-    hide_pin_numbers: bool = Field(False, description="Hide pin numbers in exported symbol.")
-    hide_pin_names: bool = Field(False, description="Hide pin names in exported symbol.")
-    symbol_value_override: Optional[str] = Field(
-        None, description="Override symbol Value property (e.g. resistance value from component page)."
-    )
-    symbol_params: Optional[Dict[str, str]] = Field(
-        None, description="Additional component parameters from LCSC page to include as symbol properties."
-    )
-    symbol_description: Optional[str] = Field(
-        None, description="Component description text scraped from LCSC product page."
-    )
-    symbol_datasheet_url: Optional[str] = Field(
-        None, description="Actual datasheet PDF URL scraped from LCSC product page, overrides EasyEDA value."
-    )
-    use_template: bool = Field(False, description="Use a template symbol instead of EasyEDA graphics.")
-    template_name: Optional[str] = Field(
-        None, description="Name of the template symbol (e.g. 'Template_Resistor')."
-    )
-    template_lib_path: Optional[str] = Field(
-        None, description="Full path to the .kicad_sym file that contains the template symbols."
-    )
-    force_template: bool = Field(
-        False,
-        description="If true, use only the template (no fallback to EasyEDA symbol on template failure).",
-    )
-
-    @field_validator("lcsc_id")
-    @classmethod
-    def validate_lcsc(cls, value: str) -> str:
-        if not value or not value.startswith("C"):
-            raise ValueError("LCSC ID must start with 'C'")
-        return value
-    @model_validator(mode="after")
-    def ensure_target_selected(cls, payload: "TaskCreatePayload") -> "TaskCreatePayload":
-        if not any([payload.symbol, payload.footprint, payload.model]):
-            raise ValueError("Select at least one output: symbol, footprint or model.")
-        return payload
-
-
-class ConversionResultModel(BaseModel):
-    symbol_path: Optional[str] = None
-    footprint_path: Optional[str] = None
-    model_paths: Dict[str, str] = Field(default_factory=dict)
-    messages: List[str] = Field(default_factory=list)
-
-
-class TaskSummary(BaseModel):
-    id: str
-    status: str
-    progress: int
-    message: Optional[str]
-    queue_position: Optional[int]
-    error: Optional[str]
-    created_at: datetime
-    started_at: Optional[datetime]
-    finished_at: Optional[datetime]
-    result: Optional[ConversionResultModel]
-
-
-class TaskDetail(TaskSummary):
-    log: List[dict[str, Any]]
-
-
-class PathRequest(BaseModel):
-    path: str
-
-
-class LibraryScaffoldRequest(BaseModel):
-    base_path: str = Field(..., description="Base directory for the library")
-    library_name: str = Field(..., description="Library name without extension")
-    symbol: bool = True
-    footprint: bool = True
-    model: bool = True
-    project_relative: bool = False
-
-    @model_validator(mode="after")
-    def ensure_outputs(cls, payload: "LibraryScaffoldRequest") -> "LibraryScaffoldRequest":
-        if not any((payload.symbol, payload.footprint, payload.model)):
-            raise ValueError("Select at least one scaffold target.")
-        return payload
-
-
-class LibraryScaffoldResponse(BaseModel):
-    resolved_library_prefix: str
-    symbol_path: Optional[str]
-    footprint_dir: Optional[str]
-    model_dir: Optional[str]
-    created: Dict[str, bool]
-
-
-class LibraryValidateRequest(BaseModel):
-    path: str
-
-
-class LibraryValidateResponse(BaseModel):
-    resolved_path: str
-    exists: bool
-    is_dir: bool
-    writable: bool
-    assets: Dict[str, bool]
-    counts: Dict[str, int] = Field(default_factory=dict)
-    warnings: List[str] = Field(default_factory=list)
-    model_path: Optional[str] = None
-
-
-class ComponentCheckRequest(BaseModel):
-    path: str
-    lcsc_id: str
-
-    @field_validator("lcsc_id")
-    @classmethod
-    def validate_lcsc(cls, value: str) -> str:
-        if not value or not value.startswith("C"):
-            raise ValueError("LCSC ID must start with 'C'")
-        return value
-
-
-class ComponentCheckResponse(BaseModel):
-    symbol_path: Optional[str] = None
-    footprint_path: Optional[str] = None
-    model_paths: Dict[str, str] = Field(default_factory=dict)
-    messages: List[str] = Field(default_factory=list)
-
-
-class ComponentBatchRequest(BaseModel):
-    path: str
-    lcsc_ids: List[str]
-
-    @field_validator("lcsc_ids")
-    @classmethod
-    def validate_lcsc_ids(cls, value: List[str]) -> List[str]:
-        cleaned = []
-        for entry in value:
-            if not entry:
-                continue
-            entry = entry.strip().upper()
-            if not entry.startswith("C"):
-                raise ValueError("LCSC ID must start with 'C'")
-            cleaned.append(entry)
-        if not cleaned:
-            raise ValueError("At least one LCSC ID is required.")
-        return cleaned
-
-
-class ComponentBatchResponse(BaseModel):
-    results: Dict[str, ComponentCheckResponse] = Field(default_factory=dict)
-
-
-class TemplatePinCheckPayload(BaseModel):
-    lcsc_id: str = Field(..., description="LCSC component ID (e.g. C12345).")
-    template_name: str = Field(..., description="Symbol name in the template library.")
-    template_lib_path: str = Field(..., description="Full path to the .kicad_sym template file.")
-
-
-class TemplatePinCheckResponse(BaseModel):
-    easyeda_pin_count: int
-    template_pin_count: int
-    match: bool
-
-
-async def run_templates_pin_check(payload: TemplatePinCheckPayload) -> TemplatePinCheckResponse:
-    """Shared by REST and WebSocket extension API."""
-    lcsc_id = payload.lcsc_id.strip().upper()
-    if not lcsc_id.startswith("C"):
-        raise HTTPException(status_code=400, detail="LCSC ID must start with 'C'.")
+async def _fetch_cad_data_for_lcsc(lcsc_id: str) -> dict:
+    """EasyEDA CAD JSON for a component; raises HTTPException on failure."""
     api = EasyedaApi()
     cad_data: Dict[str, Any] = {}
     last_exc: Exception | None = None
@@ -285,8 +126,16 @@ async def run_templates_pin_check(payload: TemplatePinCheckPayload) -> TemplateP
             status_code=404,
             detail=f"No CAD data for component {lcsc_id}.",
         )
-    importer = EasyedaSymbolImporter(easyeda_cp_cad_data=cad_data)
-    primary_symbol = importer.get_symbol()
+    return cad_data
+
+
+async def run_templates_pin_check(payload: TemplatePinCheckPayload) -> TemplatePinCheckResponse:
+    """Shared by REST and WebSocket extension API."""
+    lcsc_id = payload.lcsc_id.strip().upper()
+    if not lcsc_id.startswith("C"):
+        raise HTTPException(status_code=400, detail="LCSC ID must start with 'C'.")
+    cad_data = await _fetch_cad_data_for_lcsc(lcsc_id)
+    primary_symbol, _ = lcsc_primary_and_sub_symbols(cad_data)
     easyeda_pin_count = len(primary_symbol.pins)
 
     template_str = extract_symbol_from_lib(payload.template_lib_path, payload.template_name)
@@ -302,6 +151,151 @@ async def run_templates_pin_check(payload: TemplatePinCheckPayload) -> TemplateP
         template_pin_count=template_pin_count,
         match=match,
     )
+
+
+async def run_templates_gallery_pin_summary(
+    payload: TemplatesGalleryPinSummaryPayload,
+) -> dict[str, Any]:
+    """
+    One EasyEDA fetch, then pin counts for many template symbols (gallery left pane).
+    """
+    lcsc_id = payload.lcsc_id.strip().upper()
+    if not lcsc_id.startswith("C"):
+        raise HTTPException(status_code=400, detail="LCSC ID must start with 'C'.")
+    cad_data = await _fetch_cad_data_for_lcsc(lcsc_id)
+    primary_symbol, _ = lcsc_primary_and_sub_symbols(cad_data)
+    easyeda_pin_count = len(primary_symbol.pins)
+
+    entries: List[dict[str, Any]] = []
+    for t in payload.templates:
+        name = (t.template_name or "").strip()
+        lib = (t.template_lib_path or "").strip()
+        if not name or not lib:
+            continue
+        template_str = extract_symbol_from_lib(lib, name)
+        if not template_str:
+            entries.append(
+                {
+                    "template_name": name,
+                    "template_lib_path": lib,
+                    "template_pin_count": -1,
+                    "match": False,
+                }
+            )
+            continue
+        c = count_pins_in_symbol_string(template_str)
+        entries.append(
+            {
+                "template_name": name,
+                "template_lib_path": lib,
+                "template_pin_count": c,
+                "match": c == easyeda_pin_count,
+            }
+        )
+
+    return {
+        "easyeda_pin_count": easyeda_pin_count,
+        "entries": entries,
+    }
+
+
+def run_template_preview(payload: TemplatePreviewPayload) -> dict[str, Any]:
+    """SVG preview of a template symbol (for extension hover / dialog)."""
+    # Intrinsic SVG pixel size (not the extension panel): larger = sharper when scaled in the UI.
+    w, h = (1600, 1200) if payload.label_pins else (300, 225)
+    template_str = extract_symbol_from_lib(
+        payload.template_lib_path.strip(), payload.template_name.strip()
+    )
+    if not template_str:
+        return {"ok": False, "error": "symbol_not_found"}
+    pins: List[dict[str, str]] = list_pins_from_symbol_block(template_str)
+    svg, meta = symbol_block_to_svg(
+        template_str,
+        label_pins=payload.label_pins,
+        draw_pin_names=payload.draw_pin_names,
+        width_px=w,
+        height_px=h,
+        preview_theme=payload.preview_theme,
+    )
+    if svg is None:
+        return {"ok": False, **meta}
+    out: dict[str, Any] = {"ok": True, "svg": svg, "pins": pins}
+    if isinstance(meta, dict):
+        for k, v in meta.items():
+            if k not in out:
+                out[k] = v
+    return out
+
+
+async def run_templates_pin_map_context(payload: TemplatePinMapContextPayload) -> dict[str, Any]:
+    """Pins, pads, SVG previews for the template pin-assignment dialog."""
+    lcsc_id = payload.lcsc_id.strip().upper()
+    if not lcsc_id.startswith("C"):
+        raise HTTPException(status_code=400, detail="LCSC ID must start with 'C'.")
+    cad_data = await _fetch_cad_data_for_lcsc(lcsc_id)
+
+    easyeda_pins = easyeda_pins_from_cad(cad_data)
+
+    template_str = extract_symbol_from_lib(
+        payload.template_lib_path.strip(), payload.template_name.strip()
+    )
+    if not template_str:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Template '{payload.template_name}' not found in {payload.template_lib_path}.",
+        )
+
+    template_pins = list_pins_from_symbol_block(template_str)
+
+    sym_preview = run_template_preview(
+        TemplatePreviewPayload(
+            template_name=payload.template_name,
+            template_lib_path=payload.template_lib_path,
+            label_pins=True,
+            draw_pin_names=False,
+        )
+    )
+    symbol_svg = sym_preview.get("svg") if sym_preview.get("ok") else None
+
+    fp_bundle = footprint_preview_bundle(
+        cad_data, width_px=220, height_px=220, lcsc_id=lcsc_id
+    )
+    suggested_map = suggested_pad_to_symbol_map(easyeda_pins, fp_bundle.pads)
+
+    return {
+        "symbol_svg": symbol_svg,
+        "footprint_svg": fp_bundle.footprint_svg,
+        "easyeda_pins": easyeda_pins,
+        "template_pins": template_pins,
+        "pads": fp_bundle.pads,
+        "suggested_map": suggested_map,
+        "footprint_name": fp_bundle.footprint_name,
+    }
+
+
+async def run_lcsc_footprint_preview(payload: LcscFootprintPreviewPayload) -> dict[str, Any]:
+    """EasyEDA footprint → SVG + pad list + LCSC schematic pin numbers for template gallery PAD map."""
+    lcsc_id = payload.lcsc_id.strip().upper()
+    if not lcsc_id.startswith("C"):
+        raise HTTPException(status_code=400, detail="LCSC ID must start with 'C'.")
+    cad_data = await _fetch_cad_data_for_lcsc(lcsc_id)
+
+    easyeda_pins: List[dict[str, str]] = []
+    try:
+        easyeda_pins = easyeda_pins_from_cad(cad_data)
+    except Exception as exc:
+        log.warning("LCSC schematic pins for footprint preview failed for %s: %s", lcsc_id, exc)
+
+    fp_bundle = footprint_preview_bundle(
+        cad_data, width_px=960, height_px=960, lcsc_id=lcsc_id
+    )
+    return {
+        "ok": fp_bundle.ok,
+        "footprint_svg": fp_bundle.footprint_svg,
+        "footprint_name": fp_bundle.footprint_name,
+        "pads": fp_bundle.pads,
+        "easyeda_pins": easyeda_pins,
+    }
 
 
 @dataclass
@@ -698,61 +692,6 @@ def _index_symbols_by_lcsc(content: str, suffix: str) -> Dict[str, Optional[str]
     return mapping
 
 
-def _check_components_in_library(path: str, lcsc_ids: List[str]) -> ComponentBatchResponse:
-    try:
-        target = Path(path).expanduser()
-    except OSError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid path: {path}") from exc
-
-    resolved = target.resolve(strict=False)
-    lower_suffix = resolved.suffix.lower()
-    if lower_suffix in {".kicad_sym", ".lib"}:
-        symbol_candidates = [resolved]
-        library_root = resolved.with_suffix("")
-    else:
-        symbol_candidates = [resolved.with_suffix(".kicad_sym"), resolved.with_suffix(".lib")]
-        library_root = resolved
-
-    symbol_path = next((candidate for candidate in symbol_candidates if candidate.is_file()), None)
-    results: Dict[str, ComponentCheckResponse] = {}
-    if not symbol_path:
-        for lcsc_id in lcsc_ids:
-            results[lcsc_id] = ComponentCheckResponse(messages=["Symbol library not found."])
-        return ComponentBatchResponse(results=results)
-
-    try:
-        content = symbol_path.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        for lcsc_id in lcsc_ids:
-            results[lcsc_id] = ComponentCheckResponse(messages=["Unable to read symbol library."])
-        return ComponentBatchResponse(results=results)
-
-    index = _index_symbols_by_lcsc(content, symbol_path.suffix.lower())
-
-    for lcsc_id in lcsc_ids:
-        footprint_ref = index.get(lcsc_id)
-        if not footprint_ref:
-            results[lcsc_id] = ComponentCheckResponse(messages=["Component not found in library."])
-            continue
-        footprint_name = footprint_ref.split(":")[-1].strip()
-        footprint_path = (
-            library_root.with_suffix(".pretty") / f"{footprint_name}.kicad_mod"
-            if footprint_name
-            else None
-        )
-        model_paths: Dict[str, str] = {}
-        if footprint_path and footprint_path.is_file():
-            model_dir = library_root.with_suffix(".3dshapes")
-            model_paths = _extract_model_paths(footprint_path, model_dir)
-        results[lcsc_id] = ComponentCheckResponse(
-            symbol_path=str(symbol_path),
-            footprint_path=str(footprint_path) if footprint_path and footprint_path.is_file() else None,
-            model_paths=model_paths,
-            messages=[],
-        )
-    return ComponentBatchResponse(results=results)
-
-
 def _count_symbols_legacy_lib(path: Path) -> int:
     """Count DEF entries in a KiCad v5 legacy .lib file."""
     try:
@@ -1109,31 +1048,8 @@ def create_app(
         *,
         extension_client: Optional[ExtensionClient] = None,
     ) -> TaskSummary:
-        version = KicadVersion.v6 if payload.kicad_version == "v6" else KicadVersion.v5
         try:
-            request = ConversionRequest(
-                lcsc_id=payload.lcsc_id,
-                output_prefix=payload.output_path,
-                overwrite=payload.overwrite,
-                overwrite_model=payload.overwrite_model,
-                generate_symbol=payload.symbol,
-                generate_footprint=payload.footprint,
-                generate_model=payload.model,
-                kicad_version=version,
-                project_relative=payload.project_relative,
-                project_relative_path=payload.project_relative_path,
-                model_path=payload.model_path,
-                hide_pin_numbers=payload.hide_pin_numbers,
-                hide_pin_names=payload.hide_pin_names,
-                symbol_value_override=payload.symbol_value_override,
-                symbol_params=payload.symbol_params,
-                symbol_description=payload.symbol_description,
-                symbol_datasheet_url=payload.symbol_datasheet_url,
-                use_template=payload.use_template,
-                template_name=payload.template_name,
-                template_lib_path=payload.template_lib_path,
-                force_template=payload.force_template,
-            )
+            request = ConversionRequest.from_task_create_payload(payload)
         except ConversionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1152,11 +1068,11 @@ def create_app(
         await broadcast(task_id)
 
         if _WS_JOB_TRACE:
-            sub_n = sum(1 for c in app.state.extension_clients if task_id in c.task_ids)
             _job_trace(
                 f"enqueue task={task_id} lcsc={payload.lcsc_id} status={record.status} "
                 f"queue_size≈{app.state.queue.qsize()} pending={len(app.state.pending)} "
-                f"subscribers_this_task={sub_n}"
+                f"subscribers_this_task="
+                f"{sum(1 for c in app.state.extension_clients if task_id in c.task_ids)}"
             )
 
         return as_summary(record)
@@ -1174,105 +1090,158 @@ def create_app(
         client = ExtensionClient(ws=websocket)
         app.state.extension_clients.append(client)
 
+        async def ws_ping(_p: dict[str, Any], _c: ExtensionClient) -> Any:
+            return {"pong": True}
+
+        async def ws_health(_p: dict[str, Any], _c: ExtensionClient) -> Any:
+            return {"status": "ok", "protocol": 1}
+
+        async def ws_list_tasks(_p: dict[str, Any], _c: ExtensionClient) -> Any:
+            async with app.state.task_lock:
+                records = list(app.state.tasks.values())
+            return [as_summary(r).model_dump(mode="json") for r in records]
+
+        async def ws_get_task_detail(p: dict[str, Any], _c: ExtensionClient) -> Any:
+            tid = str(p.get("task_id") or "")
+            if not tid:
+                raise HTTPException(status_code=400, detail="task_id required.")
+            async with app.state.task_lock:
+                rec = app.state.tasks.get(tid)
+            if not rec:
+                raise HTTPException(status_code=404, detail="Task not found.")
+            return as_detail(rec).model_dump(mode="json")
+
+        async def ws_subscribe_task(p: dict[str, Any], c: ExtensionClient) -> Any:
+            tid = str(p.get("task_id") or "")
+            if not tid:
+                raise HTTPException(status_code=400, detail="task_id required.")
+            async with app.state.task_lock:
+                if tid not in app.state.tasks:
+                    raise HTTPException(status_code=404, detail="Task not found.")
+            c.task_ids.add(tid)
+            await broadcast(tid)
+            return {"subscribed": True, "task_id": tid}
+
+        async def ws_enqueue_task(p: dict[str, Any], c: ExtensionClient) -> Any:
+            payload = TaskCreatePayload.model_validate(p)
+            summary = await enqueue_conversion_payload(
+                payload, extension_client=c
+            )
+            async with app.state.task_lock:
+                rec = app.state.tasks.get(summary.id)
+            if rec:
+                result = as_summary(rec).model_dump(mode="json")
+            else:
+                result = summary.model_dump(mode="json")
+            if _WS_JOB_TRACE:
+                _job_trace(
+                    f"enqueue_task RPC reply task={result.get('id')} "
+                    f"status={result.get('status')} progress={result.get('progress')}"
+                )
+            return result
+
+        async def ws_libraries_scaffold(p: dict[str, Any], _c: ExtensionClient) -> Any:
+            req = LibraryScaffoldRequest.model_validate(p)
+            prefix, created, paths = _scaffold_library(req)
+            return LibraryScaffoldResponse(
+                resolved_library_prefix=str(prefix),
+                symbol_path=paths.get("symbol"),
+                footprint_dir=paths.get("footprint"),
+                model_dir=paths.get("model"),
+                created=created,
+            ).model_dump(mode="json")
+
+        async def ws_libraries_validate(p: dict[str, Any], _c: ExtensionClient) -> Any:
+            req = LibraryValidateRequest.model_validate(p)
+            return _inspect_library(req.path).model_dump(mode="json")
+
+        async def ws_libraries_component(p: dict[str, Any], _c: ExtensionClient) -> Any:
+            req = ComponentCheckRequest.model_validate(p)
+            return _check_component_in_library(req.path, req.lcsc_id).model_dump(
+                mode="json"
+            )
+
+        async def ws_fs_roots(_p: dict[str, Any], _c: ExtensionClient) -> Any:
+            return _fs_roots()
+
+        async def ws_fs_list(p: dict[str, Any], _c: ExtensionClient) -> Any:
+            path = str(p.get("path") or "")
+            if not path:
+                raise HTTPException(status_code=400, detail="path required.")
+            return _fs_list_directory(path)
+
+        async def ws_fs_check(p: dict[str, Any], _c: ExtensionClient) -> Any:
+            path = str(p.get("path") or "")
+            if not path:
+                raise HTTPException(status_code=400, detail="path required.")
+            return _fs_check(path)
+
+        async def ws_templates_symbols(p: dict[str, Any], _c: ExtensionClient) -> Any:
+            lib_path = str(p.get("lib_path") or "")
+            if not lib_path:
+                raise HTTPException(status_code=400, detail="lib_path required.")
+            return {"symbols": list_symbols_in_lib(lib_path)}
+
+        async def ws_templates_check(p: dict[str, Any], _c: ExtensionClient) -> Any:
+            lib_path = str(p.get("lib_path") or "")
+            if not lib_path:
+                raise HTTPException(status_code=400, detail="lib_path required.")
+            symbols_set = set(list_symbols_in_lib(lib_path))
+            return {name: name in symbols_set for name in KNOWN_TEMPLATE_NAMES}
+
+        async def ws_templates_pin_check(p: dict[str, Any], _c: ExtensionClient) -> Any:
+            req = TemplatePinCheckPayload.model_validate(p)
+            return (await run_templates_pin_check(req)).model_dump(mode="json")
+
+        async def ws_templates_gallery_pin_summary(
+            p: dict[str, Any], _c: ExtensionClient
+        ) -> Any:
+            req = TemplatesGalleryPinSummaryPayload.model_validate(p)
+            return await run_templates_gallery_pin_summary(req)
+
+        async def ws_templates_preview_svg(p: dict[str, Any], _c: ExtensionClient) -> Any:
+            req = TemplatePreviewPayload.model_validate(p)
+            return run_template_preview(req)
+
+        async def ws_templates_pin_map_context(p: dict[str, Any], _c: ExtensionClient) -> Any:
+            req = TemplatePinMapContextPayload.model_validate(p)
+            return await run_templates_pin_map_context(req)
+
+        async def ws_lcsc_footprint_preview(p: dict[str, Any], _c: ExtensionClient) -> Any:
+            req = LcscFootprintPreviewPayload.model_validate(p)
+            return await run_lcsc_footprint_preview(req)
+
+        _extension_ws_rpc: Dict[
+            str, Callable[[dict[str, Any], ExtensionClient], Awaitable[Any]]
+        ] = {
+            "ping": ws_ping,
+            "health": ws_health,
+            "list_tasks": ws_list_tasks,
+            "get_task_detail": ws_get_task_detail,
+            "subscribe_task": ws_subscribe_task,
+            "enqueue_task": ws_enqueue_task,
+            "libraries_scaffold": ws_libraries_scaffold,
+            "libraries_validate": ws_libraries_validate,
+            "libraries_component": ws_libraries_component,
+            "fs_roots": ws_fs_roots,
+            "fs_list": ws_fs_list,
+            "fs_check": ws_fs_check,
+            "templates_symbols": ws_templates_symbols,
+            "templates_check": ws_templates_check,
+            "templates_pin_check": ws_templates_pin_check,
+            "templates_gallery_pin_summary": ws_templates_gallery_pin_summary,
+            "templates_preview_svg": ws_templates_preview_svg,
+            "templates_pin_map_context": ws_templates_pin_map_context,
+            "lcsc_footprint_preview": ws_lcsc_footprint_preview,
+        }
+
         async def handle_call(req_id: Any, method: str, params: Any) -> None:
             if not isinstance(params, dict):
                 params = {}
-            result: Any = None
-
-            if method == "ping":
-                result = {"pong": True}
-            elif method == "health":
-                result = {"status": "ok", "protocol": 1}
-            elif method == "list_tasks":
-                async with app.state.task_lock:
-                    records = list(app.state.tasks.values())
-                result = [as_summary(r).model_dump(mode="json") for r in records]
-            elif method == "get_task_detail":
-                tid = str(params.get("task_id") or "")
-                if not tid:
-                    raise HTTPException(status_code=400, detail="task_id required.")
-                async with app.state.task_lock:
-                    rec = app.state.tasks.get(tid)
-                if not rec:
-                    raise HTTPException(status_code=404, detail="Task not found.")
-                result = as_detail(rec).model_dump(mode="json")
-            elif method == "subscribe_task":
-                tid = str(params.get("task_id") or "")
-                if not tid:
-                    raise HTTPException(status_code=400, detail="task_id required.")
-                async with app.state.task_lock:
-                    if tid not in app.state.tasks:
-                        raise HTTPException(status_code=404, detail="Task not found.")
-                client.task_ids.add(tid)
-                await broadcast(tid)
-                result = {"subscribed": True, "task_id": tid}
-            elif method == "enqueue_task":
-                payload = TaskCreatePayload.model_validate(params)
-                summary = await enqueue_conversion_payload(
-                    payload, extension_client=client
-                )
-                # Worker may advance status before we await send_json; re-read so the
-                # RPC payload is not a stale QUEUED snapshot that races task_update.
-                async with app.state.task_lock:
-                    rec = app.state.tasks.get(summary.id)
-                if rec:
-                    result = as_summary(rec).model_dump(mode="json")
-                else:
-                    result = summary.model_dump(mode="json")
-                if _WS_JOB_TRACE:
-                    _job_trace(
-                        f"enqueue_task RPC reply task={result.get('id')} "
-                        f"status={result.get('status')} progress={result.get('progress')}"
-                    )
-            elif method == "libraries_scaffold":
-                p = LibraryScaffoldRequest.model_validate(params)
-                prefix, created, paths = _scaffold_library(p)
-                result = LibraryScaffoldResponse(
-                    resolved_library_prefix=str(prefix),
-                    symbol_path=paths.get("symbol"),
-                    footprint_dir=paths.get("footprint"),
-                    model_dir=paths.get("model"),
-                    created=created,
-                ).model_dump(mode="json")
-            elif method == "libraries_validate":
-                p = LibraryValidateRequest.model_validate(params)
-                result = _inspect_library(p.path).model_dump(mode="json")
-            elif method == "libraries_component":
-                p = ComponentCheckRequest.model_validate(params)
-                result = _check_component_in_library(p.path, p.lcsc_id).model_dump(mode="json")
-            elif method == "libraries_components":
-                p = ComponentBatchRequest.model_validate(params)
-                result = _check_components_in_library(p.path, p.lcsc_ids).model_dump(mode="json")
-            elif method == "fs_roots":
-                result = _fs_roots()
-            elif method == "fs_list":
-                path = str(params.get("path") or "")
-                if not path:
-                    raise HTTPException(status_code=400, detail="path required.")
-                result = _fs_list_directory(path)
-            elif method == "fs_check":
-                path = str(params.get("path") or "")
-                if not path:
-                    raise HTTPException(status_code=400, detail="path required.")
-                result = _fs_check(path)
-            elif method == "templates_symbols":
-                lib_path = str(params.get("lib_path") or "")
-                if not lib_path:
-                    raise HTTPException(status_code=400, detail="lib_path required.")
-                symbols = list_symbols_in_lib(lib_path)
-                result = {"symbols": symbols}
-            elif method == "templates_check":
-                lib_path = str(params.get("lib_path") or "")
-                if not lib_path:
-                    raise HTTPException(status_code=400, detail="lib_path required.")
-                symbols_set = set(list_symbols_in_lib(lib_path))
-                result = {name: name in symbols_set for name in KNOWN_TEMPLATE_NAMES}
-            elif method == "templates_pin_check":
-                p = TemplatePinCheckPayload.model_validate(params)
-                result = (await run_templates_pin_check(p)).model_dump(mode="json")
-            else:
+            handler = _extension_ws_rpc.get(method)
+            if handler is None:
                 raise HTTPException(status_code=400, detail=f"Unknown method: {method}")
-
+            result = await handler(params, client)
             await websocket.send_json({"id": req_id, "result": result})
 
         try:

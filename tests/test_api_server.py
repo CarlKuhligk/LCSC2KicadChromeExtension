@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 
 from fastapi.testclient import TestClient
 
+from easyeda2kicad.api.models import TaskCreatePayload
 from easyeda2kicad.api.server import create_app
 from easyeda2kicad.service import ConversionRequest, ConversionResult, ConversionStage
 
@@ -153,6 +154,15 @@ class TaskApiTest(unittest.TestCase):
             self.assertTrue(validation_file["assets"]["symbol"])
             self.assertGreaterEqual(validation_file["counts"].get("symbol"), 0)
 
+            chk = _ws_rpc(
+                ws,
+                "chk",
+                "libraries_component",
+                {"path": data["symbol_path"], "lcsc_id": "C40404"},
+            )
+            self.assertIsInstance(chk.get("messages"), list)
+            self.assertTrue(any("not found" in m.lower() for m in chk["messages"]))
+
     def test_symbol_counts_multiple_entries(self) -> None:
         app = create_app(conversion_runner=_dummy_runner)
         with tempfile.TemporaryDirectory() as tmpdir, TestClient(app) as client, client.websocket_connect(
@@ -220,3 +230,18 @@ class TaskApiTest(unittest.TestCase):
             data = _ws_rpc(ws, "v", "libraries_validate", {"path": str(root)})
             self.assertTrue(data["assets"]["model"])
             self.assertEqual(data["counts"].get("model"), 7)
+
+    def test_conversion_request_from_task_create_payload(self) -> None:
+        payload = TaskCreatePayload(
+            lcsc_id="C9999",
+            output_path="/tmp/lib",
+            symbol=True,
+            footprint=True,
+            template_pin_map={"1": "A"},
+        )
+        req = ConversionRequest.from_task_create_payload(payload)
+        self.assertEqual(req.lcsc_id, "C9999")
+        self.assertEqual(req.output_prefix, str(Path("/tmp/lib")))
+        self.assertTrue(req.generate_symbol)
+        self.assertTrue(req.generate_footprint)
+        self.assertEqual(req.template_pin_map, {"1": "A"})
