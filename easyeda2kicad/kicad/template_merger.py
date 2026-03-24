@@ -7,6 +7,9 @@ property positions / font sizes / visibility — only field *values* are updated
 
 Pin table is driven by the EasyEDA model: missing pins are added at (0,0),
 template-only pins are removed, so the final symbol always matches EasyEDA pin set.
+If template pin *numbers* are disjoint from LCSC but the pin *count* matches, template
+``(pin …)`` blocks are left unchanged so the gallery PAD map (template pin numbers as keys)
+stays aligned with the merged symbol before ``apply_pin_number_map``.
 """
 from __future__ import annotations
 
@@ -17,9 +20,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from easyeda2kicad.kicad.parameters_kicad_symbol import STANDARD_SYMBOL_PROPERTY_KEYS
+
 if TYPE_CHECKING:
-    from easyeda2kicad.kicad.parameters_kicad_symbol import KiSymbolPin
-    from easyeda2kicad.kicad.parameters_kicad_symbol import KiSymbolInfo
+    from easyeda2kicad.kicad.parameters_kicad_symbol import KiSymbolInfo, KiSymbolPin
 
 TEMPLATE_LIB_FILENAME = "Templates.kicad_sym"
 
@@ -143,6 +147,8 @@ class TemplateMerger:
         # Flatten symbol_params: Tolerance, Package, Power, Voltage Rating, …
         if ki_info.symbol_params:
             for k, v in ki_info.symbol_params.items():
+                if k in STANDARD_SYMBOL_PROPERTY_KEYS:
+                    continue
                 if v is not None and str(v).strip():
                     vmap[k] = str(v)
         return vmap
@@ -184,11 +190,29 @@ class TemplateMerger:
 
         to_remove = template_numbers - source_numbers
         to_add_numbers = source_numbers - template_numbers
+
         def _pin_sort_key(n: str):
             try:
                 return (0, int(n))
             except ValueError:
                 return (1, n)
+
+        # Template pin *numbers* differ from LCSC (e.g. G/D/S vs 1/2/3) but pin *count*
+        # matches: keep template ``(pin …)`` blocks unchanged (geometry + number + name).
+        # The gallery PAD map uses template pin numbers as keys; ``apply_pin_number_map``
+        # then rewrites only ``(number …)`` to footprint pad labels.
+        if (
+            pin_blocks
+            and len(pin_blocks) == len(source_pins)
+            and template_numbers.isdisjoint(source_numbers)
+        ):
+            logging.info(
+                "Template/LCSC pin labels differ but counts match; keeping %d template pins "
+                "as-is (PAD map keys = template pin numbers).",
+                len(pin_blocks),
+            )
+            return symbol_str, len(pin_blocks), 0, 0
+
         to_add = [source_by_number[n] for n in sorted(to_add_numbers, key=_pin_sort_key)]
 
         # Remove template-only pins (from end to start so indices stay valid)

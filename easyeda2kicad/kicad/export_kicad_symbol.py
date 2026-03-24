@@ -1,6 +1,6 @@
 # Global imports
 import logging
-from typing import Callable, List, Tuple, Union
+from typing import List, Tuple, Union
 
 from easyeda2kicad.easyeda.parameters_easyeda import (
     EasyedaPinType,
@@ -29,10 +29,6 @@ ee_pin_type_to_ki_pin_type = {
 }
 
 
-def px_to_mil(dim: Union[int, float]) -> int:
-    return int(10 * dim)
-
-
 def px_to_mm(dim: Union[int, float]) -> float:
     return 10.0 * dim * 0.0254
 
@@ -40,13 +36,9 @@ def px_to_mm(dim: Union[int, float]) -> float:
 def convert_ee_pins(
     ee_pins: List[EeSymbolPin],
     ee_bbox: EeSymbolBbox,
-    kicad_version: KicadVersion,
     hide_pin_numbers: bool = False,
     hide_pin_names: bool = False,
 ) -> List[KiSymbolPin]:
-
-    to_ki: Callable = px_to_mil if kicad_version == KicadVersion.v5 else px_to_mm
-
     kicad_pins = []
     for ee_pin in ee_pins:
         pin_length = abs(int(float(ee_pin.pin_path.path.split("h")[-1])))
@@ -55,11 +47,11 @@ def convert_ee_pins(
             name=ee_pin.name.text.replace(" ", ""),
             number=ee_pin.settings.spice_pin_number.replace(" ", ""),
             style=KiPinStyle.line,
-            length=to_ki(pin_length),
+            length=px_to_mm(pin_length),
             type=ee_pin_type_to_ki_pin_type[ee_pin.settings.type],
             orientation=ee_pin.settings.rotation,
-            pos_x=to_ki(int(ee_pin.settings.pos_x) - int(ee_bbox.x)),
-            pos_y=-to_ki(int(ee_pin.settings.pos_y) - int(ee_bbox.y)),
+            pos_x=px_to_mm(int(ee_pin.settings.pos_x) - int(ee_bbox.x)),
+            pos_y=-px_to_mm(int(ee_pin.settings.pos_y) - int(ee_bbox.y)),
             hide_number=hide_pin_numbers,
             hide_name=hide_pin_names,
         )
@@ -79,19 +71,15 @@ def convert_ee_pins(
 def convert_ee_rectangles(
     ee_rectangles: List[EeSymbolRectangle],
     ee_bbox: EeSymbolBbox,
-    kicad_version: KicadVersion,
 ) -> List[KiSymbolRectangle]:
-
-    to_ki: Callable = px_to_mil if kicad_version == KicadVersion.v5 else px_to_mm
-
     kicad_rectangles = []
     for ee_rectangle in ee_rectangles:
         ki_rectangle = KiSymbolRectangle(
-            pos_x0=to_ki(int(ee_rectangle.pos_x) - int(ee_bbox.x)),
-            pos_y0=-to_ki(int(ee_rectangle.pos_y) - int(ee_bbox.y)),
+            pos_x0=px_to_mm(int(ee_rectangle.pos_x) - int(ee_bbox.x)),
+            pos_y0=-px_to_mm(int(ee_rectangle.pos_y) - int(ee_bbox.y)),
         )
-        ki_rectangle.pos_x1 = to_ki(int(ee_rectangle.width)) + ki_rectangle.pos_x0
-        ki_rectangle.pos_y1 = -to_ki(int(ee_rectangle.height)) + ki_rectangle.pos_y0
+        ki_rectangle.pos_x1 = px_to_mm(int(ee_rectangle.width)) + ki_rectangle.pos_x0
+        ki_rectangle.pos_y1 = -px_to_mm(int(ee_rectangle.height)) + ki_rectangle.pos_y0
 
         kicad_rectangles.append(ki_rectangle)
 
@@ -99,15 +87,13 @@ def convert_ee_rectangles(
 
 
 def convert_ee_circles(
-    ee_circles: List[EeSymbolCircle], ee_bbox: EeSymbolBbox, kicad_version: KicadVersion
+    ee_circles: List[EeSymbolCircle], ee_bbox: EeSymbolBbox
 ):
-    to_ki: Callable = px_to_mil if kicad_version == KicadVersion.v5 else px_to_mm
-
     return [
         KiSymbolCircle(
-            pos_x=to_ki(int(ee_circle.center_x) - int(ee_bbox.x)),
-            pos_y=-to_ki(int(ee_circle.center_y) - int(ee_bbox.y)),
-            radius=to_ki(ee_circle.radius),
+            pos_x=px_to_mm(int(ee_circle.center_x) - int(ee_bbox.x)),
+            pos_y=-px_to_mm(int(ee_circle.center_y) - int(ee_bbox.y)),
+            radius=px_to_mm(ee_circle.radius),
             background_filling=ee_circle.fill_color,
         )
         for ee_circle in ee_circles
@@ -117,16 +103,12 @@ def convert_ee_circles(
 def convert_ee_ellipses(
     ee_ellipses: List[EeSymbolEllipse],
     ee_bbox: EeSymbolBbox,
-    kicad_version: KicadVersion,
 ) -> List[KiSymbolCircle]:
-    to_ki: Callable = px_to_mil if kicad_version == KicadVersion.v5 else px_to_mm
-
-    # Ellipses are not supported in Kicad -> If it's not a real ellipse, but just a circle
     return [
         KiSymbolCircle(
-            pos_x=to_ki(int(ee_ellipse.center_x) - int(ee_bbox.x)),
-            pos_y=-to_ki(int(ee_ellipse.center_y) - int(ee_bbox.y)),
-            radius=to_ki(ee_ellipse.radius_x),
+            pos_x=px_to_mm(int(ee_ellipse.center_x) - int(ee_bbox.x)),
+            pos_y=-px_to_mm(int(ee_ellipse.center_y) - int(ee_bbox.y)),
+            radius=px_to_mm(ee_ellipse.radius_x),
         )
         for ee_ellipse in ee_ellipses
         if ee_ellipse.radius_x == ee_ellipse.radius_y
@@ -134,10 +116,8 @@ def convert_ee_ellipses(
 
 
 def convert_ee_arcs(
-    ee_arcs: List[EeSymbolArc], ee_bbox: EeSymbolBbox, kicad_version: KicadVersion
+    ee_arcs: List[EeSymbolArc], ee_bbox: EeSymbolBbox
 ) -> List[KiSymbolArc]:
-    to_ki: Callable = px_to_mil if kicad_version == KicadVersion.v5 else px_to_mm
-
     kicad_arcs = []
     for ee_arc in ee_arcs:
         if not (
@@ -147,21 +127,21 @@ def convert_ee_arcs(
             logging.error("Can't convert this arc")
         else:
             ki_arc = KiSymbolArc(
-                radius=to_ki(
+                radius=px_to_mm(
                     max(ee_arc.path[1].radius_x, ee_arc.path[1].radius_y)
-                ),  # doesn't support elliptical arc
+                ),
                 angle_start=ee_arc.path[1].x_axis_rotation,
-                start_x=to_ki(ee_arc.path[0].start_x - ee_bbox.x),
-                start_y=to_ki(ee_arc.path[0].start_y - ee_bbox.y),
-                end_x=to_ki(ee_arc.path[1].end_x - ee_bbox.x),
-                end_y=to_ki(ee_arc.path[1].end_y - ee_bbox.y),
+                start_x=px_to_mm(ee_arc.path[0].start_x - ee_bbox.x),
+                start_y=px_to_mm(ee_arc.path[0].start_y - ee_bbox.y),
+                end_x=px_to_mm(ee_arc.path[1].end_x - ee_bbox.x),
+                end_y=px_to_mm(ee_arc.path[1].end_y - ee_bbox.y),
             )
 
             center_x, center_y, angle_end = compute_arc(
                 start_x=ki_arc.start_x,
                 start_y=ki_arc.start_y,
-                radius_x=to_ki(ee_arc.path[1].radius_x),
-                radius_y=to_ki(ee_arc.path[1].radius_y),
+                radius_x=px_to_mm(ee_arc.path[1].radius_x),
+                radius_y=px_to_mm(ee_arc.path[1].radius_y),
                 angle=ki_arc.angle_start,
                 large_arc_flag=ee_arc.path[1].flag_large_arc,
                 sweep_flag=ee_arc.path[1].flag_sweep,
@@ -197,20 +177,16 @@ def convert_ee_arcs(
 def convert_ee_polylines(
     ee_polylines: List[Union[EeSymbolPolyline, EeSymbolPolygon]],
     ee_bbox: EeSymbolBbox,
-    kicad_version: KicadVersion,
 ) -> List[KiSymbolPolygon]:
-
-    to_ki: Callable = px_to_mil if kicad_version == KicadVersion.v5 else px_to_mm
     kicad_polygons = []
     for ee_polyline in ee_polylines:
         raw_pts = ee_polyline.points.split(" ")
-        # print(raw_pts)
         x_points = [
-            to_ki(int(float(raw_pts[i])) - int(ee_bbox.x))
+            px_to_mm(int(float(raw_pts[i])) - int(ee_bbox.x))
             for i in range(0, len(raw_pts), 2)
         ]
         y_points = [
-            -to_ki(int(float(raw_pts[i])) - int(ee_bbox.y))
+            -px_to_mm(int(float(raw_pts[i])) - int(ee_bbox.y))
             for i in range(1, len(raw_pts), 2)
         ]
 
@@ -237,19 +213,17 @@ def convert_ee_polylines(
 def convert_ee_polygons(
     ee_polygons: List[EeSymbolPolygon],
     ee_bbox: EeSymbolBbox,
-    kicad_version: KicadVersion,
 ) -> List[KiSymbolPolygon]:
     return convert_ee_polylines(
-        ee_polylines=ee_polygons, ee_bbox=ee_bbox, kicad_version=kicad_version
+        ee_polylines=ee_polygons, ee_bbox=ee_bbox
     )
 
 
 def convert_ee_paths(
-    ee_paths: List[EeSymbolPath], ee_bbox: EeSymbolBbox, kicad_version: KicadVersion
+    ee_paths: List[EeSymbolPath], ee_bbox: EeSymbolBbox
 ) -> Tuple[List[KiSymbolPolygon], List[KiSymbolPolygon]]:
     kicad_polygons = []
     kicad_beziers = []
-    to_ki: Callable = px_to_mil if kicad_version == KicadVersion.v5 else px_to_mm
 
     for ee_path in ee_paths:
         raw_pts = ee_path.paths.split(" ")
@@ -257,23 +231,21 @@ def convert_ee_paths(
         x_points = []
         y_points = []
 
-        # Small svg path parser : doc -> https://www.w3.org/TR/SVG11/paths.html#PathElement
-
-        for i in range(len(raw_pts)):
+        i = 0
+        while i < len(raw_pts):
             if raw_pts[i] in ["M", "L"]:
-                x_points.append(to_ki(int(float(raw_pts[i + 1])) - int(ee_bbox.x)))
-                y_points.append(-to_ki(int(float(raw_pts[i + 2])) - int(ee_bbox.y)))
-                i += 2
+                x_points.append(px_to_mm(int(float(raw_pts[i + 1])) - int(ee_bbox.x)))
+                y_points.append(-px_to_mm(int(float(raw_pts[i + 2])) - int(ee_bbox.y)))
+                i += 3
             elif raw_pts[i] == "Z":
                 x_points.append(x_points[0])
                 y_points.append(y_points[0])
+                i += 1
             elif raw_pts[i] == "C":
-                ...
-                # TODO : Add bezier support
+                i += 1
+            else:
+                i += 1
 
-        # if ee_path.fill_color:
-        #     x_points.append(x_points[0])
-        #     y_points.append(y_points[0])
         if len(x_points) > 0 and len(y_points) > 0:
             ki_polygon = KiSymbolPolygon(
                 points=[
@@ -293,7 +265,6 @@ def convert_ee_paths(
 
 def convert_to_kicad(
     ee_symbol: EeSymbol,
-    kicad_version: KicadVersion,
     hide_pin_numbers: bool = False,
     hide_pin_names: bool = False,
     value_override: str = None,
@@ -322,42 +293,36 @@ def convert_to_kicad(
         pins=convert_ee_pins(
             ee_pins=ee_symbol.pins,
             ee_bbox=ee_symbol.bbox,
-            kicad_version=kicad_version,
             hide_pin_numbers=hide_pin_numbers,
             hide_pin_names=hide_pin_names,
         ),
         rectangles=convert_ee_rectangles(
             ee_rectangles=ee_symbol.rectangles,
             ee_bbox=ee_symbol.bbox,
-            kicad_version=kicad_version,
         ),
         circles=convert_ee_circles(
             ee_circles=ee_symbol.circles,
             ee_bbox=ee_symbol.bbox,
-            kicad_version=kicad_version,
         ),
         arcs=convert_ee_arcs(
-            ee_arcs=ee_symbol.arcs, ee_bbox=ee_symbol.bbox, kicad_version=kicad_version
+            ee_arcs=ee_symbol.arcs, ee_bbox=ee_symbol.bbox
         ),
     )
     kicad_symbol.circles += convert_ee_ellipses(
         ee_ellipses=ee_symbol.ellipses,
         ee_bbox=ee_symbol.bbox,
-        kicad_version=kicad_version,
     )
 
     kicad_symbol.polygons, kicad_symbol.beziers = convert_ee_paths(
-        ee_paths=ee_symbol.paths, ee_bbox=ee_symbol.bbox, kicad_version=kicad_version
+        ee_paths=ee_symbol.paths, ee_bbox=ee_symbol.bbox
     )
     kicad_symbol.polygons += convert_ee_polylines(
         ee_polylines=ee_symbol.polylines,
         ee_bbox=ee_symbol.bbox,
-        kicad_version=kicad_version,
     )
     kicad_symbol.polygons += convert_ee_polygons(
         ee_polygons=ee_symbol.polygons,
         ee_bbox=ee_symbol.bbox,
-        kicad_version=kicad_version,
     )
 
     return kicad_symbol
@@ -371,7 +336,6 @@ class ExporterSymbolKicad:
     def __init__(
         self,
         symbol,
-        kicad_version: KicadVersion,
         hide_pin_numbers: bool = False,
         hide_pin_names: bool = False,
         value_override: str = None,
@@ -380,11 +344,9 @@ class ExporterSymbolKicad:
         symbol_datasheet_url: str = None,
     ):
         self.input: EeSymbol = symbol
-        self.version = kicad_version
         self.output = (
             convert_to_kicad(
                 ee_symbol=self.input,
-                kicad_version=kicad_version,
                 hide_pin_numbers=hide_pin_numbers,
                 hide_pin_names=hide_pin_names,
                 value_override=value_override,
@@ -402,4 +364,4 @@ class ExporterSymbolKicad:
             ki_symbol=self.output,
             footprint_lib_name=footprint_lib_name,
         )
-        return self.output.export(kicad_version=self.version)
+        return self.output.export()

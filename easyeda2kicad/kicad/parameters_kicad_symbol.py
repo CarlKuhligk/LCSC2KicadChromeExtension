@@ -6,11 +6,6 @@ from enum import Enum, auto
 from typing import List, Optional, Union
 
 
-class KicadVersion(Enum):
-    v5 = auto()
-    v6 = auto()
-
-
 class KiPinType(Enum):
     _input = auto()
     output = auto()
@@ -98,21 +93,14 @@ def sanitize_fields(name: str) -> str:
     return name.replace(" ", "").replace("/", "_").replace(":", "{colon}")
 
 
-def apply_text_style(text: str, kicad_version: KicadVersion) -> str:
+def apply_text_style(text: str) -> str:
     if text.endswith("#"):
-        text = (
-            f"~{{{text[:-1]}}}"
-            if kicad_version == KicadVersion.v6
-            else f"~{text[:-1]}~"
-        )
+        text = f"~{{{text[:-1]}}}"
     return text
 
 
-def apply_pin_name_style(pin_name: str, kicad_version: KicadVersion) -> str:
-    return "/".join(
-        apply_text_style(text=txt, kicad_version=kicad_version)
-        for txt in pin_name.split("/")
-    )
+def apply_pin_name_style(pin_name: str) -> str:
+    return "/".join(apply_text_style(txt) for txt in pin_name.split("/"))
 
 
 # Config V6
@@ -126,6 +114,22 @@ class KiExportConfigV6(Enum):
     PROPERTY_FONT_SIZE = 1.27
     FIELD_OFFSET_START = 5.08
     FIELD_OFFSET_INCREMENT = 2.54
+
+
+# KiCad fields already emitted from KiSymbolInfo; LCSC param rows must not duplicate them
+# (e.g. LCSC "Datasheet" is link text / filename, not the PDF URL).
+STANDARD_SYMBOL_PROPERTY_KEYS = frozenset(
+    {
+        "Reference",
+        "Value",
+        "Footprint",
+        "Datasheet",
+        "Description",
+        "Manufacturer",
+        "LCSC Part",
+        "JLC Part",
+    }
+)
 
 
 # ---------------- INFO HEADER ----------------
@@ -145,76 +149,6 @@ class KiSymbolInfo:
     value_override: Optional[str] = None
     symbol_params: Optional[dict] = None
     symbol_description: Optional[str] = None
-
-    def export_v5(self) -> str:
-        field_offset_y = KiExportConfigV5.FIELD_OFFSET_START.value
-        header: List[str] = [
-            "DEF {name} {ref} 0 {pin_name_offset} {show_pin_number} {show_pin_name}"
-            " {num_units} L N".format(
-                name=sanitize_fields(self.name),
-                ref=self.prefix,
-                pin_name_offset=KiExportConfigV5.PIN_NAME_OFFSET.value,
-                show_pin_number="N" if self.hide_pin_numbers else "Y",
-                show_pin_name="N" if self.hide_pin_names else "Y",
-                num_units=1,
-            ),
-            'F0 "{ref_prefix}" {x} {y} {font_size} H V {text_justification} CNN'.format(
-                ref_prefix=self.prefix,
-                x=0,
-                y=self.y_high + field_offset_y,
-                text_justification="C",  # Center align
-                font_size=KiExportConfigV5.FIELD_FONT_SIZE.value,
-            ),
-            'F1 "{num}" {x} {y} {font_size} H V {text_justification} CNN'.format(
-                num=self.value_override if self.value_override else self.name,
-                x=0,
-                y=self.y_low - field_offset_y,
-                text_justification="C",  # Center align
-                font_size=KiExportConfigV5.FIELD_FONT_SIZE.value,
-            ),
-        ]
-
-        if self.value_override and self.value_override != self.name:
-            header.append(f'F4 "{self.name}" 0 0 0 H I C CNN "Description"')
-
-        if self.package:
-            field_offset_y += KiExportConfigV5.FIELD_OFFSET_INCREMENT.value
-            header.append(
-                'F2 "{footprint}" {x} {y} {font_size} H I {text_justification} CNN'
-                .format(
-                    footprint=self.package,
-                    x=0,
-                    y=self.y_low - field_offset_y,
-                    text_justification="C",  # Center align
-                    font_size=KiExportConfigV5.FIELD_FONT_SIZE.value,
-                )
-            )
-        if self.datasheet:
-            field_offset_y += KiExportConfigV5.FIELD_OFFSET_INCREMENT.value
-            header.append(
-                'F3 "{datasheet}" {x} {y} {font_size} H I {text_justification} CNN'
-                .format(
-                    datasheet=self.datasheet,
-                    x=0,
-                    y=self.y_low - field_offset_y,
-                    text_justification="C",  # Center align
-                    font_size=KiExportConfigV5.FIELD_FONT_SIZE.value,
-                )
-            )
-        if self.manufacturer:
-            header.append(
-                'F4 "{manufacturer}" 0 0 0 H I C CNN "Manufacturer"'.format(
-                    manufacturer=self.manufacturer,
-                )
-            )
-        if self.lcsc_id:
-            header.append(f'F6 "{self.lcsc_id}" 0 0 0 H I C CNN "LCSC Part"')
-        if self.jlc_id:
-            header.append(f'F7 "{self.jlc_id}" 0 0 0 H I C CNN "JLC Part"')
-
-        header.append("DRAW\n")
-
-        return "\n".join(header)
 
     def export_v6(self) -> List[str]:
         _prop_visible = textwrap.indent(
@@ -297,6 +231,8 @@ class KiSymbolInfo:
 
         if self.symbol_params:
             for param_key, param_value in self.symbol_params.items():
+                if param_key in STANDARD_SYMBOL_PROPERTY_KEYS:
+                    continue
                 if param_value:
                     field_offset_y += KiExportConfigV6.FIELD_OFFSET_INCREMENT.value
                     header.append(_prop(param_key, param_value, self.y_low - field_offset_y))
@@ -317,28 +253,6 @@ class KiSymbolPin:
     pos_y: Union[int, float]
     hide_number: bool = False
     hide_name: bool = False
-
-    def export_v5(self) -> str:
-        return (
-            "X {name} {num} {x} {y} {length:.0f} {orientation} {num_sz} {name_sz}"
-            " {unit_num} 1 {pin_type} {pin_style}\n".format(
-                name=apply_pin_name_style(
-                    pin_name=self.name, kicad_version=KicadVersion.v5
-                ),
-                num=self.number,
-                x=self.pos_x,
-                y=self.pos_y,
-                length=self.length,
-                orientation=ki_pin_orientation_v5_format[f"{self.orientation}"]
-                if f"{self.orientation}" in ki_pin_orientation_v5_format
-                else ki_pin_orientation_v5_format["0"],
-                num_sz=0 if self.hide_number else KiExportConfigV5.PIN_NUM_SIZE.value,
-                name_sz=0 if self.hide_name else KiExportConfigV5.PIN_NAME_SIZE.value,
-                unit_num=1,
-                pin_type=ki_pin_type_v5_format[self.type],
-                pin_style=ki_pin_style_v5_format[self.style],
-            )
-        )
 
     def export_v6(self) -> str:
         name_effects = "(effects (font (size {s} {s})){hide})".format(
@@ -364,9 +278,7 @@ class KiSymbolPin:
             y=self.pos_y,
             orientation=(180 + self.orientation) % 360,  # TODO: 360 - ?
             pin_length=self.length,
-            pin_name=apply_pin_name_style(
-                pin_name=self.name, kicad_version=KicadVersion.v6
-            ),
+            pin_name=apply_pin_name_style(self.name),
             name_effects=name_effects,
             pin_num=self.number,
             num_effects=num_effects,
@@ -380,20 +292,6 @@ class KiSymbolRectangle:
     pos_y0: Union[int, float] = 0
     pos_x1: Union[int, float] = 0
     pos_y1: Union[int, float] = 0
-
-    def export_v5(self) -> str:
-        return (
-            "S {x0:.0f} {y0:.0f} {x1:.0f} {y1:.0f} {unit_num} 1 {line_width} {fill}\n"
-            .format(
-                x0=self.pos_x0,
-                y0=self.pos_y0,
-                x1=self.pos_x1,
-                y1=self.pos_y1,
-                unit_num=1,
-                line_width=KiExportConfigV5.DEFAULT_BOX_LINE_WIDTH.value,
-                fill=ki_box_fill_v5_format[KiBoxFill.background],
-            )
-        )
 
     def export_v6(self) -> str:
         return """
@@ -418,21 +316,6 @@ class KiSymbolPolygon:
     points: List[List[float]] = field(default_factory=List[List[float]])
     points_number: int = 0
     is_closed: bool = False
-
-    def export_v5(self) -> str:
-        return (
-            "P {points_number} {unit_num} 1 {line_width} {coordinate} {fill}\n".format(
-                points_number=self.points_number,
-                unit_num=1,
-                line_width=KiExportConfigV5.DEFAULT_BOX_LINE_WIDTH.value,
-                coordinate=" ".join(
-                    map(str, list(itertools.chain.from_iterable(self.points)))
-                ),
-                fill=ki_box_fill_v5_format[KiBoxFill.background]
-                if self.is_closed
-                else ki_box_fill_v5_format[KiBoxFill.none],
-            )
-        )
 
     def export_v6(self) -> str:
         return """
@@ -507,28 +390,6 @@ class KiSymbolArc:
     end_x: float = 0
     end_y: float = 0
 
-    def export_v5(self) -> str:
-        return (
-            "A {center_x:.0f} {center_y:.0f} {radius:.0f} {angle_start:.0f}"
-            " {angle_end:.0f} {unit_num} 1 {line_width} {fill} {start_x:.0f}"
-            " {start_y:.0f} {end_x:.0f} {end_y:.0f}\n".format(
-                center_x=self.center_x,
-                center_y=self.center_y,
-                radius=self.radius,
-                angle_start=self.angle_start * 10,
-                angle_end=self.angle_end * 10,
-                unit_num=1,
-                line_width=KiExportConfigV5.DEFAULT_BOX_LINE_WIDTH.value,
-                fill=ki_box_fill_v5_format[KiBoxFill.background]
-                if self.angle_start == self.angle_end
-                else ki_box_fill_v5_format[KiBoxFill.none],
-                start_x=self.start_x,
-                start_y=self.start_y,
-                end_x=self.end_x,
-                end_y=self.end_y,
-            )
-        )
-
     def export_v6(self) -> str:
         return """
             (arc
@@ -558,21 +419,6 @@ class KiSymbolBezier:
     points_number: int = 0
     is_closed: bool = False
 
-    def export_v5(self) -> str:
-        return (
-            "B {points_number} {unit_num} 1 {line_width} {coordinate} {fill}\n".format(
-                points_number=self.points_number,
-                unit_num=1,
-                line_width=KiExportConfigV5.DEFAULT_BOX_LINE_WIDTH.value,
-                coordinate=" ".join(
-                    map(str, list(itertools.chain.from_iterable(self.points)))
-                ),
-                fill=ki_box_fill_v5_format[KiBoxFill.background]
-                if self.is_closed
-                else ki_box_fill_v5_format[KiBoxFill.none],
-            )
-        )
-
     def export_v6(self) -> str:
         return """
             (gr_curve
@@ -599,8 +445,7 @@ class KiSymbol:
     polygons: List[KiSymbolPolygon] = field(default_factory=lambda: [])
     beziers: List[KiSymbolBezier] = field(default_factory=lambda: [])
 
-    def export_handler(self, kicad_version: str):
-        # Get y_min and y_max to put component info
+    def _collect_export_parts(self) -> dict:
         self.info.y_low = min(pin.pos_y for pin in self.pins) if self.pins else 0
         self.info.y_high = max(pin.pos_y for pin in self.pins) if self.pins else 0
 
@@ -610,27 +455,13 @@ class KiSymbol:
             if isinstance(shapes, list):
                 sym_export_data.setdefault(_field.name, [])
                 for sub_symbol in shapes:
-                    sym_export_data[_field.name].append(
-                        getattr(sub_symbol, f"export_v{kicad_version}")()
-                    )
+                    sym_export_data[_field.name].append(sub_symbol.export_v6())
             else:
-                sym_export_data[_field.name] = getattr(
-                    shapes, f"export_v{kicad_version}"
-                )()
+                sym_export_data[_field.name] = shapes.export_v6()
         return sym_export_data
 
-    def export_v5(self):
-        sym_export_data = self.export_handler(kicad_version="5")
-        sym_info = sym_export_data.pop("info")
-        sym_graphic_items = itertools.chain.from_iterable(sym_export_data.values())
-
-        return (
-            "#\n#"
-            f" {sanitize_fields(self.info.name)}\n#\n{sym_info}{''.join(sym_graphic_items)}ENDDRAW\nENDDEF\n"
-        )
-
     def export_v6(self):
-        sym_export_data = self.export_handler(kicad_version="6")
+        sym_export_data = self._collect_export_parts()
         sym_info = sym_export_data.pop("info")
         sym_pins = sym_export_data.pop("pins")
         sym_graphic_items = itertools.chain.from_iterable(sym_export_data.values())
@@ -670,6 +501,6 @@ class KiSymbol:
             pins=textwrap.indent(textwrap.dedent("".join(sym_pins)), "  " * 3),
         )
 
-    def export(self, kicad_version: KicadVersion) -> str:
-        component_data = getattr(self, f"export_{kicad_version.name}")()
+    def export(self) -> str:
+        component_data = self.export_v6()
         return re.sub(r"\n\s*\n", "\n", component_data, re.MULTILINE)

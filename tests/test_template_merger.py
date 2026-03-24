@@ -4,6 +4,7 @@ import unittest
 from easyeda2kicad.kicad.parameters_kicad_symbol import (
     KiPinStyle,
     KiPinType,
+    KiSymbolInfo,
     KiSymbolPin,
 )
 from easyeda2kicad.kicad.template_merger import (
@@ -24,6 +25,27 @@ def _make_pin(number: str, name: str = "", x: float = 0, y: float = 0) -> KiSymb
         pos_x=x,
         pos_y=y,
     )
+
+
+class TestBuildValueMap(unittest.TestCase):
+    def test_symbol_params_do_not_overwrite_datasheet_url(self) -> None:
+        """LCSC param table 'Datasheet' is filename text; KiCad field must stay the real URL."""
+        info = KiSymbolInfo(
+            name="R_10k",
+            prefix="R",
+            package="MyLib:R_0603",
+            manufacturer="Vishay",
+            datasheet="https://datasheet.lcsc.com/lcsc/2304141530_Vishay-RC0603.pdf",
+            lcsc_id="C8733",
+            jlc_id="",
+            symbol_params={"Datasheet": "RC0603.pdf", "Tolerance": "1%"},
+        )
+        vmap = TemplateMerger._build_value_map(info)
+        self.assertEqual(
+            vmap["Datasheet"],
+            "https://datasheet.lcsc.com/lcsc/2304141530_Vishay-RC0603.pdf",
+        )
+        self.assertEqual(vmap["Tolerance"], "1%")
 
 
 class TestFindPinBlocks(unittest.TestCase):
@@ -114,6 +136,49 @@ class TestMergePinTable(unittest.TestCase):
         self.assertEqual(len(blocks), 2)
         numbers = sorted(b[1] for b in blocks)
         self.assertEqual(numbers, ["1", "2"])
+
+    def test_disjoint_pin_sets_keep_template_numbers(self) -> None:
+        """Template G,D,S at fixed positions; LCSC 1,2,3 — keep template numbers, no (0,0) pins."""
+        template = '''
+(symbol "T_0_1"
+  (pin passive line
+    (at 10.16 0 180)
+    (length 1.27)
+    (name "G" (effects (font (size 1.27 1.27))))
+    (number "G" (effects (font (size 1.27 1.27))))
+  )
+  (pin passive line
+    (at -10.16 -5.08 0)
+    (length 1.27)
+    (name "D" (effects (font (size 1.27 1.27))))
+    (number "D" (effects (font (size 1.27 1.27))))
+  )
+  (pin passive line
+    (at -10.16 5.08 0)
+    (length 1.27)
+    (name "S" (effects (font (size 1.27 1.27))))
+    (number "S" (effects (font (size 1.27 1.27))))
+  )
+)
+'''
+        source = [
+            _make_pin("1", name="GATE", x=0, y=0),
+            _make_pin("2", name="DRAIN", x=0, y=0),
+            _make_pin("3", name="SOURCE", x=0, y=0),
+        ]
+        merger = TemplateMerger()
+        result, kept, added, removed = merger._merge_pin_table(template, source)
+        self.assertEqual(kept, 3)
+        self.assertEqual(added, 0)
+        self.assertEqual(removed, 0)
+        blocks = _find_pin_blocks(result)
+        self.assertEqual(len(blocks), 3)
+        numbers = sorted(b[1] for b in blocks)
+        self.assertEqual(numbers, ["D", "G", "S"])
+        self.assertIn("(at 10.16 0 180)", result)
+        self.assertIn("(at -10.16 -5.08 0)", result)
+        self.assertIn("(at -10.16 5.08 0)", result)
+        self.assertNotIn("(at 0.00 0.00", result)
 
     def test_mixed_add_and_remove(self) -> None:
         """Template has pins 1,3,5; EasyEDA has 2,3,4. Keep 3, add 2 and 4, remove 1 and 5."""
