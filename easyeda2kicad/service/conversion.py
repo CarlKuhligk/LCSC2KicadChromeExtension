@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""LCSC → KiCad: one EasyEDA fetch, then direct symbol/footprint/3D export or template merge + PAD map."""
+
 import logging
 import math
 import os
@@ -8,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from easyeda2kicad.easyeda.easyeda_api import EasyedaApi
 from easyeda2kicad.easyeda.easyeda_importer import (
@@ -16,19 +18,19 @@ from easyeda2kicad.easyeda.easyeda_importer import (
     EasyedaFootprintImporter,
     EasyedaSymbolImporter,
 )
-from easyeda2kicad.easyeda.parameters_easyeda import EeSymbol
 from easyeda2kicad.helpers import (
     add_component_in_symbol_lib_file,
     add_sub_components_in_symbol_lib_file,
     extract_symbol_from_lib,
-    symbol_is_empty,
     id_already_in_symbol_lib,
+    lcsc_primary_and_sub_symbols,
     update_component_in_symbol_lib_file,
 )
 from easyeda2kicad.kicad.export_kicad_3d_model import Exporter3dModelKicad
 from easyeda2kicad.kicad.export_kicad_footprint import ExporterFootprintKicad
 from easyeda2kicad.kicad.export_kicad_symbol import ExporterSymbolKicad
-from easyeda2kicad.kicad.parameters_kicad_symbol import KicadVersion, sanitize_fields
+from easyeda2kicad.kicad.parameters_kicad_symbol import sanitize_fields
+from easyeda2kicad.kicad.symbol_pin_remap import apply_pin_number_map
 from easyeda2kicad.kicad.template_merger import TemplateMerger, get_template_lib_path
 
 
@@ -59,7 +61,6 @@ class ConversionRequest:
     generate_symbol: bool = False
     generate_footprint: bool = False
     generate_model: bool = False
-    kicad_version: KicadVersion = KicadVersion.v6
     project_relative: bool = False
     project_relative_path: Optional[str] = None
     model_path: Optional[str] = None
@@ -73,6 +74,9 @@ class ConversionRequest:
     template_name: Optional[str] = None
     template_lib_path: Optional[str] = None
     force_template: bool = False
+    # Keys/values: remap symbol (number …) only; footprint pads are never renamed (see
+    # _export_symbol_from_template + symbol_pin_remap.apply_pin_number_map).
+    template_pin_map: Optional[Mapping[str, str]] = None
 
     def __post_init__(self) -> None:
         if not self.lcsc_id or not self.lcsc_id.startswith("C"):
@@ -82,6 +86,41 @@ class ConversionRequest:
         ):
             raise ConversionError("At least one export target must be selected.")
         self.output_prefix = str(Path(self.output_prefix))
+
+    @classmethod
+    def from_task_create_payload(cls, payload: Any) -> ConversionRequest:
+        """
+        Build from the extension WebSocket ``enqueue_task`` model (``TaskCreatePayload``).
+
+        Imported lazily to avoid a circular import with ``easyeda2kicad.api.server``.
+        """
+        from easyeda2kicad.api.models import TaskCreatePayload
+
+        if not isinstance(payload, TaskCreatePayload):
+            payload = TaskCreatePayload.model_validate(payload)
+        return cls(
+            lcsc_id=payload.lcsc_id,
+            output_prefix=payload.output_path,
+            overwrite=payload.overwrite,
+            overwrite_model=payload.overwrite_model,
+            generate_symbol=payload.symbol,
+            generate_footprint=payload.footprint,
+            generate_model=payload.model,
+            project_relative=payload.project_relative,
+            project_relative_path=payload.project_relative_path,
+            model_path=payload.model_path,
+            hide_pin_numbers=payload.hide_pin_numbers,
+            hide_pin_names=payload.hide_pin_names,
+            symbol_value_override=payload.symbol_value_override,
+            symbol_params=payload.symbol_params,
+            symbol_description=payload.symbol_description,
+            symbol_datasheet_url=payload.symbol_datasheet_url,
+            use_template=payload.use_template,
+            template_name=payload.template_name,
+            template_lib_path=payload.template_lib_path,
+            force_template=payload.force_template,
+            template_pin_map=payload.template_pin_map,
+        )
 
 
 @dataclass
@@ -223,22 +262,17 @@ def _ensure_output_scaffold(
             f"Missing permissions to create library folders under '{base_dir}'."
         ) from exc
 
-    symbol_extension = "kicad_sym" if request.kicad_version == KicadVersion.v6 else "lib"
+    symbol_extension = "kicad_sym"
     symbol_path = output_path.with_suffix(f".{symbol_extension}")
     if request.generate_symbol and not symbol_path.exists():
         try:
             with open(symbol_path, "w", encoding="utf-8") as symbol_file:
-                if request.kicad_version == KicadVersion.v6:
-                    symbol_file.write(
-                        "(kicad_symbol_lib\n"
-                        "  (version 20211014)\n"
-                        "  (generator https://github.com/uPesy/easyeda2kicad.py)\n"
-                        ")"
-                    )
-                else:
-                    symbol_file.write(
-                        "EESchema-LIBRARY Version 2.4\n#encoding utf-8\n"
-                    )
+                symbol_file.write(
+                    "(kicad_symbol_lib\n"
+                    "  (version 20211014)\n"
+                    "  (generator https://github.com/uPesy/easyeda2kicad.py)\n"
+                    ")"
+                )
         except OSError as exc:
             raise ConversionError(
                 f"Unable to initialize symbol library file '{symbol_path}'."
@@ -249,6 +283,23 @@ def _ensure_output_scaffold(
 
 def _footprint_exists(lib_path: str, package_name: str) -> bool:
     return Path(lib_path, f"{package_name}.kicad_mod").is_file()
+
+
+def _coerce_template_pin_map(
+    pin_map: Optional[Mapping[str, Any]],
+) -> Optional[dict[str, str]]:
+    """Normalize JSON/extension maps to str→str (drops nulls and blanks)."""
+    if not pin_map:
+        return None
+    out: dict[str, str] = {}
+    for k, v in dict(pin_map).items():
+        if v is None:
+            continue
+        sk = str(k).strip()
+        sv = str(v).strip()
+        if sk and sv:
+            out[sk] = sv
+    return out or None
 
 
 def _export_symbol_from_template(
@@ -288,7 +339,6 @@ def _export_symbol_from_template(
     # identically to a regular LCSC export.
     exporter = ExporterSymbolKicad(
         symbol=primary_symbol,
-        kicad_version=request.kicad_version,
         hide_pin_numbers=request.hide_pin_numbers,
         hide_pin_names=request.hide_pin_names,
         value_override=request.symbol_value_override,
@@ -302,7 +352,7 @@ def _export_symbol_from_template(
 
     merger = TemplateMerger()
     try:
-        return merger.merge(
+        merged = merger.merge(
             template_sym_str=template_str,
             template_name=request.template_name,
             ki_info=ki_info,
@@ -311,6 +361,25 @@ def _export_symbol_from_template(
     except Exception as exc:
         logging.error("TemplateMerger.merge() failed: %s", exc)
         return ""
+    coerced = _coerce_template_pin_map(request.template_pin_map)
+    if merged and coerced:
+        # PAD map: footprint stays EasyEDA; schematic↔PCB link is KiCad’s pin-number = pad-name
+        # rule. See ``symbol_pin_remap.apply_pin_number_map`` docstring.
+        before = merged
+        merged = apply_pin_number_map(merged, coerced)
+        if merged != before:
+            logging.info(
+                "Template import: applied PAD map (%d entries) to symbol pin numbers.",
+                len(coerced),
+            )
+        elif any(str(k).strip() != str(v).strip() for k, v in coerced.items()):
+            logging.warning(
+                "Template import: PAD map had %d non-identity entries but symbol pin numbers "
+                "were unchanged (duplicate targets, or keys not matching merged pins). Map=%s",
+                len(coerced),
+                coerced,
+            )
+    return merged
 
 
 def run_conversion(
@@ -318,6 +387,14 @@ def run_conversion(
 ) -> ConversionResult:
     """
     Execute easyeda2kicad exports based on the incoming request.
+
+    **Direct (EasyEDA-only):** ``use_template`` is false — symbol, footprint, and optional 3D
+    are generated from EasyEDA data (standard exporters).
+
+    **Template import:** ``use_template`` and ``template_name`` — symbol body comes from your
+    ``.kicad_sym`` template merged with LCSC pins/fields. The optional PAD map updates symbol
+    pin numbers so each pin matches the footprint pad it connects to (EasyEDA pad names are
+    left unchanged on the footprint).
 
     Raises ConversionError on failure.
     """
@@ -385,22 +462,7 @@ def run_conversion(
 
     if request.generate_symbol:
         prog.emit("symbol", 0.0, "Parsing EasyEDA symbol…")
-        importer = EasyedaSymbolImporter(easyeda_cp_cad_data=cad_data)
-        primary_symbol: EeSymbol = importer.get_symbol()
-
-        subparts_data = cad_data.get("subparts") or []
-        sub_symbols: List[EeSymbol] = []
-        if subparts_data:
-            iterable = subparts_data
-            if symbol_is_empty(primary_symbol):
-                primary_importer = EasyedaSymbolImporter(
-                    easyeda_cp_cad_data=iterable[0]
-                )
-                primary_symbol = primary_importer.get_symbol()
-                iterable = iterable[1:]
-            for subpart_data in iterable:
-                sub_importer = EasyedaSymbolImporter(easyeda_cp_cad_data=subpart_data)
-                sub_symbols.append(sub_importer.get_symbol())
+        primary_symbol, sub_symbols = lcsc_primary_and_sub_symbols(cad_data)
 
         prog.emit("symbol", 0.18, "Resolving pins, graphics, and sub-units…")
 
@@ -408,7 +470,6 @@ def run_conversion(
         existing = id_already_in_symbol_lib(
             lib_path=str(symbol_file),
             component_name=sanitized_name,
-            kicad_version=request.kicad_version,
         )
         exported_symbol = ""
         exported_sub_symbols: List[str] = []
@@ -440,12 +501,10 @@ def run_conversion(
                         f"Template '{request.template_name}' not found; falling back to LCSC symbol."
                     )
 
-            # Fall back to LCSC export if template was not used or failed (and not force_template)
             if not exported_symbol:
                 prog.emit("symbol", 0.48, "Rendering EasyEDA shapes for KiCad symbol…")
                 exporter = ExporterSymbolKicad(
                     symbol=primary_symbol,
-                    kicad_version=request.kicad_version,
                     hide_pin_numbers=request.hide_pin_numbers,
                     hide_pin_names=request.hide_pin_names,
                     value_override=request.symbol_value_override,
@@ -458,7 +517,6 @@ def run_conversion(
                 for sub_symbol in sub_symbols:
                     sub_exporter = ExporterSymbolKicad(
                         symbol=sub_symbol,
-                        kicad_version=request.kicad_version,
                         hide_pin_numbers=request.hide_pin_numbers,
                         hide_pin_names=request.hide_pin_names,
                         value_override=request.symbol_value_override,
@@ -470,7 +528,6 @@ def run_conversion(
                     if sub_export and sub_export != exported_symbol:
                         exported_sub_symbols.append(sub_export)
 
-            # Write symbol to library (applies to both template and LCSC paths)
             if exported_symbol:
                 prog.emit("symbol", 0.78, "Writing symbol into .kicad_sym…")
                 if existing:
@@ -478,25 +535,17 @@ def run_conversion(
                         lib_path=str(symbol_file),
                         component_name=sanitized_name,
                         component_content=exported_symbol,
-                        kicad_version=request.kicad_version,
                     )
                 else:
                     add_component_in_symbol_lib_file(
                         lib_path=str(symbol_file),
                         component_content=exported_symbol,
-                        kicad_version=request.kicad_version,
                     )
-                if exported_sub_symbols and request.kicad_version == KicadVersion.v6:
+                if exported_sub_symbols:
                     add_sub_components_in_symbol_lib_file(
                         lib_path=str(symbol_file),
                         component_name=sanitized_name,
                         sub_components_content=exported_sub_symbols,
-                        kicad_version=request.kicad_version,
-                    )
-                elif exported_sub_symbols:
-                    logging.warning(
-                        "Multi-unit symbols are only supported for KiCad v6 libraries; skipping"
-                        " additional units."
                     )
 
         prog.emit("symbol", 1.0, "Symbol export completed.")
@@ -507,6 +556,7 @@ def run_conversion(
         prog.emit("footprint", 0.0, "Parsing EasyEDA footprint…")
         importer = EasyedaFootprintImporter(easyeda_cp_cad_data=cad_data, api=api_3d)
         easyeda_footprint = importer.get_footprint()
+        # Never rename pads for template_pin_map — pad numbers stay as EasyEDA defines them.
 
         prog.emit("footprint", 0.38, "Building KiCad footprint geometry…")
 
