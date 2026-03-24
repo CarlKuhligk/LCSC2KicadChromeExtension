@@ -1,6 +1,8 @@
 "use strict";
 
 importScripts("categoryPath.js");
+importScripts("shared/extensionDefaults.js");
+importScripts("extensionWsClient.js");
 
 // Normalize common LCSC parameter label variations to consistent KiCad field names
 const LCSC_PARAMS_MAP = {
@@ -80,14 +82,30 @@ function resolveCategorySettings(pagePathRaw, categorySettings) {
 }
 
 const HISTORY_LIMIT = 30;
-/** Tabs whose URL starts with one of these receive `stateUpdate` / `jobTerminal` (matches host_permissions). */
-const LCSC_PAGE_URL_PREFIXES = ["https://www.lcsc.com", "https://lcsc.com"];
-const HEALTH_INTERVAL = 3000;
-const EXT_RECONNECT_MAX_MS = 30000;
-const EXT_RECONNECT_INITIAL_MS = 800;
+
+/** Hosts where the LCSC product content script runs (align with manifest `content_scripts` / `host_permissions`). */
+function isLcscImporterHostUrl(url) {
+  if (!url || typeof url !== "string") return false;
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "https:") return false;
+    const h = u.hostname.toLowerCase();
+    return (
+      h === "lcsc.com"
+      || h.endsWith(".lcsc.com")
+      || h.endsWith(".szlcsc.com")
+      || h.endsWith(".lcsiglobal.com")
+    );
+  } catch {
+    return false;
+  }
+}
 
 const DEFAULT_STATE = {
-  serverUrl: "http://localhost:8087",
+  serverUrl:
+    typeof globalThis.K2C_DEFAULT_SERVER_URL === "string"
+      ? globalThis.K2C_DEFAULT_SERVER_URL
+      : "http://localhost:8087",
   libraries: [],
   jobHistory: [],
   jobMeta: {},
@@ -119,21 +137,12 @@ let state = {
 let healthTimer = null;
 let initialized = false;
 
-// =============================================================================
-// Extension WebSocket client (`/ws/extension`) — JSON-RPC, task_update pushes
-// =============================================================================
+// WebSocket transport: {@link ./extensionWsClient.js} + {@link globalThis.k2cExtensionWsHooks} (assigned in init).
 
-/** Multiplexed backend WebSocket (`/ws/extension`) — no HTTP polling. */
-let extWs = null;
-const extPending = new Map();
-let extRpcSeq = 0;
 let extConnectIntent = true;
-let extReconnectTimer = null;
-let extReconnectDelayMs = EXT_RECONNECT_INITIAL_MS;
+
 /** Avoid duplicate finalize when multiple terminal pushes arrive. */
 const extensionTerminalHandled = new Set();
-/** Log one friendly explanation per offline stint (Chrome still logs net::ERR_* per attempt). */
-let extWsUnreachableNotified = false;
 
 /**
  * When false, `[KPI jobs]` logs only run if Settings → Debug logs is enabled.
@@ -599,6 +608,25 @@ async function init() {
   }
 
   extConnectIntent = true;
+  globalThis.k2cExtensionWsHooks = {
+    extConnectIntent: () => extConnectIntent,
+    getServerUrl: () => state.serverUrl || DEFAULT_STATE.serverUrl,
+    getDebugLogs: () => state.debugLogs,
+    kpiJobLog,
+    kpiJobVerbose,
+    inventoryLibraries,
+    refreshTemplateStatus,
+    syncExistingTasks,
+    broadcastState,
+    updateBadge,
+    handleExtensionTaskPush,
+    setConnected: (v) => {
+      state.connected = v;
+    },
+    setConnectionHint: (h) => {
+      state.connectionHint = h;
+    },
+  };
   connectExtensionSocket();
   startHealthMonitor();
   broadcastState();
@@ -619,230 +647,50 @@ function buildUrl(path) {
 
 function extensionWsUrl() {
   const base = state.serverUrl || DEFAULT_STATE.serverUrl;
-  let u;
-  try {
-    u = new URL(base);
-  } catch {
-    u = new URL(DEFAULT_STATE.serverUrl);
-  }
-  const wsProto = u.protocol === "https:" ? "wss:" : "ws:";
-  return `${wsProto}//${u.host}/ws/extension`;
+  return globalThis.k2cExtensionWsUrlFromBase(base);
 }
 
 /** Same key ⇒ same extension WS endpoint — used to avoid reconnect when only other settings changed. */
 function extensionSocketEndpointKey(baseUrl) {
-  const raw = typeof baseUrl === "string" && baseUrl.trim()
-    ? baseUrl.trim()
-    : DEFAULT_STATE.serverUrl;
-  try {
-    const u = new URL(raw.endsWith("/") ? raw : `${raw}/`);
-    const wsProto = u.protocol === "https:" ? "wss:" : "ws:";
-    return `${wsProto}//${u.host}/ws/extension`;
-  } catch {
-    return raw.replace(/\/+$/, "");
-  }
+  return globalThis.k2cExtensionSocketEndpointKey(
+    typeof baseUrl === "string" && baseUrl.trim()
+      ? baseUrl.trim()
+      : DEFAULT_STATE.serverUrl,
+  );
+}
+
+/** JSON-RPC WebSocket client from {@link ./extensionWsClient.js} (always load before this script). */
+function extensionWsApi() {
+  return globalThis.k2cExtensionWs;
+}
+
+function extensionWsIsOpen() {
+  return Boolean(extensionWsApi()?.isOpen?.());
 }
 
 function closeExtensionSocket() {
-  if (extReconnectTimer) {
-    clearTimeout(extReconnectTimer);
-    extReconnectTimer = null;
-  }
-  if (extWs) {
-    try {
-      extWs.onclose = null;
-      extWs.close();
-    } catch (_) {
-      /* ignore */
-    }
-    extWs = null;
-  }
-  extPending.forEach(({ reject }) => {
-    try {
-      reject(new Error("WebSocket closed."));
-    } catch (_) {
-      /* ignore */
-    }
-  });
-  extPending.clear();
+  extensionWsApi()?.closeExtensionSocket?.();
 }
 
 function scheduleExtensionReconnect() {
-  if (!extConnectIntent) {
-    return;
-  }
-  if (extReconnectTimer) {
-    return;
-  }
-  extReconnectTimer = setTimeout(() => {
-    extReconnectTimer = null;
-    connectExtensionSocket();
-  }, extReconnectDelayMs);
-  extReconnectDelayMs = Math.min(extReconnectDelayMs * 2, EXT_RECONNECT_MAX_MS);
+  extensionWsApi()?.scheduleExtensionReconnect?.();
 }
 
 /** Schedule reconnect only if idle (not already connecting and no timer). Avoids piling new sockets on the 3s health tick. */
 function scheduleExtensionReconnectIfIdle() {
-  if (!extConnectIntent) {
-    return;
-  }
-  if (extWs && (extWs.readyState === WebSocket.OPEN || extWs.readyState === WebSocket.CONNECTING)) {
-    return;
-  }
-  if (extReconnectTimer) {
-    return;
-  }
-  scheduleExtensionReconnect();
+  extensionWsApi()?.scheduleExtensionReconnectIfIdle?.();
 }
 
-// --- connect / reconnect / onmessage routing ---
 function connectExtensionSocket() {
-  if (!extConnectIntent) {
-    return;
-  }
-  if (extWs && (extWs.readyState === WebSocket.OPEN || extWs.readyState === WebSocket.CONNECTING)) {
-    return;
-  }
-  closeExtensionSocket();
-  const url = extensionWsUrl();
-  let ws;
-  try {
-    ws = new WebSocket(url);
-  } catch (e) {
-    state.connected = false;
-    updateBadge();
-    broadcastState();
-    scheduleExtensionReconnect();
-    return;
-  }
-  extWs = ws;
-
-  ws.onopen = async () => {
-    extReconnectDelayMs = EXT_RECONNECT_INITIAL_MS;
-    extWsUnreachableNotified = false;
-    state.connectionHint = null;
-    state.connected = true;
-    updateBadge();
-    broadcastState();
-    try {
-      await sendExtensionRpc("ping", {}, 5000);
-    } catch (e) {
-      if (state.debugLogs) {
-        console.warn("extension WS ping after open failed", e);
-      }
-    }
-    try {
-      await inventoryLibraries();
-    } catch (error) {
-      console.warn("Library inventory failed after WS connect", error);
-    }
-    try {
-      await refreshTemplateStatus();
-    } catch (error) {
-      if (state.debugLogs) {
-        console.warn("Template status refresh failed after WS connect", error);
-      }
-    }
-    try {
-      await syncExistingTasks();
-    } catch (error) {
-      console.warn("syncExistingTasks failed after WS connect", error);
-    }
-    broadcastState();
-  };
-
-  ws.onmessage = (ev) => {
-    let msg;
-    try {
-      msg = JSON.parse(ev.data);
-    } catch {
-      return;
-    }
-    if (msg == null || typeof msg !== "object") {
-      return;
-    }
-    if (Object.prototype.hasOwnProperty.call(msg, "id") && extPending.has(msg.id)) {
-      const pending = extPending.get(msg.id);
-      extPending.delete(msg.id);
-      clearTimeout(pending.timer);
-      if (msg.error) {
-        const errText = msg.error.message || "RPC error";
-        kpiJobLog("← RPC error", msg.id, errText);
-        pending.reject(new Error(errText));
-      } else {
-        kpiJobVerbose("← RPC ok", msg.id, msg.result);
-        pending.resolve(msg.result);
-      }
-      return;
-    }
-    if (msg.type === "task_update" && msg.task_id && msg.payload) {
-      void handleExtensionTaskPush(msg.task_id, msg.payload);
-      return;
-    }
-    kpiJobVerbose("ws inbound (ignored shape)", Object.keys(msg));
-  };
-
-  ws.onerror = () => {
-    /* onclose will run */
-  };
-
-  ws.onclose = () => {
-    extWs = null;
-    state.connected = false;
-    if (extConnectIntent) {
-      state.connectionHint =
-        "Cannot reach the backend (connection refused or closed). Start the easyeda2kicad API or check Backend URL in Settings.";
-      if (!extWsUnreachableNotified) {
-        extWsUnreachableNotified = true;
-        console.info(
-          "[KiCad Parts Importer] Backend WebSocket unreachable — start the easyeda2kicad API or fix the Backend URL. "
-            + "(Chrome may still log net::ERR_CONNECTION_REFUSED for each reconnect attempt.)",
-        );
-      }
-    }
-    extPending.forEach(({ reject, timer }) => {
-      clearTimeout(timer);
-      try {
-        reject(new Error("WebSocket closed."));
-      } catch (_) {
-        /* ignore */
-      }
-    });
-    extPending.clear();
-    updateBadge();
-    broadcastState();
-    scheduleExtensionReconnect();
-  };
+  extensionWsApi()?.connectExtensionSocket?.();
 }
 
 function sendExtensionRpc(method, params, timeoutMs = 45000) {
-  return new Promise((resolve, reject) => {
-    if (!extWs || extWs.readyState !== WebSocket.OPEN) {
-      kpiJobLog("sendExtensionRpc: socket not open", method, {
-        readyState: extWs ? extWs.readyState : null,
-      });
-      reject(new Error("Backend not connected."));
-      return;
-    }
-    const id = `r-${Date.now()}-${++extRpcSeq}`;
-    kpiJobVerbose("→ RPC", method, "id=", id, params);
-    const timer = setTimeout(() => {
-      if (extPending.has(id)) {
-        extPending.delete(id);
-        kpiJobLog("sendExtensionRpc: timeout", method, id, timeoutMs);
-        reject(new Error("Request timeout."));
-      }
-    }, timeoutMs);
-    extPending.set(id, { resolve, reject, timer });
-    try {
-      extWs.send(JSON.stringify({ id, method, params: params || {} }));
-    } catch (e) {
-      clearTimeout(timer);
-      extPending.delete(id);
-      kpiJobLog("sendExtensionRpc: send failed", method, e);
-      reject(e);
-    }
-  });
+  const api = extensionWsApi();
+  if (!api || typeof api.sendExtensionRpc !== "function") {
+    return Promise.reject(new Error("Backend transport not ready."));
+  }
+  return api.sendExtensionRpc(method, params, timeoutMs);
 }
 
 async function scaffoldLibraryOnServer(payload) {
@@ -1014,12 +862,12 @@ async function refreshTemplateStatus() {
 
 async function checkHealth() {
   try {
-    if (!extWs || extWs.readyState !== WebSocket.OPEN) {
+    if (!extensionWsIsOpen()) {
       connectExtensionSocket();
       await new Promise((resolve, reject) => {
         const deadline = Date.now() + 8000;
         const tick = () => {
-          if (extWs && extWs.readyState === WebSocket.OPEN) {
+          if (extensionWsIsOpen()) {
             resolve();
             return;
           }
@@ -1068,7 +916,7 @@ function startHealthMonitor() {
   healthTimer = setInterval(() => {
     (async () => {
       try {
-        if (extWs && extWs.readyState === WebSocket.OPEN) {
+        if (extensionWsIsOpen()) {
           await sendExtensionRpc("ping", {}, 5000);
           if (!state.connected) {
             state.connected = true;
@@ -1088,11 +936,11 @@ function startHealthMonitor() {
         scheduleExtensionReconnectIfIdle();
       }
     })();
-  }, HEALTH_INTERVAL);
+  }, globalThis.K2C_HEALTH_INTERVAL_MS || 3000);
 }
 
 async function syncExistingTasks() {
-  if (!extWs || extWs.readyState !== WebSocket.OPEN) {
+  if (!extensionWsIsOpen()) {
     kpiJobVerbose("syncExistingTasks: skip (socket not open)");
     return;
   }
@@ -1160,8 +1008,7 @@ async function finalizeTerminalJob(id, merged, log) {
   if (
     merged.status === "completed"
     && conversionResultLooksEmpty(coercedResult)
-    && extWs
-    && extWs.readyState === WebSocket.OPEN
+    && extensionWsIsOpen()
   ) {
     try {
       const detail = await sendExtensionRpc("get_task_detail", { task_id: id }, 30000);
@@ -1310,7 +1157,7 @@ function broadcastToLcscContentTabs(message) {
         if (tid == null) {
           continue;
         }
-        if (!LCSC_PAGE_URL_PREFIXES.some((prefix) => u.startsWith(prefix))) {
+        if (!isLcscImporterHostUrl(u)) {
           continue;
         }
         chrome.tabs.sendMessage(tid, message, () => {
@@ -1372,6 +1219,18 @@ function jobSummaryForSubmitReturn(jobId, rpcFallback) {
 // Job pipeline (submitJob, task_update merge, history)
 // =============================================================================
 
+function normalizePathKeyForCompare(p) {
+  return String(p || "").trim().replace(/\\/g, "/").toLowerCase();
+}
+
+/** Allowlist template .kicad_sym paths to registered template libraries (same idea as server). */
+function isKnownTemplateLibraryPath(templateLibPath) {
+  const want = normalizePathKeyForCompare(templateLibPath);
+  if (!want) return false;
+  const libs = state.templateSymbolsByLib || {};
+  return Object.keys(libs).some((k) => normalizePathKeyForCompare(k) === want);
+}
+
 async function submitJob(payload) {
   const providedPrefix = normalizePath(payload.libraryPath || "");
   const fallbackBase = normalizePath(state.selectedLibraryPath || "");
@@ -1427,7 +1286,14 @@ async function submitJob(payload) {
   const rawParams = (payload.params && typeof payload.params === "object")
     ? Object.fromEntries(
         Object.entries(payload.params)
-          .filter(([k, v]) => k !== valueParam && v != null && v !== "")
+          .filter(
+            ([k, v]) =>
+              k !== valueParam
+              && v != null
+              && v !== ""
+              // LCSC "Datasheet" row is link text (often a .pdf name), not the URL — keep symbol_datasheet_url only.
+              && mapParamKey(k) !== "Datasheet",
+          )
           .map(([k, v]) => [mapParamKey(k), v])
       )
     : {};
@@ -1460,6 +1326,10 @@ async function submitJob(payload) {
       ? { template_lib_path: payload.templateLibPath || getTemplateLibraryPath() }
       : {}),
     force_template: Boolean(payload.forceTemplate),
+    ...(payload.templatePinMap && typeof payload.templatePinMap === "object"
+      && Object.keys(payload.templatePinMap).length > 0
+      ? { template_pin_map: payload.templatePinMap }
+      : {}),
   };
 
   kpiJobLog("enqueue_task → sending", { lcsc_id: body.lcsc_id, output_path: body.output_path });
@@ -1693,13 +1563,24 @@ const RUNTIME_MESSAGE_HANDLERS = {
     } catch (error) {
       console.warn("Library inventory failed during getState", error);
     }
-    return snapshotState();
+    const snap = snapshotState();
+    let uiTheme = "light";
+    try {
+      const stored = await chrome.storage.local.get("popupUiState");
+      const ui = stored?.popupUiState;
+      if (ui && ui.theme === "dark") {
+        uiTheme = "dark";
+      }
+    } catch (_e) {
+      /* ignore */
+    }
+    return { ...snap, uiTheme };
   },
   setServerUrl: async (message) => {
     state.serverUrl = message.url || DEFAULT_STATE.serverUrl;
     await persistState(["serverUrl"]);
     closeExtensionSocket();
-    extReconnectDelayMs = EXT_RECONNECT_INITIAL_MS;
+    extensionWsApi()?.resetReconnectDelay?.();
     connectExtensionSocket();
     return snapshotState();
   },
@@ -1749,7 +1630,7 @@ const RUNTIME_MESSAGE_HANDLERS = {
       && extensionSocketEndpointKey(previousServerUrl) !== extensionSocketEndpointKey(state.serverUrl)
     ) {
       closeExtensionSocket();
-      extReconnectDelayMs = EXT_RECONNECT_INITIAL_MS;
+      extensionWsApi()?.resetReconnectDelay?.();
       connectExtensionSocket();
     }
     return snapshotState();
@@ -1838,6 +1719,10 @@ const RUNTIME_MESSAGE_HANDLERS = {
       templateName: typeof message.templateName === "string" ? message.templateName : null,
       templateLibPath: typeof message.templateLibPath === "string" ? message.templateLibPath : null,
       forceTemplate: Boolean(message.forceTemplate),
+      templatePinMap:
+        message.templatePinMap && typeof message.templatePinMap === "object"
+          ? message.templatePinMap
+          : null,
       categoryConfigOverride:
         message.categoryConfigOverride && typeof message.categoryConfigOverride === "object"
           ? message.categoryConfigOverride
@@ -2005,6 +1890,9 @@ const RUNTIME_MESSAGE_HANDLERS = {
     if (!lcscId || !lcscId.startsWith("C") || !templateName || !templateLibPath) {
       throw new Error("templatesPinCheck requires lcscId, templateName, and templateLibPath.");
     }
+    if (!isKnownTemplateLibraryPath(templateLibPath)) {
+      throw new Error("Template library path is not registered in extension settings.");
+    }
     return sendExtensionRpc(
       "templates_pin_check",
       {
@@ -2014,6 +1902,382 @@ const RUNTIME_MESSAGE_HANDLERS = {
       },
       120000,
     );
+  },
+  templatesGalleryPinSummary: async (message) => {
+    const lcscId = (message.lcscId || "").trim().toUpperCase();
+    if (!lcscId || !lcscId.startsWith("C")) {
+      throw new Error("templatesGalleryPinSummary requires a valid lcscId.");
+    }
+    const raw = Array.isArray(message.templates) ? message.templates : [];
+    const templates = raw
+      .map((t) => ({
+        template_name: String(t.templateName || t.template_name || "").trim(),
+        template_lib_path: String(t.templateLibPath || t.template_lib_path || "").trim(),
+      }))
+      .filter(
+        (t) =>
+          t.template_name
+          && t.template_lib_path
+          && isKnownTemplateLibraryPath(t.template_lib_path),
+      );
+    return sendExtensionRpc(
+      "templates_gallery_pin_summary",
+      { lcsc_id: lcscId, templates },
+      180000,
+    );
+  },
+  templatesPreviewSvg: async (message) => {
+    const templateName = typeof message.templateName === "string" ? message.templateName.trim() : "";
+    const templateLibPath = typeof message.templateLibPath === "string" ? message.templateLibPath.trim() : "";
+    const labelPins = Boolean(message.labelPins);
+    const drawPinNames = message.drawPinNames !== false;
+    const previewTheme = message.previewTheme === "dark" ? "dark" : "light";
+    if (!templateName || !templateLibPath) {
+      throw new Error("templatesPreviewSvg requires templateName and templateLibPath.");
+    }
+    if (!isKnownTemplateLibraryPath(templateLibPath)) {
+      throw new Error("Template library path is not registered in extension settings.");
+    }
+    return sendExtensionRpc(
+      "templates_preview_svg",
+      {
+        template_name: templateName,
+        template_lib_path: templateLibPath,
+        label_pins: labelPins,
+        draw_pin_names: drawPinNames,
+        preview_theme: previewTheme,
+      },
+      60000,
+    );
+  },
+  templatesPinMapContext: async (message) => {
+    const lcscId = (message.lcscId || "").trim().toUpperCase();
+    const templateName = typeof message.templateName === "string" ? message.templateName.trim() : "";
+    const templateLibPath = typeof message.templateLibPath === "string" ? message.templateLibPath.trim() : "";
+    if (!lcscId || !lcscId.startsWith("C") || !templateName || !templateLibPath) {
+      throw new Error("templatesPinMapContext requires lcscId, templateName, and templateLibPath.");
+    }
+    if (!isKnownTemplateLibraryPath(templateLibPath)) {
+      throw new Error("Template library path is not registered in extension settings.");
+    }
+    return sendExtensionRpc(
+      "templates_pin_map_context",
+      {
+        lcsc_id: lcscId,
+        template_name: templateName,
+        template_lib_path: templateLibPath,
+      },
+      120000,
+    );
+  },
+  lcscFootprintPreview: async (message) => {
+    const lcscId = (message.lcscId || "").trim().toUpperCase();
+    if (!lcscId || !lcscId.startsWith("C")) {
+      throw new Error("lcscFootprintPreview requires a valid lcscId.");
+    }
+    return sendExtensionRpc("lcsc_footprint_preview", { lcsc_id: lcscId }, 120000);
+  },
+  /**
+   * Fetch datasheet bytes in the service worker (bypasses page CORS / broken PDF.js-in-iframe).
+   * Content script builds a blob: URL for the preview iframe.
+   */
+  fetchDatasheetBlob: async (message, sender) => {
+    const log = (...a) => console.info("[KiCad datasheet SW]", ...a);
+    const url = typeof message.url === "string" ? message.url.trim() : "";
+    if (!url || !/^https?:\/\//i.test(url)) {
+      log("reject: bad URL", url);
+      throw new Error("fetchDatasheetBlob requires an http(s) URL.");
+    }
+    const maxBytes = 24 * 1024 * 1024;
+    const LARGE_PDF_BYTES = 5 * 1024 * 1024;
+    const confirmedLarge = Boolean(message.confirmedLarge);
+    const requestId = message.requestId != null ? Number(message.requestId) : 0;
+    const tabId = sender?.tab?.id;
+
+    let lastProgressSent = 0;
+    function reportProgress(received, total) {
+      if (tabId == null) {
+        return;
+      }
+      const now = Date.now();
+      if (now - lastProgressSent < 80 && total != null && received < total) {
+        return;
+      }
+      lastProgressSent = now;
+      try {
+        chrome.tabs.sendMessage(tabId, {
+          type: "k2c-datasheet-fetch-progress",
+          requestId,
+          received,
+          total: total != null && Number.isFinite(total) ? total : null,
+        });
+      } catch (_e) {
+        /* tab closed */
+      }
+    }
+
+    function bufferLooksLikePdf(buf) {
+      if (!buf || buf.byteLength < 5) {
+        return false;
+      }
+      const u = new Uint8Array(buf, 0, 5);
+      return u[0] === 0x25 && u[1] === 0x50 && u[2] === 0x44 && u[3] === 0x46 && u[4] === 0x2d; // %PDF-
+    }
+
+    function primaryContentType(r) {
+      return (r.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    }
+
+    /** LCSC often responds 200 with `text/html` (Nuxt shell) instead of the PDF — real file is on datasheet.lcsc.com. */
+    function extractLcscPdfUrlFromHtml(html) {
+      const normalized = html.replace(/\\u002[fF]/g, "/");
+      const re = /https?:\/\/[^"'<>\s]+?\.pdf(?:\?[^"'<>\s]*)?/gi;
+      const seen = new Set();
+      /** @type {string[]} */
+      const candidates = [];
+      let m;
+      while ((m = re.exec(normalized)) !== null) {
+        const candidate = m[0].replace(/&amp;/g, "&");
+        if (seen.has(candidate)) {
+          continue;
+        }
+        seen.add(candidate);
+        try {
+          const p = new URL(candidate);
+          const h = p.hostname.toLowerCase();
+          const onLcsc =
+            /(^|\.)lcsc\.com$/i.test(h) || /(^|\.)lcsiglobal\.com$/i.test(h) || /(^|\.)szlcsc\.com$/i.test(h);
+          if (!onLcsc) {
+            continue;
+          }
+          if (h === "www.lcsc.com" && /^\/datasheet\/C\d+\.pdf$/i.test(p.pathname)) {
+            continue;
+          }
+          candidates.push(candidate);
+        } catch (_e) {
+          /* ignore */
+        }
+      }
+      const preferred = candidates.find((u) => /datasheet\.lcsc\.com/i.test(u));
+      return preferred || candidates[0] || null;
+    }
+
+    function concatChunkBuffers(chunks, totalByteLength) {
+      const out = new Uint8Array(totalByteLength);
+      let offset = 0;
+      for (const c of chunks) {
+        out.set(c, offset);
+        offset += c.byteLength;
+      }
+      return out.buffer;
+    }
+
+    /**
+     * @param {boolean} applyLargeGate When true, PDFs over 5 MiB need {@code confirmedLarge} on a follow-up request.
+     */
+    async function readResponseBody(r, applyLargeGate) {
+      const cl = r.headers.get("content-length");
+      const expected = cl ? parseInt(cl, 10) : NaN;
+      if (Number.isFinite(expected) && expected > maxBytes) {
+        throw new Error("Datasheet too large for in-page preview");
+      }
+
+      if (
+        applyLargeGate
+        && !confirmedLarge
+        && Number.isFinite(expected)
+        && expected > LARGE_PDF_BYTES
+      ) {
+        try {
+          if (r.body?.cancel) {
+            await r.body.cancel();
+          }
+        } catch (_e) {
+          /* ignore */
+        }
+        return { needsApproval: true, expectedBytes: expected };
+      }
+
+      if (!r.body) {
+        const buf = await r.arrayBuffer();
+        if (buf.byteLength > maxBytes) {
+          throw new Error("Datasheet too large for in-page preview");
+        }
+        if (applyLargeGate && !confirmedLarge && buf.byteLength > LARGE_PDF_BYTES) {
+          return { needsApproval: true, expectedBytes: buf.byteLength };
+        }
+        return { buf };
+      }
+
+      const reader = r.body.getReader();
+      const chunks = [];
+      let received = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        if (value && value.byteLength) {
+          chunks.push(value);
+          received += value.byteLength;
+        }
+        if (Number.isFinite(expected)) {
+          reportProgress(received, expected);
+        } else {
+          reportProgress(received, null);
+        }
+        if (received > maxBytes) {
+          try {
+            await reader.cancel();
+          } catch (_e) {}
+          throw new Error("Datasheet too large for in-page preview");
+        }
+        if (applyLargeGate && !confirmedLarge && received > LARGE_PDF_BYTES) {
+          try {
+            await reader.cancel();
+          } catch (_e) {}
+          return { needsApproval: true, expectedBytes: null, downloadedBytes: received };
+        }
+      }
+
+      const buf = concatChunkBuffers(chunks, received);
+      if (applyLargeGate && !confirmedLarge && buf.byteLength > LARGE_PDF_BYTES) {
+        return { needsApproval: true, expectedBytes: buf.byteLength };
+      }
+      return { buf };
+    }
+
+    async function fetchRaw(targetUrl, credentials, applyLargeGate) {
+      const headers = {
+        Accept: "application/pdf,application/octet-stream;q=0.9,*/*;q=0.8",
+      };
+      if (/lcsc|lcsiglobal|szlcsc/i.test(targetUrl)) {
+        headers.Referer = "https://www.lcsc.com/";
+      }
+      const res = await fetch(targetUrl, {
+        method: "GET",
+        redirect: "follow",
+        credentials,
+        headers,
+      });
+      if (!res.ok) {
+        throw new Error(`Datasheet HTTP ${res.status}`);
+      }
+      const readResult = await readResponseBody(res, applyLargeGate);
+      if (readResult.needsApproval) {
+        return readResult;
+      }
+      return { r: res, buf: readResult.buf };
+    }
+
+    function urlLooksLikePdfPath(u) {
+      try {
+        return /\.pdf$/i.test(new URL(u).pathname);
+      } catch (_e) {
+        return /\.pdf(\?|$)/i.test(u);
+      }
+    }
+
+    const isLcscFamily = /lcsc|lcsiglobal|szlcsc/i.test(url);
+    const creds = isLcscFamily ? "include" : "omit";
+
+    let fr = await fetchRaw(url, creds, urlLooksLikePdfPath(url));
+    if (fr.needsApproval) {
+      return {
+        needsApproval: true,
+        expectedBytes: fr.expectedBytes,
+        downloadedBytes: fr.downloadedBytes,
+      };
+    }
+    let { r, buf } = fr;
+    let finalUrl = url;
+    let ct = primaryContentType(r);
+
+    if (!bufferLooksLikePdf(buf)) {
+      log("not a PDF (magic)", "content-type=", ct, "bytes=", buf.byteLength, "url=", url);
+      let recovered = false;
+
+      try {
+        const noQuery = new URL(url);
+        if (noQuery.search) {
+          noQuery.search = "";
+          const tryUrl = noQuery.href;
+          log("retry without query string", tryUrl);
+          const second = await fetchRaw(tryUrl, creds, urlLooksLikePdfPath(tryUrl));
+          if (second.needsApproval) {
+            return {
+              needsApproval: true,
+              expectedBytes: second.expectedBytes,
+              downloadedBytes: second.downloadedBytes,
+            };
+          }
+          if (bufferLooksLikePdf(second.buf)) {
+            ({ r, buf } = second);
+            finalUrl = tryUrl;
+            ct = primaryContentType(second.r);
+            recovered = true;
+          }
+        }
+      } catch (e) {
+        log("retry without query failed", e?.message || e);
+      }
+
+      if (!recovered && /text\/html/i.test(ct)) {
+        const html = new TextDecoder("utf-8", { fatal: false }).decode(
+          new Uint8Array(buf).subarray(0, Math.min(buf.byteLength, 512 * 1024)),
+        );
+        const inner = extractLcscPdfUrlFromHtml(html);
+        if (inner && inner !== url) {
+          log("retry HTML → extracted .pdf URL", inner);
+          try {
+            const third = await fetchRaw(inner, creds, true);
+            if (third.needsApproval) {
+              return {
+                needsApproval: true,
+                expectedBytes: third.expectedBytes,
+                downloadedBytes: third.downloadedBytes,
+              };
+            }
+            if (bufferLooksLikePdf(third.buf)) {
+              ({ r, buf } = third);
+              finalUrl = inner;
+              ct = primaryContentType(third.r);
+              recovered = true;
+            } else {
+              log("extracted URL still not PDF", primaryContentType(third.r), third.buf.byteLength);
+            }
+          } catch (e) {
+            log("fetch extracted URL failed", e?.message || e);
+          }
+        } else {
+          log("no .pdf URL found inside HTML");
+        }
+      }
+
+      if (!bufferLooksLikePdf(buf)) {
+        throw new Error(
+          "Server returned HTML or non-PDF (LCSC datasheet shell). Use “Open in tab” or try again logged in.",
+        );
+      }
+    }
+
+    const outCt = (r.headers.get("content-type") || "application/pdf").split(";")[0].trim();
+    const base64 = await new Promise((resolve, reject) => {
+      try {
+        const fr = new FileReader();
+        fr.onload = () => {
+          const s = String(fr.result || "");
+          const comma = s.indexOf(",");
+          resolve(comma >= 0 ? s.slice(comma + 1) : s);
+        };
+        fr.onerror = () => reject(fr.error || new Error("datasheet base64 encode failed"));
+        fr.readAsDataURL(new Blob([buf], { type: outCt || "application/pdf" }));
+      } catch (e) {
+        reject(e);
+      }
+    });
+    log("OK PDF", "bytes=", buf.byteLength, "content-type=", outCt, "finalUrl=", finalUrl);
+    return { contentType: outCt || "application/pdf", base64, byteLength: buf.byteLength };
   },
   submitJob: async (message) => submitJob(message.payload),
   "fs:listRoots": async () => fetchRoots(),
@@ -2027,14 +2291,14 @@ const RUNTIME_MESSAGE_HANDLERS = {
   },
 };
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     await ensureInitialized();
     const run = RUNTIME_MESSAGE_HANDLERS[message.type];
     if (typeof run !== "function") {
       return null;
     }
-    return run(message);
+    return run(message, sender);
   })()
     .then((result) => sendResponse({ ok: true, data: result }))
     .catch((error) => {

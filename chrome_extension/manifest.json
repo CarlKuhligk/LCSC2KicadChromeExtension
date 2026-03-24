@@ -2,22 +2,29 @@
   "manifest_version": 3,
   "name": "KiCad Parts Importer",
   "version": "2.0.0",
-  "description": "Download KiCad symbols, footprints & 3D models from LCSC in one click. Uses WebSocket to the configured local backend (same host as server URL).",
+  "description": "Download KiCad 9.x–compatible symbols, footprints & 3D models from LCSC in one click. Uses WebSocket to the configured local backend (same host as server URL).",
   "permissions": [
     "storage"
   ],
   "host_permissions": [
     "http://localhost:8087/*",
-    "https://www.lcsc.com/*"
+    "https://www.lcsc.com/*",
+    "https://lcsc.com/*",
+    "https://*.lcsc.com/*",
+    "https://*.lcsiglobal.com/*",
+    "https://*.szlcsc.com/*"
   ],
   "content_scripts": [
     {
       "matches": [
-        "https://www.lcsc.com/*"
+        "https://www.lcsc.com/*",
+        "https://lcsc.com/*",
+        "https://*.lcsc.com/*",
+        "https://*.szlcsc.com/*",
+        "https://*.lcsiglobal.com/*"
       ],
       "js": [
-        "categoryPath.js",
-        "contentScript.js"
+        "src/content/inject.js"
       ],
       "run_at": "document_idle"
     }
@@ -33,5 +40,27 @@
     "32": "icon.png",
     "48": "icon.png",
     "128": "icon.png"
-  }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "pdf_viewer.html",
+        "pdf_viewer_page.mjs",
+        "vendor/pdfjs/*",
+        "src/content/main.js",
+        "src/content/app.js",
+        "src/content/categoryNormalize.js",
+        "src/content/constants.js",
+        "src/content/dialog.js",
+        "src/content/rpc.js"
+      ],
+      "matches": [
+        "https://www.lcsc.com/*",
+        "https://lcsc.com/*",
+        "https://*.lcsc.com/*",
+        "https://*.szlcsc.com/*",
+        "https://*.lcsiglobal.com/*"
+      ]
+    }
+  ]
 }

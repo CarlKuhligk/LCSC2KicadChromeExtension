@@ -147,23 +147,13 @@ const bootstrap = globalScope.bootstrap || (globalScope.bootstrap = createSimple
 const UI_STORAGE_KEY = "popupUiState";
 const TAB_IDS = ["categories", "libraries", "settings"];
 
-/** Must match background.js DEFAULT_STATE.serverUrl. Used with `extensionWsEndpointKeyFromBaseUrl`. */
-const DEFAULT_SETTINGS_SERVER_URL = "http://localhost:8087";
+const DEFAULT_SETTINGS_SERVER_URL =
+  typeof globalThis.K2C_DEFAULT_SERVER_URL === "string"
+    ? globalThis.K2C_DEFAULT_SERVER_URL
+    : "http://localhost:8087";
 
-/**
- * Same resolution as background.js `extensionSocketEndpointKey` — if equal, the extension WebSocket target is unchanged.
- */
 function extensionWsEndpointKeyFromBaseUrl(baseUrl) {
-  const raw = typeof baseUrl === "string" && baseUrl.trim()
-    ? baseUrl.trim()
-    : DEFAULT_SETTINGS_SERVER_URL;
-  try {
-    const u = new URL(raw.endsWith("/") ? raw : `${raw}/`);
-    const wsProto = u.protocol === "https:" ? "wss:" : "ws:";
-    return `${wsProto}//${u.host}/ws/extension`;
-  } catch {
-    return raw.replace(/\/+$/, "");
-  }
+  return globalThis.k2cExtensionSocketEndpointKey(baseUrl);
 }
 
 /** Library row IDs with the read-only details panel open (session only; cleared on reload). */
@@ -191,7 +181,7 @@ const state = {
   selectedLibraryPath: "",
   selectedLibraryName: "",
   settings: {
-    serverUrl: "http://localhost:8087",
+    serverUrl: DEFAULT_SETTINGS_SERVER_URL,
     overwrite: false,
     overwriteModel: false,
     debug: false,
