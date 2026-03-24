@@ -17,7 +17,7 @@
   --switch-gutter: 0.5rem;
 }
 
-/* LCSC-aligned light (tokens from docs/extension-popup-theme-plan.md + styles/ reference) */
+/* LCSC-aligned light theme (colors aligned with lcsc.com) */
 html[data-theme="light"] {
   color-scheme: light;
   --page-bg: #f7f7f7;

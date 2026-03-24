@@ -295,7 +295,7 @@ Summary of changes **since [v1.0.1](https://github.com/theautomatist/KiCad-Parts
 
 ### Docs & tooling
 
-- README **How it works** diagram, import workflow, popup overview; developer **playbook** and settings reference under `docs/`.
+- README **How it works** diagram, import workflow, and popup overview.
 - **GitHub Actions:** manual workflow for releases/CI.
 
 ## For developers
@@ -303,4 +303,3 @@ Summary of changes **since [v1.0.1](https://github.com/theautomatist/KiCad-Parts
 - **Extension ↔ backend** — One **WebSocket** to **`/ws/extension`** (same host and port as the API base URL, e.g. `http://localhost:8087` → `ws://localhost:8087/ws/extension`). **JSON-RPC–style** methods plus server push for jobs and state. No separate REST API for that control plane. Full method list: [`chrome_extension/EXTENSION_WS_RPC_CONTRACT.md`](chrome_extension/EXTENSION_WS_RPC_CONTRACT.md).
 - **Chrome extension layout** — Unpacked root is **`chrome_extension/`**. MV3 **service worker** (`background.js`) holds the socket; LCSC UI lives under **`src/content/`**. Entry: **`inject.js`** loads **`main.js`** as a module (so static `import` works reliably); after edits, reload the extension.
 - **Backend** — Python package **`easyeda2kicad/`**; run **`python run_server.py`** from the repo. EasyEDA is called over **HTTPS** from the server.
-- **Docs in repo** — Extra notes under **`docs/`** (playbook, settings reference, etc.).
