@@ -4,8 +4,16 @@ import time
 from typing import Callable
 
 import requests
+from requests import codes as http_codes
 
 from easyeda2kicad import __version__
+
+# easyeda.com sits behind CloudFront; a library-style User-Agent often gets HTTP 403 HTML
+# instead of JSON. Use a mainstream browser UA for the product API (verified LCSC e.g. C84681).
+_EASYEDA_PRODUCT_API_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
 
 API_ENDPOINT = "https://easyeda.com/api/products/{lcsc_id}/components?version=6.4.19.5"
 ENDPOINT_3D_MODEL = "https://modules.easyeda.com/3dmodel/{uuid}"
@@ -21,25 +29,109 @@ class EasyedaApi:
             "Accept-Encoding": "gzip, deflate",
             "Accept": "application/json, text/javascript, */*; q=0.01",
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            "User-Agent": f"easyeda2kicad v{__version__}",
+            "User-Agent": _EASYEDA_PRODUCT_API_USER_AGENT,
+            "X-Client-Name": f"KiCad-Parts-Importer/easyeda2kicad-{__version__}",
         }
         self.on_retry = on_retry  # (attempt, max_attempts) called before sleeping on retry
 
     def get_info_from_easyeda_api(self, lcsc_id: str) -> dict:
-        r = requests.get(
-            url=API_ENDPOINT.format(lcsc_id=lcsc_id),
-            headers=self.headers,
-            timeout=10,
+        """GET LCSC component JSON from EasyEDA. Retries on empty body, bad JSON, and 5xx/429."""
+        lcsc_id = lcsc_id.strip().upper()
+        url = API_ENDPOINT.format(lcsc_id=lcsc_id)
+        last_problem: str | None = None
+        max_attempts = 3
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                r = requests.get(url=url, headers=self.headers, timeout=15)
+            except requests.RequestException as exc:
+                last_problem = str(exc)
+                logging.warning(
+                    "EasyEDA API request failed for %s (%s/%s): %s",
+                    lcsc_id,
+                    attempt,
+                    max_attempts,
+                    exc,
+                )
+                if attempt < max_attempts:
+                    if self.on_retry:
+                        try:
+                            self.on_retry(attempt, max_attempts)
+                        except Exception:
+                            pass
+                    time.sleep(1.0)
+                    continue
+                raise
+
+            snippet = (r.text or "").strip()
+            if r.status_code != http_codes.ok:
+                last_problem = f"HTTP {r.status_code}: {snippet[:300]!r}"
+                logging.warning(
+                    "EasyEDA API bad status for %s (%s/%s): %s",
+                    lcsc_id,
+                    attempt,
+                    max_attempts,
+                    last_problem,
+                )
+                if attempt < max_attempts and r.status_code in (
+                    429,
+                    500,
+                    502,
+                    503,
+                    504,
+                ):
+                    if self.on_retry:
+                        try:
+                            self.on_retry(attempt, max_attempts)
+                        except Exception:
+                            pass
+                    time.sleep(1.0)
+                    continue
+                break
+
+            if not snippet:
+                last_problem = f"HTTP {r.status_code} with empty body"
+                logging.warning(
+                    "EasyEDA API empty body for %s (%s/%s)",
+                    lcsc_id,
+                    attempt,
+                    max_attempts,
+                )
+                if attempt < max_attempts:
+                    time.sleep(1.0)
+                    continue
+                break
+
+            try:
+                api_response = r.json()
+            except ValueError as exc:
+                last_problem = (
+                    f"response is not JSON ({exc!s}); starts with {snippet[:200]!r}"
+                )
+                logging.warning(
+                    "EasyEDA API JSON decode for %s (%s/%s): %s",
+                    lcsc_id,
+                    attempt,
+                    max_attempts,
+                    last_problem,
+                )
+                if attempt < max_attempts:
+                    time.sleep(1.0)
+                    continue
+                break
+
+            if not api_response:
+                logging.debug("%s", api_response)
+                return {}
+            if isinstance(api_response, dict) and api_response.get("success") is False:
+                logging.debug("%s", api_response)
+                return {}
+
+            return api_response
+
+        raise RuntimeError(
+            f"EasyEDA API did not return usable JSON for {lcsc_id}. {last_problem or 'unknown'}"
         )
-        api_response = r.json()
-
-        if not api_response or (
-            "code" in api_response and api_response["success"] is False
-        ):
-            logging.debug(f"{api_response}")
-            return {}
-
-        return r.json()
 
     def get_cad_data_of_component(self, lcsc_id: str) -> dict:
         cp_cad_info = self.get_info_from_easyeda_api(lcsc_id=lcsc_id)
