@@ -4,11 +4,10 @@ import unittest
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi.testclient import TestClient
-
 from easyeda2kicad.api.models import TaskCreatePayload
 from easyeda2kicad.api.server import create_app
 from easyeda2kicad.service import ConversionRequest, ConversionResult, ConversionStage
+from fastapi.testclient import TestClient
 
 
 def _dummy_runner(

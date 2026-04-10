@@ -11,6 +11,7 @@ import math
 import re
 from dataclasses import dataclass
 from typing import Literal
+
 from easyeda2kicad.kicad.template_merger import _collect_sexpr_block
 
 _MAX_SYMBOL_CHARS = 512_000

@@ -1,4 +1,6 @@
-from easyeda2kicad.kicad.export_kicad_footprint import mesh_z_rotation_xy_offset_adjustment_mm
+from easyeda2kicad.kicad.export_kicad_footprint import (
+    mesh_z_rotation_xy_offset_adjustment_mm,
+)
 
 
 def test_c841795_scale_matches_manual_kicad_offset():

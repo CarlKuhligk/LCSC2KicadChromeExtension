@@ -264,7 +264,6 @@ def test_footprint_preview_symmetric_padding_in_viewbox() -> None:
     assert abs(float(m.group(1)) - w) < 1e-6
     assert abs(float(m.group(2)) - h) < 1e-6
 
-    nums = [float(x) for x in re.findall(r"[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?", svg)]
     poly_m = re.search(r'points="([^"]+)"', svg)
     assert poly_m is not None
     pairs = []

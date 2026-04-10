@@ -52,3 +52,21 @@ disable = [
 [tool.bandit]
 # tests = ["B201", "B301"]
 skips = []
+
+[tool.ruff]
+line-length = 88
+target-version = "py38"
+src = ["easyeda2kicad", "tests"]
+
+[tool.ruff.lint]
+# Keep CI useful without rewriting legacy import style (star imports in tests / __init__).
+extend-ignore = [
+    "E402",   # imports after sys.path or __future__ tweaks
+    "E501",   # line length (keep aligned with black 88 where practical)
+    "F403",   # import *
+    "F405",   # name may be undefined due to star import
+]
+select = ["E", "F", "I", "W"]
+
+[tool.ruff.format]
+quote-style = "double"

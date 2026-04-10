@@ -221,7 +221,6 @@ class TemplateMerger:
         Make symbol pin table match EasyEDA: add missing pins at (0,0), remove
         template-only pins. Returns (new_symbol_str, kept_count, added_count, removed_count).
         """
-        from easyeda2kicad.kicad.parameters_kicad_symbol import KiSymbolPin
 
         source_by_number: dict[str, KiSymbolPin] = {}
         for p in source_pins:

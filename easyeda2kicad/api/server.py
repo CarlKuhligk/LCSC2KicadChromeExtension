@@ -17,6 +17,24 @@ from typing import Any, Awaitable, Callable, Deque, Dict, List, Optional, Set, T
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
+from easyeda2kicad.api.models import (
+    ComponentCheckRequest,
+    ComponentCheckResponse,
+    ConversionResultModel,
+    LcscFootprintPreviewPayload,
+    LibraryScaffoldRequest,
+    LibraryScaffoldResponse,
+    LibraryValidateRequest,
+    LibraryValidateResponse,
+    TaskCreatePayload,
+    TaskDetail,
+    TaskSummary,
+    TemplatePinCheckPayload,
+    TemplatePinCheckResponse,
+    TemplatePinMapContextPayload,
+    TemplatePreviewPayload,
+    TemplatesGalleryPinSummaryPayload,
+)
 from easyeda2kicad.easyeda.easyeda_api import EasyedaApi
 from easyeda2kicad.helpers import (
     count_pins_in_symbol_string,
@@ -38,26 +56,6 @@ from easyeda2kicad.service.lcsc_preview import (
     easyeda_pins_from_cad,
     footprint_preview_bundle,
     suggested_pad_to_symbol_map,
-)
-from easyeda2kicad.api.models import (
-    ComponentCheckRequest,
-    ComponentCheckResponse,
-    ConversionResultModel,
-    GalleryTemplateRef,
-    LcscFootprintPreviewPayload,
-    LibraryScaffoldRequest,
-    LibraryScaffoldResponse,
-    LibraryValidateRequest,
-    LibraryValidateResponse,
-    PathRequest,
-    TaskCreatePayload,
-    TaskDetail,
-    TaskSummary,
-    TemplatePinCheckPayload,
-    TemplatePinCheckResponse,
-    TemplatePinMapContextPayload,
-    TemplatePreviewPayload,
-    TemplatesGalleryPinSummaryPayload,
 )
 
 log = logging.getLogger(__name__)

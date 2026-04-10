@@ -1,15 +1,15 @@
 """Unit tests for template_merger pin table merge."""
 import unittest
 
+from easyeda2kicad.kicad.kicad_text_normalize import (
+    normalize_for_kicad_text,
+    normalize_property_key_for_match,
+)
 from easyeda2kicad.kicad.parameters_kicad_symbol import (
     KiPinStyle,
     KiPinType,
     KiSymbolInfo,
     KiSymbolPin,
-)
-from easyeda2kicad.kicad.kicad_text_normalize import (
-    normalize_for_kicad_text,
-    normalize_property_key_for_match,
 )
 from easyeda2kicad.kicad.template_merger import (
     TemplateMerger,

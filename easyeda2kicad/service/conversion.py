@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """LCSC → KiCad: one EasyEDA fetch, then direct symbol/footprint/3D export or template merge + PAD map."""
+
+from __future__ import annotations
 
 import logging
 import math
@@ -16,7 +16,6 @@ from easyeda2kicad.easyeda.easyeda_api import EasyedaApi
 from easyeda2kicad.easyeda.easyeda_importer import (
     Easyeda3dModelImporter,
     EasyedaFootprintImporter,
-    EasyedaSymbolImporter,
 )
 from easyeda2kicad.helpers import (
     add_component_in_symbol_lib_file,

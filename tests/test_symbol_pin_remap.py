@@ -1,6 +1,9 @@
 """Tests for schematic pin number remapping."""
 
-from easyeda2kicad.kicad.symbol_pin_remap import apply_pin_number_map, list_pins_from_symbol_block
+from easyeda2kicad.kicad.symbol_pin_remap import (
+    apply_pin_number_map,
+    list_pins_from_symbol_block,
+)
 
 _PIN_SYM = """
 (symbol "T"
