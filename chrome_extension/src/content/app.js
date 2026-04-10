@@ -3795,9 +3795,10 @@ async function openTemplateGallery(anchorButton, groupDiv, lcscId, state, galler
   let templateSymbolsByLib = { ...(state.templateSymbolsByLib || {}) };
   let allItems = buildTemplateListItems(templateSymbolsByLib);
 
-  if (!allItems.length && hasTplLibs) {
+  // Always re-fetch symbol names from the backend so the list matches the current .kicad_sym files.
+  if (hasTplLibs) {
     try {
-      const ref = await contentRpc("refreshTemplateSymbols", {}, k2cRpc(2, 400));
+      const ref = await contentRpc("refreshTemplateSymbols", {}, k2cRpc(3, 400));
       if (ref?.ok && ref.data?.templateSymbolsByLib) {
         templateSymbolsByLib = ref.data.templateSymbolsByLib;
         allItems = buildTemplateListItems(templateSymbolsByLib);
@@ -3939,7 +3940,8 @@ async function openTemplateGallery(anchorButton, groupDiv, lcscId, state, galler
     } else if (!loadTracks.footprint) {
       statusText.textContent = "Still loading footprint preview and pad list…";
     } else if (!loadTracks.pinSummary) {
-      statusText.textContent = "Comparing each template’s pin count to this LCSC part…";
+      statusText.textContent =
+        "Comparing each template’s pin count to this LCSC part — the list on the left unlocks when done.";
     } else {
       statusText.textContent =
         "Ready — choose a template, wire pads in the map, then Continue.";
@@ -5144,20 +5146,70 @@ async function openTemplateGallery(anchorButton, groupDiv, lcscId, state, galler
   }
 
   function selectItem(item, row) {
-    selectedItem = item;
+    const same =
+      selectedItem
+      && String(selectedItem.name) === String(item.name)
+      && String(selectedItem.libPath) === String(item.libPath);
     if (selectedRow) {
       selectedRow.style.background = "";
       selectedRow.style.outline = "";
     }
+    selectedItem = item;
     selectedRow = row;
     row.style.background = "#dbeafe";
     row.style.outline = `1px solid ${"#1166dd"}`;
     syncGalleryContinueButton();
-    void loadSymbolForItem(item);
+    if (!same) {
+      void loadSymbolForItem(item);
+    }
   }
 
-  function filterList(query) {
+  function renderTemplateListAwaitingPins() {
+    list.innerHTML = "";
+    const wrap = document.createElement("div");
+    wrap.style.cssText = cssJoin([
+      "display:flex",
+      "flex-direction:column",
+      "align-items:center",
+      "justify-content:center",
+      "gap:12px",
+      "padding:28px 16px",
+      "text-align:center",
+      "min-height:120px",
+      "box-sizing:border-box",
+    ]);
+    const sp = document.createElement("span");
+    sp.className = "k2c-tpl-spinner";
+    sp.style.display = "inline-block";
+    const t1 = document.createElement("div");
+    t1.textContent = "Resolving pin counts…";
+    t1.style.cssText = cssJoin(["font-size:13px", "font-weight:600", `color:${"#334155"}`]);
+    const t2 = document.createElement("div");
+    t2.textContent =
+      "Templates appear here once each KiCad symbol is compared to this LCSC part. You can pick one then — no second load replacing the list.";
+    t2.style.cssText = cssJoin([
+      "font-size:12px",
+      `color:${"#64748b"}`,
+      "line-height:1.45",
+      "max-width:232px",
+    ]);
+    wrap.appendChild(sp);
+    wrap.appendChild(t1);
+    wrap.appendChild(t2);
+    list.appendChild(wrap);
+  }
+
+  /**
+   * @param {string} query
+   * @param {{ preserveSelectionKey?: string | null }} [opts]
+   *   If the same lib/name key is still visible after filter, keep that row selected (no duplicate preview fetch).
+   */
+  function filterList(query, opts = {}) {
     cancelTemplateHoverInteraction();
+    const preserveKey =
+      typeof opts.preserveSelectionKey === "string" && opts.preserveSelectionKey.length > 0
+        ? opts.preserveSelectionKey
+        : null;
     const q = (query || "").trim().toLowerCase();
     const pinCompatOnly = pinCompatFilterInput.checked;
     let afterPin = allItems;
@@ -5278,9 +5330,27 @@ async function openTemplateGallery(anchorButton, groupDiv, lcscId, state, galler
       row.addEventListener("click", () => selectItem(item, row));
       list.appendChild(row);
     });
-    const first = list.querySelector("button[role=option]");
-    if (first && first._galleryItem) {
-      selectItem(first._galleryItem, first);
+    let chosen = null;
+    let chosenItem = null;
+    if (preserveKey) {
+      for (const btn of list.querySelectorAll('button[role="option"]')) {
+        const gi = btn._galleryItem;
+        if (!gi) continue;
+        const k = `${gi.libPath}\n${gi.name}`;
+        if (k === preserveKey) {
+          chosen = btn;
+          chosenItem = gi;
+          break;
+        }
+      }
+    }
+    if (chosen && chosenItem) {
+      selectItem(chosenItem, chosen);
+    } else {
+      const first = list.querySelector('button[role="option"]');
+      if (first && first._galleryItem) {
+        selectItem(first._galleryItem, first);
+      }
     }
   }
 
@@ -5290,6 +5360,62 @@ async function openTemplateGallery(anchorButton, groupDiv, lcscId, state, galler
     loading: true,
   });
   refreshGalleryFootprintPadMap();
+
+  useBtn.addEventListener("click", () => {
+    if (!selectedItem) return;
+    const galleryPadToSymbolPin = readGalleryPadToSymbolMap();
+    closeTemplateGalleryModal();
+    void onTemplateSelected(anchorButton, lcscId, selectedItem.name, selectedItem.libPath, {
+      galleryPadToSymbolPin,
+      templatePreflightOverrides,
+    });
+  });
+
+  function filterListPreserveSelection() {
+    const pk =
+      selectedItem && selectedItem.libPath != null && selectedItem.name != null
+        ? `${selectedItem.libPath}\n${selectedItem.name}`
+        : null;
+    filterList(searchBox.value || "", { preserveSelectionKey: pk });
+  }
+  searchBox.addEventListener("input", () => filterListPreserveSelection());
+  searchBox.addEventListener("click", (e) => e.stopPropagation());
+  pinCompatFilterInput.addEventListener("change", () => filterListPreserveSelection());
+
+  body.appendChild(leftCol);
+  body.appendChild(centerCol);
+  body.appendChild(rightCol);
+  shell.appendChild(header);
+  shell.appendChild(statusBar);
+  shell.appendChild(body);
+  shell.appendChild(footer);
+  overlay.appendChild(shell);
+
+  function onEsc(e) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeTemplateGalleryModal();
+    }
+  }
+  overlay._easyeda2kicadGalleryEsc = onEsc;
+  document.addEventListener("keydown", onEsc, true);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) closeTemplateGalleryModal();
+  });
+
+  document.body.appendChild(overlay);
+
+  renderTemplateListAwaitingPins();
+  searchBox.disabled = true;
+  pinCompatFilterInput.disabled = true;
+  setSvgHost(symHost, null, "Waiting for template pin counts…", {
+    loading: true,
+    subtext: "The template list unlocks when the server finishes comparing pins.",
+  });
+  renderTemplatePinTable(pinTableScroll, { placeholder: "Waiting for pin data…" });
+  refreshGalleryFootprintPadMap();
+  updateGalleryStatusBar();
+
   void (async () => {
     try {
       const resp = await contentRpc("lcscFootprintPreview", { lcscId }, k2cRpc(2, 400));
@@ -5352,54 +5478,26 @@ async function openTemplateGallery(anchorButton, groupDiv, lcscId, state, galler
             template: e.template_pin_count,
           });
         }
-        filterList(searchBox.value || "");
       }
     } catch (_e) {
       dbg("templatesGalleryPinSummary", _e);
     } finally {
       loadTracks.pinSummary = true;
+      searchBox.disabled = false;
+      pinCompatFilterInput.disabled = false;
+      const pk =
+        selectedItem && selectedItem.libPath != null && selectedItem.name != null
+          ? `${selectedItem.libPath}\n${selectedItem.name}`
+          : null;
+      filterList(searchBox.value || "", { preserveSelectionKey: pk });
       updateGalleryStatusBar();
+      try {
+        searchBox.focus();
+      } catch (_fe) {
+        /* ignore */
+      }
     }
   })();
-
-  useBtn.addEventListener("click", () => {
-    if (!selectedItem) return;
-    const galleryPadToSymbolPin = readGalleryPadToSymbolMap();
-    closeTemplateGalleryModal();
-    void onTemplateSelected(anchorButton, lcscId, selectedItem.name, selectedItem.libPath, {
-      galleryPadToSymbolPin,
-      templatePreflightOverrides,
-    });
-  });
-
-  searchBox.addEventListener("input", () => filterList(searchBox.value));
-  searchBox.addEventListener("click", (e) => e.stopPropagation());
-  pinCompatFilterInput.addEventListener("change", () => filterList(searchBox.value || ""));
-
-  body.appendChild(leftCol);
-  body.appendChild(centerCol);
-  body.appendChild(rightCol);
-  shell.appendChild(header);
-  shell.appendChild(statusBar);
-  shell.appendChild(body);
-  shell.appendChild(footer);
-  overlay.appendChild(shell);
-
-  function onEsc(e) {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      closeTemplateGalleryModal();
-    }
-  }
-  overlay._easyeda2kicadGalleryEsc = onEsc;
-  document.addEventListener("keydown", onEsc, true);
-  overlay.addEventListener("click", (e) => {
-    if (e.target === overlay) closeTemplateGalleryModal();
-  });
-
-  document.body.appendChild(overlay);
-  filterList("");
-  searchBox.focus();
 }
 
 async function onTemplateSelected(button, lcscId, templateName, templateLibPath, flowOpts) {

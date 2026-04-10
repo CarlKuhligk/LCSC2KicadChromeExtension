@@ -67,6 +67,7 @@ class ConversionRequest:
     hide_pin_numbers: bool = False
     hide_pin_names: bool = False
     symbol_value_override: Optional[str] = None
+    symbol_value_param_key: Optional[str] = None
     symbol_params: Optional[dict] = None
     symbol_description: Optional[str] = None
     symbol_datasheet_url: Optional[str] = None
@@ -112,6 +113,7 @@ class ConversionRequest:
             hide_pin_numbers=payload.hide_pin_numbers,
             hide_pin_names=payload.hide_pin_names,
             symbol_value_override=payload.symbol_value_override,
+            symbol_value_param_key=payload.symbol_value_param_key,
             symbol_params=payload.symbol_params,
             symbol_description=payload.symbol_description,
             symbol_datasheet_url=payload.symbol_datasheet_url,
@@ -342,6 +344,7 @@ def _export_symbol_from_template(
         hide_pin_numbers=request.hide_pin_numbers,
         hide_pin_names=request.hide_pin_names,
         value_override=request.symbol_value_override,
+        value_param_key=request.symbol_value_param_key,
         symbol_params=request.symbol_params,
         symbol_description=request.symbol_description,
         symbol_datasheet_url=request.symbol_datasheet_url,
@@ -508,6 +511,7 @@ def run_conversion(
                     hide_pin_numbers=request.hide_pin_numbers,
                     hide_pin_names=request.hide_pin_names,
                     value_override=request.symbol_value_override,
+                    value_param_key=request.symbol_value_param_key,
                     symbol_params=request.symbol_params,
                     symbol_description=request.symbol_description,
                     symbol_datasheet_url=request.symbol_datasheet_url,
@@ -520,6 +524,7 @@ def run_conversion(
                         hide_pin_numbers=request.hide_pin_numbers,
                         hide_pin_names=request.hide_pin_names,
                         value_override=request.symbol_value_override,
+                        value_param_key=request.symbol_value_param_key,
                         symbol_params=request.symbol_params,
                         symbol_description=request.symbol_description,
                         symbol_datasheet_url=request.symbol_datasheet_url,

@@ -245,3 +245,13 @@ class TaskApiTest(unittest.TestCase):
         self.assertTrue(req.generate_symbol)
         self.assertTrue(req.generate_footprint)
         self.assertEqual(req.template_pin_map, {"1": "A"})
+        self.assertIsNone(req.symbol_value_param_key)
+
+        payload2 = TaskCreatePayload(
+            lcsc_id="C9998",
+            output_path="/tmp/lib2",
+            symbol=True,
+            symbol_value_param_key="Resistance",
+        )
+        req2 = ConversionRequest.from_task_create_payload(payload2)
+        self.assertEqual(req2.symbol_value_param_key, "Resistance")

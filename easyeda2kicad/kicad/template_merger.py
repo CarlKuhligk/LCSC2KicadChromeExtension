@@ -20,6 +20,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from easyeda2kicad.kicad.kicad_text_normalize import (
+    normalize_for_kicad_text,
+    normalize_property_key_for_match,
+)
 from easyeda2kicad.kicad.parameters_kicad_symbol import STANDARD_SYMBOL_PROPERTY_KEYS
 
 if TYPE_CHECKING:
@@ -74,6 +78,40 @@ def _replace_property_value(text: str, prop_name: str, new_value: str) -> str:
     safe = str(new_value).replace('"', "'")
     pattern = r'(\(property\s+"' + re.escape(prop_name) + r'"\s+)"[^"]*"'
     return re.sub(pattern, r'\g<1>"' + safe + '"', text)
+
+
+def _list_property_names(symbol_str: str) -> list[str]:
+    """Top-level property names in declaration order, unique."""
+    return list(dict.fromkeys(re.findall(r'\(property\s+"([^"]+)"', symbol_str)))
+
+
+def _rename_property_key(text: str, old_name: str, new_name: str) -> str:
+    """Rename the quoted key in ``(property "KEY" ...)`` declarations."""
+    if old_name == new_name:
+        return text
+    safe_new = new_name.replace("\\", "\\\\").replace('"', '\\"')
+    pattern = r'(\(property\s+")' + re.escape(old_name) + r'(")'
+    return re.sub(pattern, r"\g<1>" + safe_new + r"\g<2>", text)
+
+
+def _normalize_property_declaration_names(symbol_str: str) -> str:
+    """
+    Rewrite property names to KiCad-friendly Unicode (e.g. ℃ → °C) when unambiguous.
+    Skips a rename if the target name already exists on another property.
+    """
+    names = _list_property_names(symbol_str)
+    existing = set(names)
+    result = symbol_str
+    for name in names:
+        new_name = normalize_for_kicad_text(name)
+        if new_name == name:
+            continue
+        if new_name in existing:
+            continue
+        result = _rename_property_key(result, name, new_name)
+        existing.discard(name)
+        existing.add(new_name)
+    return result
 
 
 def _find_pin_blocks(text: str) -> list[tuple[str, str, int, int]]:
@@ -151,6 +189,13 @@ class TemplateMerger:
                     continue
                 if v is not None and str(v).strip():
                     vmap[k] = str(v)
+        # Value source param is omitted from symbol_params in the extension so Value is not
+        # duplicated — but a template may define a second field with the same name as that
+        # parameter (e.g. label for temperature-related resistance); map it to the same text.
+        if ki_info.value_param_key and value:
+            k = str(ki_info.value_param_key).strip()
+            if k and k not in STANDARD_SYMBOL_PROPERTY_KEYS:
+                vmap[k] = value
         return vmap
 
     @staticmethod
@@ -293,16 +338,36 @@ class TemplateMerger:
 
         result = template_sym_str
 
-        # -- 2. Update existing property values in-place ---------------------
-        for prop_name, new_val in value_map.items():
-            if new_val:  # skip empty values — preserve template placeholders
-                result = _replace_property_value(result, prop_name, new_val)
+        # -- 2. Update property values (fuzzy key match: LCSC vs template) ---
+        template_prop_names = _list_property_names(result)
+        norm_to_tpl: dict[str, list[str]] = {}
+        for t in template_prop_names:
+            norm_to_tpl.setdefault(normalize_property_key_for_match(t), []).append(t)
 
-        # -- 3. Discover which properties are already in the template --------
-        existing_props = set(re.findall(r'\(property\s+"([^"]+)"', result))
+        initial_template_norms = {
+            normalize_property_key_for_match(t) for t in template_prop_names
+        }
+
+        for prop_name, new_val in value_map.items():
+            if not new_val:
+                continue
+            val_out = normalize_for_kicad_text(str(new_val))
+            nk = normalize_property_key_for_match(prop_name)
+            candidates = list(norm_to_tpl.get(nk, ()))
+            if not candidates and prop_name in template_prop_names:
+                candidates = [prop_name]
+            for tpl in candidates:
+                result = _replace_property_value(result, tpl, val_out)
+
+        # -- 3. Prefer °C / °F spellings in property names (font coverage) ---
+        result = _normalize_property_declaration_names(result)
 
         # -- 4. Append extra LCSC fields not already present as hidden props -
-        extra = [(k, v) for k, v in value_map.items() if k not in existing_props and v]
+        extra = [
+            (normalize_for_kicad_text(k), normalize_for_kicad_text(v))
+            for k, v in value_map.items()
+            if v and normalize_property_key_for_match(k) not in initial_template_norms
+        ]
         if extra:
             extra_block = (
                 "\n"

@@ -7,6 +7,10 @@ from easyeda2kicad.kicad.parameters_kicad_symbol import (
     KiSymbolInfo,
     KiSymbolPin,
 )
+from easyeda2kicad.kicad.kicad_text_normalize import (
+    normalize_for_kicad_text,
+    normalize_property_key_for_match,
+)
 from easyeda2kicad.kicad.template_merger import (
     TemplateMerger,
     _find_pin_blocks,
@@ -27,7 +31,107 @@ def _make_pin(number: str, name: str = "", x: float = 0, y: float = 0) -> KiSymb
     )
 
 
+class TestKicadTextNormalize(unittest.TestCase):
+    def test_celsius_aliases_match(self) -> None:
+        """℃ (U+2103) vs °C (U+00B0 + C) must compare equal for template merge."""
+        tpl = "B Constant (25\u2103/50\u2103)"
+        lcsc = "B Constant (25\u00b0C/50\u00b0C)"
+        self.assertEqual(
+            normalize_property_key_for_match(tpl),
+            normalize_property_key_for_match(lcsc),
+        )
+
+    def test_celsius_normalized_for_kicad(self) -> None:
+        self.assertEqual(normalize_for_kicad_text("25\u2103"), "25\u00b0C")
+
+
+class TestMergePropertyFuzzyKeys(unittest.TestCase):
+    def test_lcsc_degree_c_matches_template_single_char_celsius(self) -> None:
+        """LCSC uses °C; KiCad template field was saved with ℃ — value still merges."""
+        # Template field label uses compatibility single-point ℃ (often tofu in KiCad).
+        b_label = "B Constant (25\u2103/50\u2103)"
+        tpl = f'''
+(symbol "TplMerge"
+  (property "{b_label}" "—"
+    (at 0 0 0)
+    (effects (font (size 1.27 1.27))))
+  (symbol "TplMerge_0_1"
+    (pin passive line (at 0 0 0) (length 1.27) (name "1" (effects)) (number "1" (effects)))
+  )
+)
+'''
+        info = KiSymbolInfo(
+            name="NTC_10k",
+            prefix="R",
+            package="Lib:R_0402",
+            manufacturer="X",
+            datasheet="https://example.com/d.pdf",
+            lcsc_id="C52155382",
+            jlc_id="",
+            symbol_params={"B Constant (25\u00b0C/50\u00b0C)": "4250K"},
+        )
+        merger = TemplateMerger()
+        out = merger.merge(tpl, "TplMerge", info, source_pins=[_make_pin("1")])
+        self.assertIn('"4250K"', out)
+        self.assertNotIn("—", out)
+        # Property name rewritten to °C spelling for font coverage
+        self.assertIn('property "B Constant (25\u00b0C/50\u00b0C)"', out)
+        self.assertNotIn("\u2103", out)
+
+    def test_merge_fills_named_field_matching_value_param_key(self) -> None:
+        """Second property named like the Value source param gets the same text as Value."""
+        tpl = '''
+(symbol "TplDup"
+  (property "Value" "PLACE_V"
+    (at 0 0 0)
+    (effects (font (size 1.27 1.27))))
+  (property "Resistance" "PLACE_R"
+    (at 0 0 0)
+    (effects (font (size 1.27 1.27))))
+  (symbol "TplDup_0_1"
+    (pin passive line (at 0 0 0) (length 1.27) (name "1" (effects)) (number "1" (effects)))
+  )
+)
+'''
+        info = KiSymbolInfo(
+            name="R_10k",
+            prefix="R",
+            package="Lib:R_0402",
+            manufacturer="X",
+            datasheet="https://example.com/d.pdf",
+            lcsc_id="C1",
+            jlc_id="",
+            value_override="10k",
+            value_param_key="Resistance",
+            symbol_params={},
+        )
+        merger = TemplateMerger()
+        out = merger.merge(tpl, "TplDup", info, source_pins=[_make_pin("1")])
+        self.assertIn('(property "Value" "10k"', out)
+        self.assertIn('(property "Resistance" "10k"', out)
+        self.assertNotIn("PLACE_", out)
+
+
 class TestBuildValueMap(unittest.TestCase):
+    def test_value_param_key_duplicates_value_for_second_template_field(self) -> None:
+        """Extension omits valueParam from symbol_params; template fields named like that param still merge."""
+        info = KiSymbolInfo(
+            name="NTC_10k",
+            prefix="R",
+            package="Lib:R_0402",
+            manufacturer="X",
+            datasheet="https://example.com/d.pdf",
+            lcsc_id="C52155382",
+            jlc_id="",
+            value_override="10k",
+            value_param_key="Resistance",
+            symbol_params={"B Constant (25°C/50°C)": "4250K"},
+        )
+        vmap = TemplateMerger._build_value_map(info)
+        self.assertEqual(vmap["Value"], "10k")
+        self.assertEqual(vmap["Resistance"], "10k")
+        self.assertEqual(vmap["B Constant (25°C/50°C)"], "4250K")
+
     def test_symbol_params_do_not_overwrite_datasheet_url(self) -> None:
         """LCSC param table 'Datasheet' is filename text; KiCad field must stay the real URL."""
         info = KiSymbolInfo(

@@ -147,6 +147,8 @@ class KiSymbolInfo:
     hide_pin_numbers: bool = False
     hide_pin_names: bool = False
     value_override: Optional[str] = None
+    #: LCSC param name used for the Value field (extension omits this key from ``symbol_params``).
+    value_param_key: Optional[str] = None
     symbol_params: Optional[dict] = None
     symbol_description: Optional[str] = None
 

@@ -1317,6 +1317,9 @@ async function submitJob(payload) {
     hide_pin_numbers: hidePinNumbers,
     hide_pin_names: hidePinNames,
     ...(symbolValueOverride ? { symbol_value_override: symbolValueOverride } : {}),
+    ...(valueParam && mapParamKey(valueParam)
+      ? { symbol_value_param_key: mapParamKey(valueParam) }
+      : {}),
     ...(symbolParams && Object.keys(symbolParams).length > 0 ? { symbol_params: symbolParams } : {}),
     ...(payload.description ? { symbol_description: payload.description } : {}),
     ...(payload.datasheetUrl ? { symbol_datasheet_url: payload.datasheetUrl } : {}),

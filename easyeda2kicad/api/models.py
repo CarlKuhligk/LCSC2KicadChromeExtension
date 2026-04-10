@@ -32,6 +32,13 @@ class TaskCreatePayload(BaseModel):
     symbol_value_override: Optional[str] = Field(
         None, description="Override symbol Value property (e.g. resistance value from component page)."
     )
+    symbol_value_param_key: Optional[str] = Field(
+        None,
+        description=(
+            "LCSC parameter name used for Value (mapped key). "
+            "Template symbols can repeat this name as a separate field; it receives the same value."
+        ),
+    )
     symbol_params: Optional[Dict[str, str]] = Field(
         None, description="Additional component parameters from LCSC page to include as symbol properties."
     )
