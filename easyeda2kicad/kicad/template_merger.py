@@ -4,6 +4,7 @@ Template-based KiCad symbol generation.
 Merges LCSC component metadata into a user-defined KiCad template symbol,
 preserving the template's graphical elements (pins, body shape) and all
 property positions / font sizes / visibility — only field *values* are updated.
+The template's **Reference** prefix (e.g. R, C, D) is kept; EasyEDA's prefix is not applied.
 
 Pin table is driven by the EasyEDA model: missing pins are added at (0,0),
 template-only pins are removed, so the final symbol always matches EasyEDA pin set.
@@ -21,8 +22,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from easyeda2kicad.kicad.kicad_text_normalize import (
+    lcsc_param_matches_any_template_field,
     normalize_for_kicad_text,
     normalize_property_key_for_match,
+    normalized_match_keys_for_lcsc_param,
 )
 from easyeda2kicad.kicad.parameters_kicad_symbol import STANDARD_SYMBOL_PROPERTY_KEYS
 
@@ -169,8 +172,9 @@ class TemplateMerger:
             if (ki_info.value_override and ki_info.value_override != ki_info.name)
             else ""
         )
+        # Do not set "Reference" from EasyEDA's prefix (often "U"); keep the template symbol's
+        # Reference field (e.g. R, C, L, D) so schematic annotation matches the template library.
         vmap: dict[str, str] = {
-            "Reference": ki_info.prefix or "",
             "Value": value,
             "Footprint": ki_info.package or "",
             "Datasheet": ki_info.datasheet or "",
@@ -351,8 +355,13 @@ class TemplateMerger:
             if not new_val:
                 continue
             val_out = normalize_for_kicad_text(str(new_val))
-            nk = normalize_property_key_for_match(prop_name)
-            candidates = list(norm_to_tpl.get(nk, ()))
+            candidates: list[str] = []
+            seen_tpl: set[str] = set()
+            for nk in normalized_match_keys_for_lcsc_param(prop_name):
+                for tpl in norm_to_tpl.get(nk, ()):
+                    if tpl not in seen_tpl:
+                        seen_tpl.add(tpl)
+                        candidates.append(tpl)
             if not candidates and prop_name in template_prop_names:
                 candidates = [prop_name]
             for tpl in candidates:
@@ -365,7 +374,7 @@ class TemplateMerger:
         extra = [
             (normalize_for_kicad_text(k), normalize_for_kicad_text(v))
             for k, v in value_map.items()
-            if v and normalize_property_key_for_match(k) not in initial_template_norms
+            if v and not lcsc_param_matches_any_template_field(k, initial_template_norms)
         ]
         if extra:
             extra_block = (

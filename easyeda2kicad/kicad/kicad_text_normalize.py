@@ -51,3 +51,52 @@ def normalize_property_key_for_match(s: str) -> str:
     t = normalize_for_kicad_text(s)
     t = re.sub(r"\s+", " ", t.strip())
     return t.casefold()
+
+
+# Reverse of ``chrome_extension/background.js`` ``LCSC_PARAMS_MAP``: the extension sends
+# mapped (canonical) keys in ``symbol_params``, but KiCad templates often use the original
+# LCSC page wording (e.g. "Temperature Coefficient" vs "Temp. Coefficient").
+LCSC_CANONICAL_TO_PAGE_LABEL_ALIASES: dict[str, tuple[str, ...]] = {
+    "Temp. Coefficient": ("Temperature Coefficient",),
+    "Operating Temp.": ("Operating Temperature",),
+    "Storage Temp.": ("Storage Temperature",),
+    "Power": (
+        "Power(Watts)",
+        "Rated Power",
+        "Power Dissipation",
+        "Rated Power (Watts)",
+    ),
+    "Tolerance": ("Tolerance (±)", "Resistance Tolerance", "Capacitance Tolerance"),
+    "Voltage Rating": (
+        "Voltage Rating - DC",
+        "Voltage - Rated",
+        "Voltage Rating DC",
+        "Rated Voltage",
+        "Voltage Rating (Max)",
+    ),
+    "DCR": ("DC Resistance (DCR) (Max)", "DC Resistance"),
+    "Sat. Current": ("Saturation Current (Isat)", "Saturation Current"),
+    "Self Res. Freq.": ("Self Resonant Frequency",),
+    "MPN": ("Manufacturer Part Number",),
+    "Mounting": ("Mounting Type",),
+}
+
+
+def normalized_match_keys_for_lcsc_param(prop_name: str) -> frozenset[str]:
+    """
+    Normalized property-key forms to try when matching a ``symbol_params`` key to template
+    ``(property "…")`` names (canonical key plus LCSC page-label aliases).
+    """
+    name = prop_name.strip()
+    keys: set[str] = {normalize_property_key_for_match(name)}
+    for alt in LCSC_CANONICAL_TO_PAGE_LABEL_ALIASES.get(name, ()):
+        keys.add(normalize_property_key_for_match(alt))
+    return frozenset(keys)
+
+
+def lcsc_param_matches_any_template_field(
+    prop_name: str,
+    initial_template_norms: set[str],
+) -> bool:
+    """Whether this LCSC param key corresponds to some template field name (including aliases)."""
+    return bool(initial_template_norms & set(normalized_match_keys_for_lcsc_param(prop_name)))

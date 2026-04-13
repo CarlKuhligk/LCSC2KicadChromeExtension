@@ -556,7 +556,7 @@ function applyState(snapshot = {}) {
     state.settings.projectRelativePath = snapshot.projectRelativePath;
   }
   if (snapshot.categorySettings && typeof snapshot.categorySettings === "object") {
-    state.settings.categorySettings = { ...snapshot.categorySettings };
+    state.settings.categorySettings = dedupeCategorySettings({ ...snapshot.categorySettings });
   }
   if (Array.isArray(snapshot.templateSymbols)) {
     state.templateSymbols = snapshot.templateSymbols.slice();
@@ -973,22 +973,76 @@ function renderSettings() {
 
 function renderCategoryTable() {
   if (!elements.categoryList) return;
-  const cats = state.settings.categorySettings || {};
+  const raw = state.settings.categorySettings || {};
+  const cats = dedupeCategorySettings(raw);
+  if (JSON.stringify(cats) !== JSON.stringify(raw)) {
+    state.settings.categorySettings = cats;
+    sendMessage("updateSettings", { categorySettings: cats }).catch((err) =>
+      console.warn("Failed to persist deduplicated categories", err),
+    );
+  }
   const json = JSON.stringify(cats);
   if (json === _lastCategorySettingsJson) return; // unchanged — don't disturb open accordions
   _lastCategorySettingsJson = json;
   elements.categoryList.innerHTML = "";
-  Object.entries(cats).forEach(([category, cfg]) => {
-    elements.categoryList.appendChild(buildCategoryItem(category, cfg));
+  Object.entries(cats)
+    .sort(([a], [b]) => a.localeCompare(b, undefined, { sensitivity: "base" }))
+    .forEach(([category, cfg]) => {
+      elements.categoryList.appendChild(buildCategoryItem(category, cfg));
+    });
+}
+
+/**
+ * Renders a wrapping breadcrumb trail for the LCSC category path (full path visible without expanding).
+ */
+function syncCatPathBreadcrumbs(item) {
+  const wrap = item.querySelector(".cat-path-breadcrumbs");
+  if (!wrap) return;
+  const raw = item.querySelector("[data-field='category']")?.value?.trim() || "";
+  const norm = normalizeCategoryPath(raw);
+  wrap.replaceChildren();
+  if (!norm) {
+    wrap.title = "";
+    const ph = document.createElement("span");
+    ph.className = "cat-path-placeholder";
+    ph.textContent = "Add LCSC category path…";
+    wrap.appendChild(ph);
+    return;
+  }
+  wrap.title = norm;
+  const parts = norm.split("/").filter(Boolean);
+  parts.forEach((seg, i) => {
+    if (i > 0) {
+      const sep = document.createElement("span");
+      sep.className = "cat-path-sep";
+      sep.textContent = "/";
+      wrap.appendChild(sep);
+    }
+    const span = document.createElement("span");
+    span.className = "cat-path-segment";
+    span.textContent = seg;
+    wrap.appendChild(span);
   });
 }
 
 /** After expanding a category row, scroll so the full block is visible inside #categories-card-body. */
 function scrollCategoryItemIntoView(item) {
   if (!item) return;
+  const scroller = document.getElementById("categories-card-body");
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
-      item.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+      if (scroller?.contains(item)) {
+        const pad = 8;
+        const cr = scroller.getBoundingClientRect();
+        const ir = item.getBoundingClientRect();
+        if (ir.top < cr.top + pad) {
+          scroller.scrollTop += ir.top - cr.top - pad;
+        } else if (ir.bottom > cr.bottom - pad) {
+          scroller.scrollTop += ir.bottom - cr.bottom + pad;
+        }
+      } else {
+        item.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+      }
     });
   });
 }
@@ -1006,20 +1060,49 @@ function buildCategoryItem(category, cfg, openByDefault = false) {
   const headerLeft = document.createElement("div");
   headerLeft.className = "cat-header-left";
 
-  const nameInput = document.createElement("input");
-  nameInput.type = "text";
+  const pathBreadcrumbs = document.createElement("div");
+  pathBreadcrumbs.className = "cat-path-breadcrumbs";
+  pathBreadcrumbs.setAttribute("role", "group");
+  pathBreadcrumbs.setAttribute(
+    "aria-label",
+    category ? `Category path: ${normalizeCategoryPath(category)}` : "Category path",
+  );
+
+  const nameInput = document.createElement("textarea");
   nameInput.className = "cat-name-input";
+  nameInput.rows = 2;
   nameInput.value = category;
-  nameInput.placeholder = "Category name…";
+  nameInput.placeholder = "Passives/Resistors/…";
   nameInput.dataset.field = "category";
-  nameInput.addEventListener("input", debounce(() => {
-    updateCatSummary(item);
-    saveCategoryTableState();
-  }, 400));
+  nameInput.setAttribute("aria-label", "LCSC category path (slash-separated)");
+  const fitCategoryPathTextarea = () => {
+    if (item.dataset.open !== "1") return;
+    nameInput.style.height = "auto";
+    nameInput.style.height = `${Math.max(nameInput.scrollHeight, 40)}px`;
+  };
+
+  nameInput.addEventListener("input", () => {
+    syncCatPathBreadcrumbs(item);
+    pathBreadcrumbs.setAttribute(
+      "aria-label",
+      nameInput.value.trim()
+        ? `Category path: ${normalizeCategoryPath(nameInput.value)}`
+        : "Category path",
+    );
+    fitCategoryPathTextarea();
+  });
+  nameInput.addEventListener(
+    "input",
+    debounce(() => {
+      updateCatSummary(item);
+      saveCategoryTableState();
+    }, 400),
+  );
 
   const summaryRow = document.createElement("div");
   summaryRow.className = "cat-summary";
 
+  headerLeft.appendChild(pathBreadcrumbs);
   headerLeft.appendChild(nameInput);
   headerLeft.appendChild(summaryRow);
 
@@ -1041,7 +1124,7 @@ function buildCategoryItem(category, cfg, openByDefault = false) {
   removeBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     e.preventDefault();
-    const rawName = nameInput.value.trim();
+    const rawName = String(nameInput.value || "").trim();
     openPopupConfirm({
       title: "Remove category",
       message: rawName
@@ -1064,7 +1147,7 @@ function buildCategoryItem(category, cfg, openByDefault = false) {
   header.appendChild(headerRight);
 
   header.addEventListener("click", (e) => {
-    // When already open, clicking inside the nameInput just focuses it for editing — don't collapse
+    // When already open, clicking inside the path editor focuses it — don't collapse
     if (item.dataset.open === "1" && nameInput.contains(e.target)) {
       nameInput.focus();
       return;
@@ -1074,7 +1157,17 @@ function buildCategoryItem(category, cfg, openByDefault = false) {
     body.hidden = wasOpen;
     chevron.style.transform = wasOpen ? "" : "rotate(-90deg)";
     if (!wasOpen) {
-      requestAnimationFrame(() => nameInput.select());
+      requestAnimationFrame(() => {
+        nameInput.style.height = "auto";
+        nameInput.style.height = `${Math.max(nameInput.scrollHeight, 40)}px`;
+        nameInput.focus();
+        const len = nameInput.value.length;
+        try {
+          nameInput.setSelectionRange(len, len);
+        } catch (_e) {
+          /* ignore */
+        }
+      });
       scrollCategoryItemIntoView(item);
     }
   });
@@ -1126,8 +1219,15 @@ function buildCategoryItem(category, cfg, openByDefault = false) {
   item.appendChild(header);
   item.appendChild(body);
 
-  // Populate summary chips after DOM is ready
-  requestAnimationFrame(() => updateCatSummary(item));
+  // Populate summary chips + path breadcrumbs after DOM is ready
+  requestAnimationFrame(() => {
+    syncCatPathBreadcrumbs(item);
+    updateCatSummary(item);
+    if (item.dataset.open === "1") {
+      nameInput.style.height = "auto";
+      nameInput.style.height = `${Math.max(nameInput.scrollHeight, 40)}px`;
+    }
+  });
   return item;
 }
 
@@ -1166,9 +1266,9 @@ function updateCatSummary(item) {
   if (!summaryRow) return;
   summaryRow.innerHTML = "";
 
-  const valueParam = item.querySelector("input[data-field='valueParam']")?.value?.trim();
-  const hideNum = item.querySelector("input[data-field='hidePinNumbers']")?.checked;
-  const hideName = item.querySelector("input[data-field='hidePinNames']")?.checked;
+  const valueParam = item.querySelector("[data-field='valueParam']")?.value?.trim();
+  const hideNum = item.querySelector("[data-field='hidePinNumbers']")?.checked;
+  const hideName = item.querySelector("[data-field='hidePinNames']")?.checked;
 
   if (valueParam) {
     const chip = document.createElement("span");
@@ -1188,35 +1288,55 @@ function addCategoryRow() {
   if (!elements.categoryList) return;
   const item = buildCategoryItem("", { hidePinNumbers: false, hidePinNames: false, valueParam: "" }, true);
   elements.categoryList.appendChild(item);
-  item.querySelector("input[data-field='category']")?.focus();
+  item.querySelector("[data-field='category']")?.focus();
   scrollCategoryItemIntoView(item);
 }
 
 function readCategoryTableState() {
   if (!elements.categoryList) return {};
-  const result = {};
+  /** @type {Map<string, { displayKey: string, cfg: object }>} */
+  const byCanon = new Map();
   Array.from(elements.categoryList.querySelectorAll(".cat-item")).forEach((item) => {
-    const category = normalizeCategoryPath(
-      item.querySelector("input[data-field='category']")?.value?.trim() || "",
-    );
-    if (!category) return;
-    result[category] = {
-      hidePinNumbers: Boolean(item.querySelector("input[data-field='hidePinNumbers']")?.checked),
-      hidePinNames: Boolean(item.querySelector("input[data-field='hidePinNames']")?.checked),
-      valueParam: item.querySelector("input[data-field='valueParam']")?.value?.trim() || null,
+    const raw = item.querySelector("[data-field='category']")?.value?.trim() || "";
+    const displayKey = normalizeCategoryPath(raw);
+    const canon = canonicalCategoryKey(raw);
+    if (!canon) return;
+    const cfg = {
+      hidePinNumbers: Boolean(item.querySelector("[data-field='hidePinNumbers']")?.checked),
+      hidePinNames: Boolean(item.querySelector("[data-field='hidePinNames']")?.checked),
+      valueParam: item.querySelector("[data-field='valueParam']")?.value?.trim() || null,
     };
+    const prev = byCanon.get(canon);
+    if (!prev) {
+      byCanon.set(canon, { displayKey, cfg });
+    } else {
+      prev.cfg = mergeCategoryConfig(prev.cfg, cfg);
+      if (displayKey.length > prev.displayKey.length) {
+        prev.displayKey = displayKey;
+      }
+    }
   });
-  return result;
+  const merged = {};
+  for (const { displayKey, cfg } of byCanon.values()) {
+    merged[displayKey] = cfg;
+  }
+  return dedupeCategorySettings(merged);
 }
 
 function saveCategoryTableState() {
+  const rowCount = elements.categoryList?.querySelectorAll(".cat-item").length ?? 0;
   const categorySettings = readCategoryTableState();
+  const keyCount = Object.keys(categorySettings).length;
   state.settings.categorySettings = categorySettings;
   // Pre-mark as rendered so the echoed state broadcast doesn't collapse open accordions
   _lastCategorySettingsJson = JSON.stringify(categorySettings);
   sendMessage("updateSettings", { categorySettings })
     .then(() => {})
     .catch((error) => console.warn("Failed to save category settings", error));
+  if (rowCount > keyCount) {
+    _lastCategorySettingsJson = null;
+    renderCategoryTable();
+  }
 }
 
 function setActiveTab(tab, options = {}) {

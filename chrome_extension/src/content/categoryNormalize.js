@@ -6,9 +6,14 @@
  */
 export function normalizeCategoryPath(raw) {
   if (raw == null || typeof raw !== "string") return "";
-  return raw
+  let s = String(raw).replace(/\\/g, "/");
+  s = s.replace(/\/+/g, "/").trim();
+  if (typeof s.normalize === "function") {
+    s = s.normalize("NFC");
+  }
+  return s
     .split("/")
-    .map((s) => s.trim())
+    .map((seg) => seg.trim())
     .filter(Boolean)
     .join("/");
 }

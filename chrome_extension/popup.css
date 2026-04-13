@@ -350,16 +350,36 @@ html[data-theme="dark"] {
   --toast-warning-border: var(--msg-warning-border);
 }
 
+/*
+ * Extension popups do not give html/body a reliable percentage basis: `height: 100%` often
+ * resolves to ~0, collapsing flex layouts to a thin strip. Use min-height + flex fill instead.
+ */
+html {
+  display: flex;
+  flex-direction: column;
+  min-height: 480px;
+  max-height: 600px;
+  height: auto;
+}
+
 html,
 body {
   font-family: "Inter", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, "Roboto", sans-serif;
   min-width: 380px;
   background: var(--page-bg);
   color: var(--text-primary);
-  height: fit-content;
   user-select: none;
+}
+
+body {
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  min-height: 480px;
   max-height: 600px;
+  margin: 0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 ::-webkit-scrollbar {
@@ -384,6 +404,12 @@ body {
 #app {
   padding-top: 1rem;
   padding-bottom: 0.75rem;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 .card,
@@ -531,6 +557,14 @@ html[data-theme="dark"] .modal-content {
 
 :is(.card, .modal-content) .form-control::placeholder {
   color: var(--text-muted);
+}
+
+#app > header.app-header {
+  flex-shrink: 0;
+}
+
+#connection-hint {
+  flex-shrink: 0;
 }
 
 .app-header {
@@ -683,6 +717,7 @@ html[data-theme="light"] .library-status-pill--active .badge-online {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.5rem;
+  flex-shrink: 0;
 }
 
 .tab-button {
@@ -711,11 +746,20 @@ html[data-theme="light"] .library-status-pill--active .badge-online {
 }
 
 .tab-panel.active {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
 }
 
 #app main {
   padding-bottom: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .library-panel-toolbar {
@@ -763,18 +807,20 @@ html[data-theme="light"] .library-status-pill--active .badge-online {
   min-width: 0;
 }
 
-:is(#tab-panel-libraries, #tab-panel-categories) .card {
+:is(#tab-panel-libraries, #tab-panel-categories, #tab-panel-settings) .card {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
   border: none;
   box-shadow: none;
   background: transparent;
   overflow: visible;
 }
 
-:is(#tab-panel-libraries, #tab-panel-categories) .card-body {
-  flex: 1;
+:is(#tab-panel-libraries, #tab-panel-categories, #tab-panel-settings) .card-body {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -784,10 +830,79 @@ html[data-theme="light"] .library-status-pill--active .badge-online {
 }
 
 #library-card-body,
-#categories-card-body {
-  max-height: 460px;
+#categories-card-body,
+#settings-card-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
   overflow-x: hidden;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Categories tab: give the list a stable footprint so rows stay readable (not a thin strip). */
+#tab-panel-categories .library-panel-section {
+  min-height: 0;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  /* Keep path text and expanded row chrome inside the rounded panel */
+  overflow-x: hidden;
+}
+
+#tab-panel-categories .library-list-wrap {
+  flex: 1 1 auto;
+  min-height: 220px;
+  min-width: 0;
+  max-width: 100%;
+  margin-top: 0.5rem;
+  padding-top: 0.65rem;
+  overflow-x: hidden;
+}
+
+#tab-panel-categories #category-list {
+  gap: 0.45rem;
+  min-width: 0;
+  max-width: 100%;
+}
+
+#tab-panel-categories .cat-item {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  border-width: 1px;
+  border-color: var(--surface-border-strong);
+  box-shadow: var(--library-entry-shadow);
+  background: var(--surface-base);
+}
+
+#tab-panel-categories .cat-header {
+  min-height: 2.5rem;
+  min-width: 0;
+}
+
+#tab-panel-categories .cat-name-input {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+#tab-panel-categories .cat-body {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+#tab-panel-categories .cat-field-stack {
+  max-width: 100%;
+  align-self: stretch;
+}
+
+#settings-card-body {
+  border-radius: 0;
 }
 
 .library-list-wrap {
@@ -798,26 +913,6 @@ html[data-theme="light"] .library-status-pill--active .badge-online {
   min-height: 0;
   display: flex;
   flex-direction: column;
-}
-
-#tab-panel-settings .card {
-  border: none;
-  box-shadow: none;
-  background: transparent;
-  overflow: visible;
-}
-
-#tab-panel-settings .card-body {
-  background: transparent;
-  box-shadow: none;
-  padding: 0.15rem 0 0;
-}
-
-#settings-card-body {
-  max-height: 460px;
-  overflow-y: auto;
-  overflow-x: hidden;
-  border-radius: 0;
 }
 
 .settings-form {
@@ -1838,7 +1933,44 @@ html[data-theme="dark"] #toast-container .toast .btn-close {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 6px;
+}
+
+/* Full LCSC path as wrapping segments — visible while row is collapsed (no click needed). */
+.cat-path-breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  align-content: flex-start;
+  gap: 0.12rem 0.2rem;
+  line-height: 1.45;
+  width: 100%;
+  min-width: 0;
+}
+
+.cat-path-segment {
+  color: var(--text-primary);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.cat-path-sep {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  opacity: 0.72;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.cat-path-placeholder {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  font-style: italic;
+  font-weight: 500;
 }
 
 .cat-header-right {
@@ -1846,6 +1978,13 @@ html[data-theme="dark"] #toast-container .toast .btn-close {
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
+}
+
+textarea.cat-name-input {
+  font-family: inherit;
+  resize: none;
+  min-height: 2.65rem;
+  line-height: 1.35;
 }
 
 .cat-name-input {
@@ -1862,14 +2001,22 @@ html[data-theme="dark"] #toast-container .toast .btn-close {
 
 .cat-name-input::placeholder { color: var(--text-muted); font-weight: 400; }
 
+/* Collapsed: path is shown only as wrapping breadcrumbs; raw editor hidden */
+.cat-item[data-open="0"] .cat-name-input {
+  display: none !important;
+}
+
 /* Show a visible editing field when expanded */
 .cat-item[data-open="1"] .cat-name-input {
+  display: block;
   background: var(--accent-muted);
   border: 1px solid var(--accent-border);
   border-radius: 5px;
-  padding: 2px 7px;
-  margin-left: -7px;
-  width: calc(100% + 7px);
+  padding: 0.35rem 0.5rem;
+  margin-left: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .cat-summary {
@@ -1878,6 +2025,8 @@ html[data-theme="dark"] #toast-container .toast .btn-close {
   gap: 4px;
   flex-wrap: wrap;
   min-height: 0;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .cat-chip {

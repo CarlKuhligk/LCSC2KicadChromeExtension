@@ -4,6 +4,7 @@ import unittest
 from easyeda2kicad.kicad.kicad_text_normalize import (
     normalize_for_kicad_text,
     normalize_property_key_for_match,
+    normalized_match_keys_for_lcsc_param,
 )
 from easyeda2kicad.kicad.parameters_kicad_symbol import (
     KiPinStyle,
@@ -32,6 +33,14 @@ def _make_pin(number: str, name: str = "", x: float = 0, y: float = 0) -> KiSymb
 
 
 class TestKicadTextNormalize(unittest.TestCase):
+    def test_lcsc_canonical_matches_page_label_alias(self) -> None:
+        """Extension maps 'Temperature Coefficient' → 'Temp. Coefficient' in symbol_params."""
+        canon_norm = normalize_property_key_for_match("Temp. Coefficient")
+        page_norm = normalize_property_key_for_match("Temperature Coefficient")
+        keys = normalized_match_keys_for_lcsc_param("Temp. Coefficient")
+        self.assertIn(canon_norm, keys)
+        self.assertIn(page_norm, keys)
+
     def test_celsius_aliases_match(self) -> None:
         """℃ (U+2103) vs °C (U+00B0 + C) must compare equal for template merge."""
         tpl = "B Constant (25\u2103/50\u2103)"
@@ -46,6 +55,37 @@ class TestKicadTextNormalize(unittest.TestCase):
 
 
 class TestMergePropertyFuzzyKeys(unittest.TestCase):
+    def test_merge_keeps_template_reference_not_easyeda_prefix(self) -> None:
+        """EasyEDA often uses prefix U; template library should keep R/C/D etc. from the .kicad_sym."""
+        tpl = '''
+(symbol "TplR"
+  (property "Reference" "R"
+    (at 0 0 0)
+    (effects (font (size 1.27 1.27))))
+  (property "Value" "TPL_V"
+    (at 0 0 0)
+    (effects (font (size 1.27 1.27))))
+  (symbol "TplR_0_1"
+    (pin passive line (at 0 0 0) (length 1.27) (name "1" (effects)) (number "1" (effects)))
+    (pin passive line (at 0 2.54 0) (length 1.27) (name "2" (effects)) (number "2" (effects)))
+  )
+)
+'''
+        info = KiSymbolInfo(
+            name="R_1k",
+            prefix="U",
+            package="Lib:R_0603",
+            manufacturer="",
+            datasheet="",
+            lcsc_id="C123",
+            jlc_id="",
+            value_override="1k",
+        )
+        merger = TemplateMerger()
+        out = merger.merge(tpl, "TplR", info, source_pins=[_make_pin("1"), _make_pin("2")])
+        self.assertRegex(out, r'\(property\s+"Reference"\s+"R"')
+        self.assertNotRegex(out, r'\(property\s+"Reference"\s+"U"')
+
     def test_lcsc_degree_c_matches_template_single_char_celsius(self) -> None:
         """LCSC uses °C; KiCad template field was saved with ℃ — value still merges."""
         # Template field label uses compatibility single-point ℃ (often tofu in KiCad).
@@ -110,6 +150,36 @@ class TestMergePropertyFuzzyKeys(unittest.TestCase):
         self.assertIn('(property "Value" "10k"', out)
         self.assertIn('(property "Resistance" "10k"', out)
         self.assertNotIn("PLACE_", out)
+
+    def test_merge_maps_temp_coefficient_canonical_to_page_label_field(self) -> None:
+        """symbol_params key 'Temp. Coefficient' fills a template field 'Temperature Coefficient'."""
+        tpl = '''
+(symbol "TplTC"
+  (property "Value" "x"
+    (at 0 0 0)
+    (effects (font (size 1.27 1.27))))
+  (property "Temperature Coefficient" "—"
+    (at 0 0 0)
+    (effects (font (size 1.27 1.27))))
+  (symbol "TplTC_0_1"
+    (pin passive line (at 0 0 0) (length 1.27) (name "1" (effects)) (number "1" (effects)))
+  )
+)
+'''
+        info = KiSymbolInfo(
+            name="R_1k",
+            prefix="R",
+            package="Lib:R_0402",
+            manufacturer="X",
+            datasheet="https://example.com/d.pdf",
+            lcsc_id="C1",
+            jlc_id="",
+            symbol_params={"Temp. Coefficient": "±100ppm/°C"},
+        )
+        merger = TemplateMerger()
+        out = merger.merge(tpl, "TplTC", info, source_pins=[_make_pin("1")])
+        self.assertIn("±100ppm", out)
+        self.assertNotIn("(property \"Temperature Coefficient\" \"—\"", out)
 
 
 class TestBuildValueMap(unittest.TestCase):

@@ -598,7 +598,10 @@ async function init() {
       libraryTotals: stored.libraryTotals || { symbols: 0, footprints: 0, models: 0 },
       categorySettings:
         stored.categorySettings && typeof stored.categorySettings === "object"
-          ? { ...DEFAULT_STATE.categorySettings, ...stored.categorySettings }
+          ? dedupeCategorySettings({
+              ...DEFAULT_STATE.categorySettings,
+              ...stored.categorySettings,
+            })
           : { ...DEFAULT_STATE.categorySettings },
     };
     recalcLibraryTotals();
@@ -1617,7 +1620,7 @@ const RUNTIME_MESSAGE_HANDLERS = {
       state.projectRelativePath = normalizeProjectRelativePath(message.projectRelativePath);
     }
     if (message.categorySettings && typeof message.categorySettings === "object") {
-      state.categorySettings = { ...message.categorySettings };
+      state.categorySettings = dedupeCategorySettings({ ...message.categorySettings });
     }
     await persistState([
       "serverUrl",
@@ -1865,17 +1868,19 @@ const RUNTIME_MESSAGE_HANDLERS = {
     const cat = normalizeCategoryPath(typeof message.category === "string" ? message.category : "");
     if (!cat) throw new Error("Category name required.");
     const cfg = message.config && typeof message.config === "object" ? message.config : {};
-    state.categorySettings = {
+    state.categorySettings = dedupeCategorySettings({
       ...state.categorySettings,
       [cat]: {
         hidePinNumbers: Boolean(cfg.hidePinNumbers),
         hidePinNames: Boolean(cfg.hidePinNames),
         valueParam: typeof cfg.valueParam === "string" ? cfg.valueParam.trim() || null : null,
       },
-    };
+    });
     await persistState(["categorySettings"]);
     broadcastState();
-    return state.categorySettings[cat];
+    const canon = canonicalCategoryKey(cat);
+    const pair = Object.entries(state.categorySettings).find(([k]) => canonicalCategoryKey(k) === canon);
+    return pair ? pair[1] : null;
   },
   getTemplateStatus: async () =>
     Object.fromEntries((state.templateSymbols || []).map((n) => [n, true])),

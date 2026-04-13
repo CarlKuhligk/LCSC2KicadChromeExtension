@@ -5981,12 +5981,14 @@ async function beginTemplateImportFlow(templateBtn, groupDiv, lcscId, state) {
 
   const pageData = extractPageData();
   const stateData = status.data;
-  const overwriteOff = stateData
-    ? !stateData.overwriteFootprints && !stateData.overwriteModels
+  // Gate on symbol/footprint overwrite only (Settings → "Overwrite footprints & symbols").
+  // 3D model overwrite is a separate toggle; disabling only footprints/symbols must still prompt.
+  const askBeforeSymbolFootprintOverwrite = stateData
+    ? !stateData.overwriteFootprints
     : false;
 
   let partExistsForOverwrite = templateBtn.dataset.libState === "exists";
-  if (overwriteOff) {
+  if (askBeforeSymbolFootprintOverwrite) {
     try {
       const existResp = await contentRpc(
         "checkComponentExists",
@@ -6008,7 +6010,7 @@ async function beginTemplateImportFlow(templateBtn, groupDiv, lcscId, state) {
     }
   }
 
-  if (partExistsForOverwrite && overwriteOff) {
+  if (partExistsForOverwrite && askBeforeSymbolFootprintOverwrite) {
     showOverwriteDialog(templateBtn, lcscId, pageData, {}, {
       onResumeAfterOverwrite: (merged) => {
         void runTemplatePostOverwritePhase(
@@ -6066,8 +6068,8 @@ async function handleDownloadClick(button, lcscId, overrides = {}) {
    */
   const useTemplate = Boolean(overrides.useTemplate);
   const stateData = status?.data;
-  const overwriteOff = stateData
-    ? !stateData.overwriteFootprints && !stateData.overwriteModels
+  const askBeforeSymbolFootprintOverwrite = stateData
+    ? !stateData.overwriteFootprints
     : false;
   const oneTimeOverwrite =
     overrides.overwrite === true || overrides.overwrite_model === true;
@@ -6077,7 +6079,7 @@ async function handleDownloadClick(button, lcscId, overrides = {}) {
 
   if (!skipLibraryAndCategoryGates) {
     let partExistsForOverwrite = button.dataset.libState === "exists";
-    if (overwriteOff && !oneTimeOverwrite) {
+    if (askBeforeSymbolFootprintOverwrite && !oneTimeOverwrite) {
       try {
         const existResp = await contentRpc(
           "checkComponentExists",
@@ -6099,7 +6101,7 @@ async function handleDownloadClick(button, lcscId, overrides = {}) {
       }
     }
 
-    if (partExistsForOverwrite && overwriteOff && !oneTimeOverwrite) {
+    if (partExistsForOverwrite && askBeforeSymbolFootprintOverwrite && !oneTimeOverwrite) {
       showOverwriteDialog(button, lcscId, pageData, overrides);
       return;
     }
