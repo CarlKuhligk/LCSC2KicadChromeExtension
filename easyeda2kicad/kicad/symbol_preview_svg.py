@@ -144,6 +144,25 @@ def _pin_name_and_number(pin_block: str) -> tuple[str, str]:
     return name, number
 
 
+def _pin_label_hide_flags(pin_block: str) -> tuple[bool, bool]:
+    """
+    KiCad stores per-label visibility as ``(name \"…\" (effects … (hide yes)))`` /
+    ``(number …)``. When set, that label is not shown on the schematic — preview should
+    match (pin shaft graphics are still drawn).
+    """
+    hide_name = False
+    hide_num = False
+    m = re.search(r"\(\s*name\s+\"", pin_block, re.IGNORECASE)
+    if m:
+        sub, _ = _collect_sexpr_block(pin_block, m.start())
+        hide_name = bool(re.search(r"\(\s*hide\s+yes\s*\)", sub, re.IGNORECASE))
+    m = re.search(r"\(\s*number\s+\"", pin_block, re.IGNORECASE)
+    if m:
+        sub, _ = _collect_sexpr_block(pin_block, m.start())
+        hide_num = bool(re.search(r"\(\s*hide\s+yes\s*\)", sub, re.IGNORECASE))
+    return hide_name, hide_num
+
+
 # Floats in pin blocks (allows scientific notation; skips unrelated ``(at …)`` in nested effects).
 _PIN_FLOAT = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
 _RE_PIN_AT_3 = re.compile(
@@ -605,7 +624,8 @@ def symbol_block_to_svg(
     connection**, and ``(length L)`` extends **from that point into the symbol** along
     ``angle`` (degrees, 0° = +X).     Optional ``(name …)`` / ``(number …)`` are drawn on the **schematic (wire) side** of the pin,
     outward from the body: number nearer the hotspot, name beyond it so neither sits inside the
-    symbol body nor overlaps the other (preview ignores in-library hide flags for legibility).
+    symbol body nor overlaps the other. Labels with ``(effects … (hide yes))`` are omitted so the
+    preview matches KiCad visibility (pin shaft and connection graphics are still drawn).
 
     ``label_pins`` selects **larger** fonts and spacing (assignment dialog); when False, labels
     are **compact** (e.g. template list hover).
@@ -870,7 +890,12 @@ def symbol_block_to_svg(
             f'stroke-width="{max(sw * 0.22, 0.08):.3f}"/>'
         )
         raw_name, raw_number = _pin_name_and_number(block)
+        hide_label_name, hide_label_num = _pin_label_hide_flags(block)
         number, name = _pin_display_labels(raw_name, raw_number, pin_index)
+        if hide_label_num:
+            number = ""
+        if hide_label_name:
+            name = ""
         name = name[:48]
         number = number[:24]
         off_out_num, off_out_name = _pin_label_offsets_mm(
