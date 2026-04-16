@@ -150,6 +150,42 @@ def test_kicad_9_style_unit_0_0_renders():
     assert "rotate(" in svg
 
 
+def test_kicad_hide_yes_on_name_number_omits_labels():
+    """Template library pins may hide name/number in KiCad; preview must not draw those labels."""
+    sym = """
+(symbol "T"
+  (symbol "T_0_1"
+    (rectangle (start -2.54 -2.54) (end 2.54 2.54) (stroke (width 0)) (fill (type none)))
+    (pin power line (at 0 -5.08 90) (length 2.54)
+      (name "GND" (effects (font (size 1.27 1.27)) (hide yes)))
+      (number "1" (effects (font (size 1.27 1.27)) (hide yes))))
+  )
+)
+"""
+    svg, _ = symbol_block_to_svg(sym.strip())
+    assert svg is not None
+    assert "GND" not in svg
+    assert ">1<" not in svg
+    assert "<line" in svg
+
+
+def test_kicad_hide_yes_only_on_number_shows_name():
+    sym = """
+(symbol "T"
+  (symbol "T_0_1"
+    (rectangle (start -2.54 -2.54) (end 2.54 2.54) (stroke (width 0)) (fill (type none)))
+    (pin passive line (at -5.08 0 0) (length 2.54)
+      (name "IN" (effects (font (size 1.27 1.27))))
+      (number "4" (effects (font (size 1.27 1.27)) (hide yes))))
+  )
+)
+"""
+    svg, _ = symbol_block_to_svg(sym.strip(), label_pins=True)
+    assert svg is not None
+    assert "IN" in svg
+    assert ">4<" not in svg
+
+
 def test_pin_shaft_drawn_even_without_name_number():
     """Pins are point+length+angle; graphics must show even if (name)/(number) are empty."""
     sym = """
