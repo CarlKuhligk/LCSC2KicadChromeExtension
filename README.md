@@ -276,27 +276,36 @@ Based on [easyeda2kicad](https://github.com/uPesy/easyeda2kicad.py) by uPesy.
 
 ## Changelog
 
-Summary of changes **since [v1.0.1](https://github.com/theautomatist/KiCad-Parts-Importer/releases/tag/v1.0.1)** (current development tree; extension **manifest 2.0.0**).
+### [v2.0.0](https://github.com/theautomatist/KiCad-Parts-Importer/releases/tag/v2.0.0)
+
+Major release since **[v1.0.1](https://github.com/theautomatist/KiCad-Parts-Importer/releases/tag/v1.0.1)** (extension manifest **2.0.0**). Full diff: [v1.0.1…v2.0.0](https://github.com/theautomatist/KiCad-Parts-Importer/compare/v1.0.1...v2.0.0).
 
 ### Extension
 
 - **WebSocket-only** control plane with the local backend (`/ws/extension`, JSON-RPC + task push); no separate REST surface for app logic.
+- **Modular MV3 front end:** ES-module **content script** (`inject.js` → `main.js`), shared **WebSocket RPC** client and constants, background organized around runtime message handlers and job/WebSocket sections.
 - **Popup:** redesigned **Categories**, **Library**, and **Settings**; theme tokens; library create/import and category table UX.
-- **LCSC product pages:** Shadow DOM download controls, **EasyEDA** vs **Template** flows, progress and **confetti** on success; category / value dialogs with full breadcrumb path.
-- **Categories:** normalized paths and **deepest-prefix** resolution only (legacy second-segment matching removed); shared **`categoryPath.js`** for path normalization across service worker, content script, and popup; default starter row **`Passives/Resistors`** so prefix matching works on typical LCSC resistor paths.
+- **LCSC product pages:** shadow-DOM download controls, **EasyEDA** vs **Template** flows, progress and **confetti** on success; category / value dialogs with full breadcrumb path.
+- **Categories:** normalized paths and **deepest-prefix** resolution only (legacy second-segment matching removed); shared **`categoryPath.js`** across service worker, content script, and popup; default starter row **`Passives/Resistors`** for typical LCSC resistor paths.
 - **Templates:** per-library template mode, LCSC template picker with **hover SVG preview**, **pin-count check** vs EasyEDA, **pin ↔ pad assignment** modal (previews + remap sent as `template_pin_map`), optional continue when counts differ.
+- **PDF:** local **PDF viewer** page using vendored **pdf.js** (ESM) for LCSC datasheets where useful.
 - **Other:** backend **connection hint** when offline; **`notifications`** permission removed.
 
 ### Backend & conversion
 
-- **Template symbols:** merge LCSC metadata into user templates; **pin table** synced with EasyEDA (add/remove pins); optional **`force_template`** and **`/templates/pin-check`**.
-- **LCSC → KiCad:** richer metadata as symbol properties; EasyEDA API **retries**, timeouts, and calmer logging for missing 3D models; docs call out **KiCad 9.x** as the primary target (modern ``.kicad_sym`` / ``.kicad_mod``).
-- **Tests:** template merger unit tests.
+- **Template symbols:** merge LCSC metadata into user templates; **pin table** synced with EasyEDA (add/remove pins); optional **`force_template`** and template **pin-check** on the API.
+- **LCSC → KiCad:** richer metadata as symbol properties; EasyEDA API **retries**, timeouts, and calmer logging for missing 3D models; **KiCad 9.x** as the primary target (modern ``.kicad_sym`` / ``.kicad_mod``).
+- **Previews & geometry:** **symbol SVG** preview (including pin label visibility aligned with KiCad), **footprint SVG** preview from the KiCad footprint model, **pin remap** support, **pad numbering** normalized for KiCad, footprint export fixes (pads, THT, 3D placement with Z rotation), safer **SVGNODE** parsing for 3D assets.
+- **Service layer:** shared LCSC **footprint / preview bundle** for conversion and UI flows.
+
+### Tests
+
+- Template **merger** unit tests; symbol **preview** tests (pin label visibility).
 
 ### Docs & tooling
 
-- README **How it works** diagram, import workflow, and popup overview.
-- **GitHub Actions:** manual workflow for releases/CI.
+- README **How it works** diagram, import workflow, popup overview, and extension refactor **playbook**; **WebSocket RPC contract** (`chrome_extension/EXTENSION_WS_RPC_CONTRACT.md`).
+- **GitHub Actions:** manual **CI** workflow (Python tests + extension checks); **build/release** workflow on version tags; workflows updated for **Node 24**–compatible action runtimes (see workflow `env` and `actions/checkout` / artifact action versions).
 
 ## For developers
 
