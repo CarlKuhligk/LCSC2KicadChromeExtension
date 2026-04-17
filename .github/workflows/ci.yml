@@ -3,6 +3,11 @@
 # See README → Development → CI.
 name: CI
 
+# Node 20 is deprecated on GitHub-hosted runners; run JS-based actions on Node 24.
+# https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 on:
   workflow_dispatch:
     inputs:
@@ -24,7 +29,7 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Report versions (CI does not assign a release version)
         run: |
@@ -50,7 +55,7 @@ jobs:
     name: Extension (manifest + JS syntax)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Report versions
         run: |
@@ -64,7 +69,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
 
       - name: Check JavaScript syntax
         run: |

@@ -1,5 +1,10 @@
 name: Build backend binaries
 
+# Node 20 is deprecated on GitHub-hosted runners; run JS-based actions on Node 24.
+# https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 on:
   workflow_dispatch: {}
   push:
@@ -21,7 +26,7 @@ jobs:
       APP_NAME: "KiCad Parts Importer"
       PYTHON_VERSION: "3.11"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v5
         with:
@@ -96,7 +101,7 @@ jobs:
           Copy-Item "dist\\$env:APP_NAME.exe" "out\\$OutputName.exe"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: "${{ env.VERSION }}-KiCad Parts Importer-${{ env.OS_NAME }}"
           path: out/*
@@ -107,7 +112,7 @@ jobs:
     env:
       EXT_DIR: chrome_extension
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set version
         shell: bash
@@ -131,7 +136,7 @@ jobs:
           zip -r "${VERSION}-KiCad Parts Importer-Chrome.zip" "$SRC" -x "**/node_modules/**" "**/.git/**" "**/.vscode/**" "**/*.map"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: "${{ env.VERSION }}-KiCad Parts Importer-Chrome"
           path: "${{ env.VERSION }}-KiCad Parts Importer-Chrome.zip"
@@ -143,7 +148,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release
           merge-multiple: true
