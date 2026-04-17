@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a multi-size Windows .ico from chrome_extension/icon.png for PyInstaller."""
+"""Build a multi-size Windows .ico from img/store_images/icon.png for PyInstaller."""
 from __future__ import annotations
 
 import sys
@@ -13,7 +13,7 @@ except ImportError as exc:  # pragma: no cover - build-time only
 
 def main() -> None:
     root = Path(__file__).resolve().parents[2]
-    src = root / "chrome_extension" / "icon.png"
+    src = root / "img" / "store_images" / "icon.png"
     if not src.is_file():
         print(f"Missing icon source: {src}", file=sys.stderr)
         sys.exit(1)

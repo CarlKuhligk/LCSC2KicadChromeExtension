@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Build app.icns from chrome_extension/icon.png (macOS PyInstaller --icon).
+# Build app.icns from img/store_images/icon.png (macOS PyInstaller --icon).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-SRC="$ROOT/chrome_extension/icon.png"
+SRC="$ROOT/img/store_images/icon.png"
 OUT_DIR="$ROOT/build/pyinstaller"
 ICONSET="$OUT_DIR/AppIcon.iconset"
 OUT_ICNS="$OUT_DIR/app.icns"
