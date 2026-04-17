@@ -54,6 +54,68 @@ class TestKicadTextNormalize(unittest.TestCase):
         self.assertEqual(normalize_for_kicad_text("25\u2103"), "25\u00b0C")
 
 
+class TestTemplatePinVisibility(unittest.TestCase):
+    """Category hide pin name/number must apply to template merge (KiCad root symbol blocks)."""
+
+    def test_merge_inserts_pin_names_hide_when_category_requests(self) -> None:
+        tpl = '''
+(symbol "TplR"
+  (property "Reference" "R"
+    (at 0 0 0)
+    (effects (font (size 1.27 1.27))))
+  (symbol "TplR_0_1"
+    (pin passive line (at 0 0 0) (length 1.27) (name "1" (effects)) (number "1" (effects)))
+    (pin passive line (at 0 2.54 0) (length 1.27) (name "2" (effects)) (number "2" (effects)))
+  )
+)
+'''
+        info = KiSymbolInfo(
+            name="R_1k",
+            prefix="R",
+            package="Lib:R_0603",
+            manufacturer="",
+            datasheet="",
+            lcsc_id="C123",
+            jlc_id="",
+            value_override="1k",
+            hide_pin_names=True,
+            hide_pin_numbers=False,
+        )
+        merger = TemplateMerger()
+        out = merger.merge(tpl, "TplR", info, source_pins=[_make_pin("1"), _make_pin("2")])
+        self.assertIn("(pin_names", out)
+        self.assertRegex(out, r"\(pin_names\s*\n\s*\(hide yes\)")
+
+    def test_merge_strips_template_hide_when_category_shows_names(self) -> None:
+        tpl = '''
+(symbol "TplR"
+    (pin_names
+      (hide yes)
+    )
+  (property "Reference" "R"
+    (at 0 0 0)
+    (effects (font (size 1.27 1.27))))
+  (symbol "TplR_0_1"
+    (pin passive line (at 0 0 0) (length 1.27) (name "1" (effects)) (number "1" (effects)))
+  )
+)
+'''
+        info = KiSymbolInfo(
+            name="R_1k",
+            prefix="R",
+            package="Lib:R_0603",
+            manufacturer="",
+            datasheet="",
+            lcsc_id="C123",
+            jlc_id="",
+            value_override="1k",
+            hide_pin_names=False,
+        )
+        merger = TemplateMerger()
+        out = merger.merge(tpl, "TplR", info, source_pins=[_make_pin("1")])
+        self.assertNotRegex(out, r"\(pin_names\s*\n\s*\(hide yes\)")
+
+
 class TestMergePropertyFuzzyKeys(unittest.TestCase):
     def test_merge_keeps_template_reference_not_easyeda_prefix(self) -> None:
         """EasyEDA often uses prefix U; template library should keep R/C/D etc. from the .kicad_sym."""

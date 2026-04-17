@@ -138,6 +138,58 @@ def _find_pin_blocks(text: str) -> list[tuple[str, str, int, int]]:
     return result
 
 
+# KiCad v6 root-level pin visibility (same strings as ``KiSymbol.export_v6``).
+_PIN_NUMBERS_HIDE_YES = "\n    (pin_numbers\n      (hide yes)\n    )"
+_PIN_NAMES_HIDE_YES = "\n    (pin_names\n      (hide yes)\n    )"
+
+
+def _strip_root_pin_visibility_prefix(body: str) -> str:
+    """
+    Remove leading ``(pin_numbers ...)`` / ``(pin_names ...)`` blocks at the start of
+    the root symbol body (before properties / inner ``symbol \"Name_0_1\"``).
+    """
+    s = body
+    while True:
+        u = s.lstrip()
+        lead = len(s) - len(u)
+        if not u.startswith("("):
+            break
+        if u.startswith("(pin_numbers") or u.startswith("(pin_names"):
+            start = lead + u.index("(")
+            _block, end = _collect_sexpr_block(s, start)
+            s = s[:start] + s[end:]
+            continue
+        break
+    return s
+
+
+def _apply_root_symbol_pin_visibility(
+    symbol_text: str, hide_pin_numbers: bool, hide_pin_names: bool
+) -> str:
+    """
+    Apply category / request flags for symbol-level pin name and number visibility.
+
+    EasyEDA-only export builds a fresh ``KiSymbol`` with ``(pin_numbers (hide yes))`` /
+    ``(pin_names (hide yes))`` on the root ``(symbol \"…\"`` block. Template merge
+    previously kept the template S-expression only, so hide flags from the extension
+    were ignored for template imports.
+    """
+    t = symbol_text.strip()
+    # Optional ``power`` / other keyword after the symbol name (e.g. power symbols).
+    m = re.match(r'^(\(\s*symbol\s+"[^"]*"(?:\s+\w+)?\s*\n)', t)
+    if not m:
+        return symbol_text
+    head = m.group(1)
+    rest = t[m.end() :]
+    rest = _strip_root_pin_visibility_prefix(rest)
+    extra = ""
+    if hide_pin_numbers:
+        extra += _PIN_NUMBERS_HIDE_YES
+    if hide_pin_names:
+        extra += _PIN_NAMES_HIDE_YES
+    return head + extra + rest
+
+
 def _find_primary_unit_pins_region(text: str) -> tuple[int, int] | None:
     """
     Find the span of the first graphical unit (symbol "Name_0_1" or similar)
@@ -157,10 +209,13 @@ class TemplateMerger:
     """
     Merges LCSC data from a KiSymbolInfo object into a template symbol string.
 
-    The template's graphical body, property positions, font sizes, and visibility
-    flags are preserved intact.  Only property *values* are replaced with the
-    freshly-scraped LCSC data.  Extra LCSC fields not present in the template
-    are injected as hidden properties at the end of the symbol.
+    The template's graphical body, property positions, font sizes, and per-property
+    visibility are preserved intact. Only property *values* are replaced with the
+    freshly-scraped LCSC data. Symbol-level **pin name / pin number** visibility
+    follows ``KiSymbolInfo.hide_pin_names`` / ``hide_pin_numbers`` (category rules),
+    by rewriting the root ``(pin_names)`` / ``(pin_numbers)`` blocks. Extra LCSC
+    fields not present in the template are injected as hidden properties at the
+    end of the symbol.
     """
 
     @staticmethod
@@ -422,6 +477,14 @@ class TemplateMerger:
         # -- 8. Normalise tab indentation to 2-space (KiCad standard) --------
         # Template files commonly use tabs; the library writer expects spaces.
         result = result.replace("\t", "  ")
+
+        # -- 8.5 Symbol-level pin visibility (category hide pin name / number) ---
+        # Same KiCad directives as ``KiSymbol.export_v6``; template-only path skipped these.
+        result = _apply_root_symbol_pin_visibility(
+            result,
+            ki_info.hide_pin_numbers,
+            ki_info.hide_pin_names,
+        )
 
         # -- 9. Add leading newline expected by add_component_in_symbol_lib_file
         return "\n" + result.strip()
