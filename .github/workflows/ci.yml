@@ -3,11 +3,6 @@
 # See README → Development → CI.
 name: CI
 
-# Node 20 is deprecated on GitHub-hosted runners; run JS-based actions on Node 24.
-# https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 on:
   workflow_dispatch:
     inputs:
@@ -38,7 +33,7 @@ jobs:
           if [ -n "$N" ]; then echo "Note: $N"; fi
           python -c "import json; m=json.load(open('chrome_extension/manifest.json')); print('Extension manifest version:', m.get('version'))"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -67,7 +62,7 @@ jobs:
       - name: Validate manifest.json
         run: python -c "import json,sys; json.load(open('chrome_extension/manifest.json')); print('manifest OK')"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "24"
 

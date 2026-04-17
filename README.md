@@ -305,7 +305,7 @@ Major release since **[v1.0.1](https://github.com/theautomatist/KiCad-Parts-Impo
 ### Docs & tooling
 
 - README **How it works** diagram, import workflow, popup overview, and extension refactor **playbook**; **WebSocket RPC contract** (`chrome_extension/EXTENSION_WS_RPC_CONTRACT.md`).
-- **GitHub Actions:** manual **CI** workflow (Python tests + extension checks); **build/release** workflow on version tags; workflows updated for **Node 24**–compatible action runtimes (see workflow `env` and `actions/checkout` / artifact action versions).
+- **GitHub Actions:** manual **CI** workflow (Python tests + extension checks); **build/release** workflow on version tags; workflows use **Node 24**–native action versions (`actions/checkout`, `setup-python`, `setup-node`, upload/download artifacts, `action-gh-release`).
 
 ## For developers
 
