@@ -6,9 +6,36 @@ import sys
 from pathlib import Path
 
 try:
-    from PIL import Image
+    from PIL import Image, ImageFilter
 except ImportError as exc:  # pragma: no cover - build-time only
     raise SystemExit("Install Pillow: pip install pillow") from exc
+
+
+def resize_sharp_for_ico(src: Image.Image, size: tuple[int, int]) -> Image.Image:
+    """
+    Downscale without the mushy look of a single LANCZOS jump from e.g. 1024→16.
+
+    Uses repeated ~2× reductions, then a final resize. Adds a light unsharp mask only
+    for small sizes (where blur is most visible in Explorer / taskbar).
+    """
+    tw, th = size
+    if src.width < tw or src.height < th:
+        return src.resize((tw, th), Image.Resampling.LANCZOS)
+
+    im = src
+    while (im.width > tw * 2 or im.height > th * 2) and im.width > tw and im.height > th:
+        nw = max(tw, im.width // 2)
+        nh = max(th, im.height // 2)
+        im = im.resize((nw, nh), Image.Resampling.LANCZOS)
+
+    out = im.resize((tw, th), Image.Resampling.LANCZOS)
+
+    # Subtle sharpening for tiny previews (large flat areas stay smooth due to threshold)
+    if max(tw, th) <= 64:
+        out = out.filter(
+            ImageFilter.UnsharpMask(radius=0.35, percent=90, threshold=4)
+        )
+    return out
 
 
 def main() -> None:
@@ -23,8 +50,9 @@ def main() -> None:
     out = out_dir / "app.ico"
 
     img = Image.open(src).convert("RGBA")
+    # Order: Windows often picks 16/32/48/256; include common DPI steps
     sizes = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
-    images = [img.resize(s, Image.Resampling.LANCZOS) for s in sizes]
+    images = [resize_sharp_for_ico(img, s) for s in sizes]
     images[0].save(
         out,
         format="ICO",
