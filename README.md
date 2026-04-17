@@ -75,6 +75,7 @@ flowchart TB
 - [Features](#features)
 - [How it works](#how-it-works)
 - [Getting started](#getting-started)
+- [Troubleshooting: Windows blocks the backend](#troubleshooting-windows-blocks-the-backend)
 - [Using the popup and LCSC dialogs](#using-the-popup-and-lcsc-dialogs)
 - [Import workflow on LCSC](#import-workflow-on-lcsc)
 - [Templates & metadata](#templates--metadata)
@@ -110,6 +111,33 @@ From **Releases**, use the build for your OS (macOS/Linux/Windows). Examples:
 - **Windows:** run `"<version>-KiCad Parts Importer-Windows.exe"`
 
 If you run the backend **from source**, install the project’s Python dependencies, start `python run_server.py`, and use the port printed in the terminal (often **8087**) in the extension’s **API base URL**.
+
+### Troubleshooting: Windows blocks the backend
+
+Release builds are **PyInstaller** executables. They are **not Authenticode-signed** (signing requires a paid certificate and a separate release step). That is normal for many open-source projects, but Windows may still treat the file as **unfamiliar** or **not trusted** until you allow it—or until the project publishes **signed** binaries in the future.
+
+**Why you might see warnings or blocks**
+
+| Situation | What it means |
+| --- | --- |
+| **Downloaded file** | Browsers mark downloads with a “from the internet” flag. **Unblock** (below) removes that flag. |
+| **SmartScreen** (“Windows protected your PC”) | Microsoft does not yet **trust the publisher** (no commercial signature + low download history). |
+| **Smart App Control** (common on **Windows 11**) | Can **block unsigned** apps by policy. |
+| **`Application Control policy has blocked this file`** (e.g. in PowerShell) | A **stricter policy** is active: **Smart App Control**, **WDAC**, **AppLocker**, or a **managed** (work/school) PC. Only an **administrator** (or your **IT** department) can allow the app, unless you change the policy on a **personal** PC you control. |
+
+**What to try (in order)**
+
+1. **Unblock (Properties)** — Right‑click the `.exe` → **Properties** → **General**. If you see **Security: This file came from another computer…** and a checkbox **Unblock**, enable it → **Apply** → **OK**. Then run the executable again.  
+   This only clears the **download zone** marker; it does not replace SmartScreen or Smart App Control.
+
+2. **SmartScreen** — If you get the blue **Windows protected your PC** screen: click **More info** → **Run anyway** (only if you trust this GitHub project’s release asset).
+
+3. **Smart App Control (Windows 11)** — **Settings** → **Privacy & security** → **Windows Security** → **App & browser control** → **Smart App Control**.  
+   If it is **On**, try **Off** or **Evaluation** (if your edition allows it), then run the `.exe` again. Re‑enable stricter settings afterward if you prefer.
+
+4. **Managed PC / “Application Control”** — If the message explicitly says an **Application Control policy** blocked the file, your device may be **organization-managed** or running **WDAC/AppLocker**. **Unblock** and SmartScreen steps may not be enough. Use a **privately owned** test machine, or ask **IT** to allowlist the binary—or wait for a future **signed** Windows release from this project.
+
+**Longer term:** Publishing a **code-signed** Windows binary improves trust with SmartScreen and Smart App Control but does not automatically bypass corporate lockdown policies.
 
 ### 3. Point the extension at the backend
 
