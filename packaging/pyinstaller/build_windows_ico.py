@@ -7,8 +7,45 @@ from pathlib import Path
 
 try:
     from PIL import Image, ImageFilter
+    from PIL._binary import o8, o16le as o16, o32le as o32
 except ImportError as exc:  # pragma: no cover - build-time only
     raise SystemExit("Install Pillow: pip install pillow") from exc
+
+
+def write_ico_png_frames(path: Path, frames: list[Image.Image]) -> None:
+    """
+    Write a multi-resolution ICO with PNG-compressed images.
+
+    Pillow's ICO saver skips entries larger than 256×256, so 512×512 never appears
+    (see IcoImagePlugin._save). Windows accepts PNG payloads with 0×0 directory
+    entries for 256+; actual dimensions come from the PNG data.
+    """
+    from io import BytesIO
+
+    with path.open("wb") as fp:
+        fp.write(b"\0\0\1\0")
+        fp.write(o16(len(frames)))
+        offset = fp.tell() + len(frames) * 16
+        for frame in frames:
+            width, height = frame.size
+            fp.write(o8(width if width < 256 else 0))
+            fp.write(o8(height if height < 256 else 0))
+            fp.write(o8(0))
+            fp.write(b"\0")
+            fp.write(b"\0\0")
+            fp.write(o16(32))
+            image_io = BytesIO()
+            frame.save(image_io, "png")
+            image_io.seek(0)
+            image_bytes = image_io.read()
+            bytes_len = len(image_bytes)
+            fp.write(o32(bytes_len))
+            fp.write(o32(offset))
+            current = fp.tell()
+            fp.seek(offset)
+            fp.write(image_bytes)
+            offset += bytes_len
+            fp.seek(current)
 
 
 def resize_sharp_for_ico(src: Image.Image, size: tuple[int, int]) -> Image.Image:
@@ -50,16 +87,22 @@ def main() -> None:
     out = out_dir / "app.ico"
 
     img = Image.open(src).convert("RGBA")
-    # Order: Windows often picks 16/32/48/256; include common DPI steps
-    sizes = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
+    # Multi-size ICO for Explorer / taskbar; 512×512 for large icon views (Windows 10+).
+    sizes = [
+        (16, 16),
+        (24, 24),
+        (32, 32),
+        (48, 48),
+        (64, 64),
+        (128, 128),
+        (256, 256),
+        (512, 512),
+    ]
     images = [resize_sharp_for_ico(img, s) for s in sizes]
-    images[0].save(
-        out,
-        format="ICO",
-        sizes=[(im.width, im.height) for im in images],
-        append_images=images[1:],
-    )
-    print(f"Wrote {out}")
+    write_ico_png_frames(out, images)
+    # Standalone 512×512 asset (installers, docs, or tools that want a flat PNG)
+    images[-1].save(out_dir / "app_icon_512.png", format="PNG")
+    print(f"Wrote {out} and {out_dir / 'app_icon_512.png'}")
 
 
 if __name__ == "__main__":
