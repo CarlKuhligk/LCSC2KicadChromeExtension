@@ -1,7 +1,7 @@
 """
 Render a modern KiCad symbol unit (e.g. ``Name_0_1`` in ``.kicad_sym``) as a compact SVG preview.
 
-Targets **KiCad 9.x** symbol libraries; coordinates follow KiCad symbol space (Y up) and the
+Targets **KiCad 9+** symbol libraries (e.g. 9.x, 10); coordinates follow KiCad symbol space (Y up) and the
 SVG output uses Y down via the bbox transform.
 """
 from __future__ import annotations
@@ -130,7 +130,7 @@ def _pin_endpoint(
     return x + length * math.cos(rad), y + length * math.sin(rad)
 
 
-# Modern KiCad symbol pin (6–9.x): (pin <electrical> <graphic> (at x y [angle]) (length L) (name …) (number …))
+# Modern KiCad symbol pin (6–10+): (pin <electrical> <graphic> (at x y [angle]) (length L) (name …) (number …))
 _PIN_NAME_RE = re.compile(r"\(\s*name\s+\"([^\"]*)\"", re.IGNORECASE)
 _PIN_NUMBER_RE = re.compile(r"\(\s*number\s+\"([^\"]*)\"", re.IGNORECASE)
 
@@ -480,7 +480,7 @@ def _pin_display_labels(raw_name: str, raw_number: str, pin_index1: int) -> tupl
 
 def _parse_pin_geometry(pin_block: str) -> tuple[float, float, float, float, float, float] | None:
     """
-    Parse modern KiCad ``(pin …)`` (same shape in KiCad 9.x ``.kicad_sym``):
+    Parse modern KiCad ``(pin …)`` (same shape in KiCad 9+ ``.kicad_sym``):
 
     - ``(at x y [angle])`` — schematic **wire connection** (electrical hookup).
     - ``(length L)`` — shaft from that point **into** the symbol along ``angle``.

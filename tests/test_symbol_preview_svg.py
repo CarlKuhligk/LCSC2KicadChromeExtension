@@ -129,7 +129,7 @@ def test_merges_body_and_pins_when_pins_listed_before_body_in_file():
 
 
 def test_kicad_9_style_unit_0_0_renders():
-    """KiCad 9 often places graphics in ``SymbolName_0_0``, not ``_0_1``."""
+    """KiCad 9+ often places graphics in ``SymbolName_0_0``, not ``_0_1``."""
     sym = """
 (symbol "R"
   (symbol "R_0_0"

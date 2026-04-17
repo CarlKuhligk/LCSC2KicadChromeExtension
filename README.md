@@ -68,7 +68,7 @@ flowchart TB
 | **KiCad library** | Folders on disk for **Symbol**, **Footprint**, and **3D Model**—where the backend writes, and where you point KiCad’s library tables. |
 | **KiCad** | The **KiCad** application (schematic & board editors). It **loads** symbols and footprints from your library paths so you can place imported parts on a design. |
 
-**KiCad version:** Imports use modern library files (`.kicad_sym`, `.kicad_mod`, etc.). Day-to-day testing targets **KiCad 9.x**; the same formats generally work with **KiCad 6+**.
+**KiCad version:** Imports use modern library files (`.kicad_sym`, `.kicad_mod`, etc.). Primary testing targets **KiCad 9 and newer** (including **KiCad 10**); the same formats generally work with **KiCad 6+**.
 
 ## Contents
 
@@ -322,7 +322,7 @@ Major release since **[v1.0.1](https://github.com/theautomatist/KiCad-Parts-Impo
 ### Backend & conversion
 
 - **Template symbols:** merge LCSC metadata into user templates; **pin table** synced with EasyEDA (add/remove pins); optional **`force_template`** and template **pin-check** on the API.
-- **LCSC → KiCad:** richer metadata as symbol properties; EasyEDA API **retries**, timeouts, and calmer logging for missing 3D models; **KiCad 9.x** as the primary target (modern ``.kicad_sym`` / ``.kicad_mod``).
+- **LCSC → KiCad:** richer metadata as symbol properties; EasyEDA API **retries**, timeouts, and calmer logging for missing 3D models; primary target **KiCad 9+** / **10** (modern ``.kicad_sym`` / ``.kicad_mod``).
 - **Previews & geometry:** **symbol SVG** preview (including pin label visibility aligned with KiCad), **footprint SVG** preview from the KiCad footprint model, **pin remap** support, **pad numbering** normalized for KiCad, footprint export fixes (pads, THT, 3D placement with Z rotation), safer **SVGNODE** parsing for 3D assets.
 - **Service layer:** shared LCSC **footprint / preview bundle** for conversion and UI flows.
 
