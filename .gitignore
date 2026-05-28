@@ -153,3 +153,8 @@ cython_debug/
 
 # Draw.io files
 .$**
+
+# JavaScript / Node (chrome_extension test harness)
+node_modules/
+npm-debug.log*
+.vitest-cache/

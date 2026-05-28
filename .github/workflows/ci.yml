@@ -65,10 +65,19 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
+          cache: npm
+          cache-dependency-path: chrome_extension/package-lock.json
 
       - name: Check JavaScript syntax
         run: |
           node --check chrome_extension/background.js
-          node --check chrome_extension/contentScript.js
           node --check chrome_extension/popup.js
           echo "JS syntax OK"
+
+      - name: Install JS test dependencies
+        working-directory: chrome_extension
+        run: npm ci || npm install --no-audit --no-fund
+
+      - name: Run JS unit tests
+        working-directory: chrome_extension
+        run: npm test

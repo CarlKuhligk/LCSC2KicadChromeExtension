@@ -33,6 +33,7 @@ import {
   dismissCsModalById,
 } from "./dialog.js";
 import { contentRpc, k2cRpc } from "./rpc.js";
+import { BackendStatusMonitor } from "./backendStatusMonitor.js";
 /** Datasheet panel / PDF.js pipeline — always on; filter DevTools console by `[KiCad datasheet]`. */
 function k2cDatasheetLog(...args) {
   console.info("[KiCad datasheet]", ...args);
@@ -261,10 +262,12 @@ const confettiDoneForJobId = new Set();
 const activeObservers = new Set();
 let spinnerStyleInjected = false;
 let debugEnabled = false;
-let backendOnlineMonitorTimer = null;
+/** Active product page context. TODO(PR#5): migrate into ProductButtonGroup. */
 let backendOnlineMonitorLcscId = null;
 let backendOnlineMonitorGroupDiv = null;
-let backendOnlineMonitorAttempts = 0;
+const backendStatusMonitor = new BackendStatusMonitor({
+  rpc: { getState: () => contentRpc("getState", {}, k2cRpc(2, 200)) },
+});
 /** Debounce product-row refresh when `importDestReady` flips (e.g. user selects a library in the popup). */
 let lastBroadcastImportDestReady = null;
 let importDestRefreshTimer = null;
@@ -272,38 +275,26 @@ let importDestRefreshTimer = null;
 let productAttachDebounceTimer = null;
 function startBackendOnlineMonitor() {
   if (!backendOnlineMonitorLcscId || !backendOnlineMonitorGroupDiv) return;
-  if (backendOnlineMonitorTimer) return;
-  backendOnlineMonitorAttempts = 0;
-  backendOnlineMonitorTimer = setInterval(async () => {
-    try {
-      const resp = await contentRpc("getState", {}, k2cRpc(2, 200));
-      if (resp?.ok && resp.data?.connected) {
-        backendOnlineMonitorAttempts += 1;
+  if (backendStatusMonitor.running) return;
+  backendStatusMonitor.start({
+    onTick: () => {
+      if (backendOnlineMonitorLcscId && backendOnlineMonitorGroupDiv) {
         refreshButtonGroup(backendOnlineMonitorLcscId, backendOnlineMonitorGroupDiv);
-
-        // If templates are expected, wait until Template button appears.
-        const templateSymbolsByLib = resp.data.templateSymbolsByLib || {};
-        const shouldHaveTemplates = Object.keys(templateSymbolsByLib).length > 0
-          && Object.values(templateSymbolsByLib).some((arr) => Array.isArray(arr) && arr.length > 0);
-        if (shouldHaveTemplates) {
-          const hasTemplateBtn = queryProductGroupButtons(backendOnlineMonitorGroupDiv).some(
-            (b) => b.getAttribute("data-k2c-dl") === "template",
-          );
-          if (!hasTemplateBtn && backendOnlineMonitorAttempts < 6) {
-            return;
-          }
-        }
-
-        // Connected and UI refreshed; stop polling after a short stabilization.
-        if (backendOnlineMonitorTimer) {
-          clearInterval(backendOnlineMonitorTimer);
-          backendOnlineMonitorTimer = null;
-        }
       }
-    } catch (_e) {
-      // keep polling until backend comes online
-    }
-  }, 2500);
+    },
+    isStable: (state) => {
+      const templateSymbolsByLib = state.templateSymbolsByLib || {};
+      const shouldHaveTemplates =
+        Object.keys(templateSymbolsByLib).length > 0 &&
+        Object.values(templateSymbolsByLib).some((arr) => Array.isArray(arr) && arr.length > 0);
+      if (!shouldHaveTemplates) return true;
+      const groupDiv = backendOnlineMonitorGroupDiv;
+      if (!groupDiv) return true;
+      return queryProductGroupButtons(groupDiv).some(
+        (b) => b.getAttribute("data-k2c-dl") === "template",
+      );
+    },
+  });
 }
 
 const ICONS = {
@@ -6286,10 +6277,7 @@ function cleanupInjectedUi() {
   jobUiMonotone.clear();
   terminalJobHandled.clear();
   confettiDoneForJobId.clear();
-  if (backendOnlineMonitorTimer) {
-    clearInterval(backendOnlineMonitorTimer);
-    backendOnlineMonitorTimer = null;
-  }
+  backendStatusMonitor.stop();
   if (importDestRefreshTimer) {
     clearTimeout(importDestRefreshTimer);
     importDestRefreshTimer = null;
