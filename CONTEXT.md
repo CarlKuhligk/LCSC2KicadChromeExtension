@@ -103,3 +103,87 @@ should be used verbatim in code, not paraphrased.
   `src/content/categoryNormalize.js` for content script) and mirrored in
   Python (`helpers.py`). Pending consolidation; see architecture review
   Candidate 8.
+
+---
+
+## V3 vocabulary (planned — not yet in code)
+
+Terms locked during V3 grilling (2026-05-29). See `V3-SPEC.md` for the
+broader spec, `docs/adr/` for the load-bearing decisions. Listed here
+so V3 code uses these names verbatim, not paraphrases.
+
+- **Native Host** — Python process Chrome launches on-demand via Chrome
+  Native Messaging. Replaces V2's standalone "Backend" / `run_server.py`
+  server. Singleton per Chrome profile (one Service Worker → one host).
+  _Avoid:_ "Backend", "server", "daemon" in V3 contexts.
+- **Native-Host Manifest** — JSON file at the OS-specific Native-Messaging-host
+  path (Windows registry / macOS `~/Library/...` / Linux `~/.config/...`)
+  that tells Chrome where to find the **Native Host** binary. Written
+  by the installer on first launch (Self-Register).
+- **Phase 1 Fetch** — fast metadata RPC (~1 s) that pulls LCSC Category
+  Path, pin count, datasheet URL. Returns enough to render the
+  **Override Panel** with sensible defaults but does no Symbol / Footprint /
+  3D work.
+- **Phase 2 Conversion** — slow RPC (~5–10 s) that runs the EasyEDA
+  pipeline with the user-resolved override sources baked in. Streams
+  `progress` events on the same port until terminal `done` / `error`.
+- **Override Panel** — V3's single inline UI shown between **Phase 1**
+  and **Phase 2**. Lets the user pick Symbol source, Footprint source,
+  and (when needed) confirm/remap the **Pin↔Pad Map**. Replaces V2's
+  Template Gallery, Category Dialog, Value-Param dialogs, and Pin↔Pad
+  Dialog as separate surfaces.
+- **Customize Button** — small always-visible secondary action next to
+  the V3 **Download** button. Forces the Override Panel to appear even
+  when a Category Rule would otherwise auto-resolve.
+- **Skip-Panel Flow** — when a matching Category Rule fully resolves
+  both Symbol and Footprint sources and no Pin↔Pad ambiguity exists,
+  the Override Panel is skipped and the click goes straight from
+  **Phase 1** to **Phase 2**. The default user experience for repeat
+  imports.
+- **Anchor Card** — the LCSC product-page header table (the one
+  containing "Hersteller", "Herst.-Teilenr.", "LCSC-Nr.") into which V3
+  injects its **Download** + **Customize** controls as a new `<tr>`.
+  Located by walking `<table>` elements and matching the LCSC-Nr. label
+  multilingually, with a `/^C\d+$/` cell pattern as fallback.
+- **Anchored / Float fallback** — the two DOM-injection modes. V3 tries
+  **Anchored Card** injection first; falls back to a floating fixed-position
+  panel only when the anchor walk returns null.
+- **Pre-Warm** — Service-Worker keep-alive scheme triggered by the
+  content script on LCSC page load. Opens the Native-Host port early so
+  Python is hot by the time the user clicks. Backed by a 25-second
+  `chrome.alarms` heartbeat against future Chrome lifecycle changes.
+- **3D Layer** — the implicit third override layer. **Follows the Footprint**:
+  if the chosen Footprint is from a Template Library, the Template's
+  `(model "...")` reference is the primary 3D source; if no reference
+  exists on the Template Footprint, the EasyEDA 3D model is used as a
+  fallback. EasyEDA Footprints always get the EasyEDA 3D. Not
+  user-overridable in the panel. See **Template-3D Carry-Over** for the
+  copy mechanics and ADR-0005 for the rationale.
+- **Template-3D Carry-Over** — mechanic that lifts a 3D model file
+  referenced by a Template Footprint into the active library so the
+  written Footprint stands on its own. Steps: parse the Template
+  `.kicad_mod` for `(model "...")` references; for each, if the path
+  resolves inside the Template Library, copy the file to
+  `<ActiveLib>.3dshapes/<basename>` (idempotent, deduplicated by content
+  hash) and rewrite the reference to `${KIPRJMOD}/<ActiveLib>.3dshapes/...`;
+  if the path uses a KiCad system variable (e.g. `${KICAD9_3DMODEL_DIR}`,
+  `${KISYS3DMOD}`) or is otherwise outside the Template Library, leave
+  the reference verbatim — no file copy.
+- **Template-Assembly** — Phase 2 variant that runs when both Symbol
+  Source and Footprint Source are Template (and the Template Footprint
+  has a 3D reference, so no EasyEDA fallback is needed). No EasyEDA API
+  call is made; the Phase 1 LCSC metadata supplies Value / Manufacturer
+  / MPN / LCSC-Nr. for the symbol properties. The Template-only path that
+  lets a user import an LCSC part for which EasyEDA has no Symbol and no
+  Footprint at all.
+- **Pin-Map Sidecar** — JSON file at `<TemplateLibrary>/pin_maps/<symbol>__<footprint>.json`
+  that persists the pin↔pad mapping for a known (template-symbol,
+  template-footprint) pair. Resolved at import time; user only remaps
+  once per combination.
+- **Self-Register** — first-run behaviour of the V3 installer binary:
+  if the Native-Host Manifest is not present at the OS-specific path,
+  write it and exit. Self-healing if the extension ID changes between
+  Web Store releases.
+- **Always Re-Resolve** — V3's template-version policy. Category Rules
+  store only the template *name*. Every import reads the template file
+  fresh from disk. No snapshotting, no per-Rule pinning.

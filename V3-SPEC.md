@@ -1,16 +1,17 @@
 # V3-SPEC.md — KiCad Parts Importer V3
 
-**Status:** working draft · 2026-05-29 · subject to review
+**Status:** decisions locked · 2026-05-29 · post-grilling
 **Author:** theautomatist (idea owner) + Claude (drafter)
-**Sibling docs:** [CONTEXT.md](CONTEXT.md) (domain language), [REFACTOR-PLAN.md](REFACTOR-PLAN.md) (V2 hand-off)
+**Sibling docs:** [CONTEXT.md](CONTEXT.md) (domain language), [REFACTOR-PLAN.md](REFACTOR-PLAN.md) (V2 hand-off — now mostly archive), [docs/adr/](docs/adr/) (load-bearing decisions)
 
 ---
 
 ## Pitch
 
-A simpler, smaller, more self-sufficient version of the KiCad Parts Importer. Same
-job (LCSC → KiCad library), fewer moving parts, **one** import mode, **no manual
-backend juggling**, **DOM integration that doesn't break when LCSC repaints**.
+A simpler, smaller, more self-sufficient version of the KiCad Parts Importer.
+Same job (LCSC → KiCad library), fewer moving parts, **one** import mode,
+**no manual backend juggling**, **DOM integration that doesn't break when LCSC
+repaints**.
 
 V3 is the rewrite-from-experience: every part of V2 is examined under the rule
 **"keep it stupid simple"** and either kept, simplified, or struck.
@@ -19,392 +20,360 @@ V3 is the rewrite-from-experience: every part of V2 is examined under the rule
 
 V2 grew incrementally. Each historical decision was right at the time:
 
-- Two import modes (EasyEDA + Template) because Template was added later, separately.
-- A WebSocket backend because at the start that was the simplest way to do
-  filesystem writes from a browser.
-- Table-DOM selectors because the LCSC product page had a stable table.
-- Job queue + task-update messages because the early conversions felt slow.
+- Two import modes (EasyEDA + Template) because Template was added later.
+- A WebSocket backend because that was the simplest filesystem write path from a browser.
+- Table-DOM selectors because the legacy LCSC page had a stable table.
+- Job queue + task-update messages because early conversions felt slow.
 
-None of these is the simplest solution today. V3 picks the simplest version
-of each.
+None is the simplest solution today. V3 picks the simplest version of each.
 
 ---
 
-## The workflow (single user journey)
+## The workflow (V3 user journey, two-phase)
 
 User opens an LCSC product page:
 
-1. KiCad Importer button is visible. **(No table integration — anchored to a
-   stable landmark or floating-fixed.)**
+1. The **Anchor Card** in the LCSC product header gets a new `<tr>` containing
+   the **Download** button and a small **Customize** button. (When the anchor
+   walk fails, a floating-fixed panel is shown as fallback.)
 2. User clicks **Download**.
-3. Backend converts the LCSC part via the EasyEDA pipeline → produces a
-   candidate **Symbol + Footprint + 3D model**.
-4. **Optional override panel** appears when:
-   - the matching Category Rule specifies overrides, **or**
-   - the user clicks "Customize".
+3. **Phase 1 Fetch** runs (~1 s): backend pulls LCSC metadata — Category Path,
+   pin count, datasheet URL.
+4. Category Rule matches against the Category Path.
+   - If the Rule **fully resolves** both Symbol source and Footprint source
+     (no Pin↔Pad ambiguity), the Override Panel is **skipped** ("Skip-Panel Flow").
+   - Otherwise the **Override Panel** renders inline with Rule defaults pre-filled:
+     - Symbol: keep EasyEDA / replace with Template-X
+     - Footprint: keep EasyEDA / replace with Template-Y
+     - Pin↔Pad Map: auto, or confirm/remap if symbol/footprint disagree
+5. **Phase 2 Conversion** runs (~5–10 s): EasyEDA pipeline with the resolved
+   sources baked in (no wasted symbol-gen when Template is chosen). The
+   **3D Layer** is always pulled when available and the `(model "${KIPRJMOD}/<lib>.3dshapes/...")`
+   reference is applied to whichever Footprint ends up in the library.
+6. Backend writes to the active library. Browser shows success.
 
-   Choices in the panel:
-   - Symbol: keep EasyEDA / replace with template
-   - Footprint: keep EasyEDA / replace with template
-   - Pin↔Pad map: auto, or confirm/remap if symbol/footprint disagree
-5. User confirms. Backend writes to active library. Browser shows success.
-
-That is the entire UX. **One button, one optional panel, one confirm.**
+Power-user with greifender Category Rule + Skip-Panel = **effective one-click flow**.
+Edge-case (new Category, pin-map ambiguity, or clicked Customize) = one extra panel.
 
 ---
 
-## Architectural decisions
+## Architectural decisions (post-grilling, all RESOLVED)
 
-### 1. One import mode, with overrides
+### 1. One import mode with overrides — **ACCEPTED**
 
-There is **no** EasyEDA-vs-Template button choice. The default flow always runs
-the EasyEDA conversion. Overrides happen **after** the candidate is generated,
-not before — the user swaps Symbol or Footprint (or both) for a Template Library
-entry without changing the conversion path.
+There is **no** EasyEDA-vs-Template button choice. Overrides happen **after
+Phase 1** as part of the Override Panel, before Phase 2.
 
-> Why this is simpler than V2: it deletes the entire `useTemplate: true/false`
-> branch from the backend, the dual buttons from the page UI, and the
-> "EasyEDA vs Template flow" mental model. Templates become **edit operations
-> on a known-good candidate**, not a parallel pipeline.
+Phase 2 has two execution modes that are an emergent consequence of the user's
+source choices, not a UI toggle:
 
-### 2. Template Library entries are partial
+- **EasyEDA Pipeline** — at least one layer (Symbol or Footprint) is EasyEDA.
+  Runs the EasyEDA conversion as in V2, then applies the user-resolved
+  overrides on top.
+- **Template-Assembly** — both Symbol and Footprint are Template **and** the
+  Template Footprint carries its own 3D reference. EasyEDA's API is not
+  called in Phase 2 at all. LCSC metadata from Phase 1 (Value / Manufacturer
+  / MPN / LCSC-Nr.) is written into the symbol properties. This is the
+  path that lets a user import an LCSC part for which EasyEDA has neither
+  Symbol nor Footprint, as long as the user has both Template layers ready.
 
-A Template Library entry can be:
+### 2. Template Library entries are two independent layers + 3D — **ACCEPTED with refinement**
 
-- Symbol only (most common — your standardized resistor schematic-symbol)
-- Footprint only (less common — your standardized 0603 pad geometry)
-- Symbol + Footprint together (the "complete part" case, e.g. for a specific
-  IC where both EasyEDA assets are bad)
+A V3 Template Library is **two independent override layers**, persisted as:
 
-Category Rules can name a **default override** per category:
-`Passives/Resistors → use my "R-symbol", keep EasyEDA footprint`.
+```
+MyTemplates.kicad_sym         ← Symbol layer (V2-compatible)
+MyTemplates.pretty/X.kicad_mod ← Footprint layer
+MyTemplates/pin_maps/<sym>__<fp>.json ← Pin-Map Sidecar (when needed)
+```
 
-### 3. Backend invocation — **open question**
+"Symbol + Footprint together" is **not a compound entry** — it is the combination
+of: Category Rule references both layers + a Pin-Map Sidecar resolves the
+pairing. Each layer can be edited with native KiCad tooling.
 
-V3 must eliminate the "I have to start the backend manually" pain. Three options:
+The **3D Layer** is a third, **never-user-overridable** layer that **follows
+the Footprint** (ADR-0005). Resolution at Phase 2 time:
 
-| Option | Mechanism | Pro | Con | Effort |
-|---|---|---|---|---|
-| **A. Chrome Native Messaging** | Extension declares native host JSON manifest; Chrome launches the Python process when extension calls `connectNative`, kills it on disconnect | True zero-start; no localhost; no firewall; Chrome handles lifecycle | One-time native host installer per OS; stdin/stdout JSON protocol replaces WebSocket | Medium |
-| **B. KiCad Action Plugin** | Plugin in `~/.kicad/plugins/`; KiCad launches it via its Python bridge | "Starts when I open KiCad" matches mental model | KiCad plugins are PCB-editor scripts, not daemons; lifecycle is tied to pcbnew; non-trivial robustness | High |
-| **C. System tray app** | OS autostart entry (Windows Run key / macOS LaunchAgent / Linux systemd user service); always-on background | Familiar pattern; user can see "is it running" | Always-on RAM; user-visible tray; installer per OS | Medium |
+1. **Footprint = Template:** parse the Template `.kicad_mod` for
+   `(model "...")` references.
+   - References resolving inside the Template Library → file is **carried
+     over** to `<ActiveLib>.3dshapes/<basename>` (idempotent, deduplicated
+     by content hash — multiple Template Footprints may share a single
+     `.step`), and the reference is rewritten to `${KIPRJMOD}/<ActiveLib>.3dshapes/...`.
+   - References using a KiCad system variable (e.g. `${KICAD9_3DMODEL_DIR}`,
+     `${KISYS3DMOD}`) or any absolute path outside the Template Library
+     → reference left verbatim, no file copy. The KiCad user is assumed
+     to have these resolvable in their environment.
+2. **Footprint = Template, no `(model ...)` reference found:** fall back
+   to EasyEDA 3D. EasyEDA-3D is downloaded (if available) and the
+   reference is appended to the Template Footprint. Geometric alignment
+   is the user's responsibility.
+3. **Footprint = EasyEDA:** EasyEDA-3D is downloaded as in V2, stored
+   at `<ActiveLib>.3dshapes/X.step`, reference applied.
+4. **No 3D from any source:** Phase 2 emits a `no 3D` progress message
+   and writes the Footprint without a model reference. Not an error.
 
-**My recommendation: Option A (Chrome Native Messaging).** It is the only one
-that *removes* the backend lifecycle as a user concern entirely — the user never
-sees the backend at all. Trade-offs to confirm in review.
+### 3. Backend invocation: **Chrome Native Messaging** — **ACCEPTED**
 
-### 4. DOM injection — anchored, with float as fallback
+See [ADR-0001](docs/adr/0001-backend-via-chrome-native-messaging.md).
 
-V2 finds an insertion point via `table.tableInfoWrap tbody`. LCSC layout
-changes break this. The first attempt for V3 (commit `e54a5b9`) replaced the
-table selector with a **pure float-fixed panel** in the bottom-right corner.
-Empirical test on the live LCSC C22548 page (2026-05-29): the panel renders
-correctly but is **a noticeably worse UX** than V2's in-table integration.
-The user has to move the mouse across the page to reach it; the import
-action no longer reads as "part of the product info".
+Installer is a PyInstaller single-file binary that **Self-Registers** the
+Native-Host Manifest on first launch at the OS-specific Native-Messaging-host
+path (Windows registry, macOS `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/`,
+Linux `~/.config/google-chrome/NativeMessagingHosts/`). MSI/PKG/signed-installer
+is a Phase-2 polish.
 
-**Revised decision: anchored-first, float as fallback.**
+**Cold-start mitigation: Pre-Warm on LCSC navigation.** Content script wakes
+the Service Worker on page load; SW opens the Native-Host port; Python is hot
+by the time the user clicks. 25-second `chrome.alarms` heartbeat as
+belt-and-suspenders.
 
-- **Primary**: inject as a new row in the product **header card**
-  (Table 0 in the live dump — `w-full text-sm text-[#1C1F23] table-fixed`,
-  the table containing "Hersteller / Herst.-Teilenr. / LCSC-Nr. / …"). Add
-  a new `<tr>` labeled "KiCad" so it sits alongside the existing rows. This
-  matches V2's UX precisely.
-- **Fallback**: the float panel (already implemented) when the header card
-  can't be located. Robust against any future LCSC restructure.
+### 4. DOM injection: Anchored Card first, Float fallback — **ACCEPTED**
 
-Detection strategy for the anchor: find any `<table>` whose first
-non-header row contains a cell with text matching the LCSC ID pattern
-(`C\d+`) OR a localized "Hersteller" / "Manufacturer" / "Mfr." label —
-both are stable across LCSC locales. The header card is the highest match.
+V3 injects the Download/Customize controls as a new `<tr>` inside the LCSC
+**Anchor Card** (the header table containing "LCSC-Nr.", "Hersteller", etc.).
+Detection walks `<table>` elements; matches by multilingual label list
+("LCSC-Nr.", "LCSC#", "LCSC Part #", "LCSC编号") with a `/^C\d+$/` cell pattern
+as fallback heuristic.
 
-Implementation note: the existing `extractPageData()` from
-`lcscPageSnapshot.js` already iterates every table; the anchor detector
-can reuse that walk to identify the right `<tbody>` without a second pass.
+When the walk returns null (LCSC ships an unanticipated layout), the existing
+**Float Fallback** (`buildFloatHostStyle()`) kicks in. The existing
+`extractPageData()` walk in `lcscPageSnapshot.js` already iterates every table
+and is the natural seam for the anchor detector.
 
-### 5. Job model — synchronous-ish
+### 5. Job model: Streamed Progress, no Job state — **ACCEPTED**
 
-A single-user single-component import takes 1-10 s. V2's queue + push-message
-model is overkill. V3: user clicks → backend converts → result returns on the
-same connection.
+See [ADR-0004](docs/adr/0004-streamed-progress-no-job-state.md).
 
-> "Queue" disappears. `task_update` push disappears. The
-> service-worker-to-content-script message bridge disappears (Native Messaging
-> bypasses the service worker for the data path).
+One RPC per click. Backend streams free-form `progress` messages on the same
+Native-Host port until `done` / `error`. No queue, no job IDs, no cancellation,
+no multi-subscriber bus. Concurrent imports across tabs return `busy`.
 
-### 6. No standalone server, no API base URL setting
+### 6. No standalone server, no API base URL — **ACCEPTED**
 
-Backend is invoked by Chrome (A) / discovered at well-known path (B) / connects
-to a tray endpoint (C). The popup loses the "Backend URL + Test" settings.
+Direct consequence of #3. Popup loses "Backend URL + Test".
 
-### 7. Settings simplified
+### 7. Settings simplified — **ACCEPTED**
 
-Three popup tabs survive:
+Three popup tabs:
 
 - **Categories** — same model as V2 (deepest-prefix), extended to optionally
-  reference Template Library entries as defaults.
-- **Library** — active KiCad library, plus Template Libraries.
-- **Settings** — theme, debug logs, overwrite policies, project-relative 3D paths.
+  reference Template Library entries as Symbol / Footprint defaults plus an
+  "auto-confirm" flag enabling Skip-Panel Flow per Rule.
+- **Library** — active KiCad library + Template Libraries list.
+- **Settings** — theme, debug logs, overwrite policies, "Always show Override
+  Panel" master toggle (default OFF).
 
 Removed: API base URL + Test.
+
+---
+
+## Resolved open questions
+
+| # | Question | Resolution |
+|---|---|---|
+| 1 | Backend deployment: A / B / C? | **A — Chrome Native Messaging** with self-registering installer. See ADR-0001. |
+| 2 | Categories: folders or tags? | **Folders (slash-paths).** Matches LCSC breadcrumb structure, enables deepest-prefix-match. |
+| 3 | Template version pinning? | **Always Re-Resolve at import time.** Category Rule stores only the template name; file is read fresh on every conversion. |
+| 4 | Chrome Web Store identity? | **New listing.** V2 unpublished at V3 release. See ADR-0003. |
+| 5 | EasyEDA-only legacy mode? | **No.** Skip-Panel Flow + Customize button covers the use case without a dedicated toggle. |
 
 ---
 
 ## In scope — features V3 has
 
 - LCSC product page → KiCad library import.
-- EasyEDA conversion as the default pipeline (Symbol + Footprint + 3D model).
-- Template Library entries (Symbol-only / Footprint-only / both).
-- Category Rules (deepest-prefix match, as V2) **extended with default-overrides**.
-- Pin↔Pad map override UI when an overriding Symbol and overriding Footprint disagree.
-- Datasheet PDF preview during override picker (kept — it works well).
-- LCSC parameter table → KiCad symbol properties (kept).
-- Overwrite-existing-part handling.
+- EasyEDA conversion as the default pipeline (Symbol + Footprint + 3D).
+- Template Library entries as two independent layers (Symbol-only, Footprint-only,
+  or both via Rule + Sidecar).
+- **Template-Assembly path** — import an LCSC part using only Template
+  Symbol + Template Footprint + Template 3D when EasyEDA has nothing
+  to offer for that part. Phase 1 LCSC metadata fills the symbol
+  properties; no EasyEDA call in Phase 2.
+- **Template-3D Carry-Over** — Template Footprints with their own
+  `(model "...")` references have those references and the underlying
+  files lifted into the active library automatically (deduplicated, system
+  paths preserved).
+- Category Rules (deepest-prefix match) **extended with Symbol/Footprint
+  defaults + auto-confirm flag**.
+- Pin↔Pad map override UI when sources disagree; persisted as Pin-Map Sidecar.
+- Datasheet PDF preview inside the Override Panel.
+- LCSC parameter table → KiCad symbol properties.
+- Overwrite-existing-part handling (one inline confirmation, not a separate dialog).
 
 ## Out of scope — what V3 strikes from V2
 
 - The "EasyEDA mode" button. Default behavior covers it.
-- The separate Template-mode flow. Templates become overrides.
+- The separate Template-mode flow. Templates are override layers.
 - Manual backend URL + Test connection.
-- The 5-dialog cascade (Category, Value-Param-Fallback, Value-Param-Mismatch,
-  Overwrite, Pin↔Pad). Targeted reduction: Category + Value-Param merge into
-  one inline override panel; Pin↔Pad is inline; Overwrite stays simple.
-- Two-step pin-count check followed by Pin↔Pad modal. One inline step instead.
-- Job queue + task_update messages. Synchronous flow.
-- WebSocket transport (if Option A is chosen).
-- Three-layered fallback for the 3D path. One setting.
-- LCSC table-DOM selectors. Anchor or float.
+- The 5-dialog cascade. Override Panel + inline Overwrite confirmation replace
+  the Category / Value-Param / Pin↔Pad / Template-Gallery dialogs.
+- Two-step pin-count check followed by Pin↔Pad modal. Inline in panel.
+- Job queue + task_update bus. Streamed progress on the same port.
+- WebSocket transport. Native Messaging stdin/stdout.
+- Three-layered fallback for the 3D path. Library-relative single convention.
+- LCSC table-DOM selectors via class names. Structural anchor walk.
+- `chrome.storage` migration from V2. Clean break.
 
 ---
 
-## Migration from V2
+## Migration from V2 — **none (clean break)**
 
-- **Category Rules** — V2 schema is mostly compatible. A small migrator adds
-  the new "default override" fields with `null` defaults.
-- **Template libraries** — directly compatible. V2 has them as `Templates.kicad_sym`
-  next to a library; V3 keeps that location.
-- **Popup settings** — backward-compatible subset; "API base URL" silently
-  dropped.
-- **V2 stops shipping** after V3 release. Chrome Web Store receives V3 as a
-  new version of the same extension (carries forward chrome.storage data, so
-  users keep their Categories and Library list).
+See [ADR-0003](docs/adr/0003-clean-break-from-v2.md).
+
+V3 is a new Web Store listing with a new extension ID. V2 is unpublished at V3
+release. **No `chrome.storage` carryover, no compat shims.** V3 codebase reads
+no V2 state. Existing V2 installs continue working with their V2 backend but
+receive no further updates.
+
+Documentation will include a "Coming from V2" page explaining how to translate
+old Categories / Template-Library settings into the V3 onboarding flow — but
+this is a human-readable note, not a code path.
 
 ---
 
 ## What V3 explicitly is NOT
 
-- **Not a TypeScript / framework rewrite.** Vanilla ES modules + Python stays.
-- **Not a fork of EasyEDA.** We rely on EasyEDA's strengths (correct pin labels,
-  pad coordinates) and only swap when the user has a better local version.
-- **Not a marketplace** for templates. They're files on the user's disk.
-- **Not multi-user / multi-machine.**
-- **Not all LCSC variants.** Anchor strategy targets robustness, not completeness.
-  If LCSC ships a layout the anchor can't find, the floating fallback covers it.
-
----
-
-## Open questions for V3 review
-
-1. **Backend deployment: A, B, or C?** Highest-impact decision. Lean A.
-2. **Should categories be folders (slash-paths) or tags (flat with chips)?**
-   V2 is slash-paths; that's working. Likely keep.
-3. **Template version pinning** — if a template file changes on disk after a
-   Category Rule references it, should subsequent imports use the new version
-   automatically, or stay pinned to the saved snapshot?
-4. **Chrome Web Store identity** — same listing (smooth upgrade for users) or
-   new listing (clean break, easier name change)?
-5. **EasyEDA-only legacy mode** — do you want a hidden "raw EasyEDA, no
-   override panel" flag for parts where you know you don't want to override?
-   Probably no — KISS.
+- Not a TypeScript / framework rewrite. Vanilla ES modules + Python stays.
+- Not a fork of EasyEDA. We rely on EasyEDA's strengths and only swap when
+  the user has a better local version.
+- Not a marketplace for templates. They're files on the user's disk.
+- Not multi-user / multi-machine.
+- Not all LCSC variants. Anchor strategy targets robustness on the common
+  layouts; floating fallback covers the rest.
 
 ---
 
 ## Effort estimate
 
-Realistic timeline at part-time pace (~2 evenings per week), assuming:
-
-- The V2 codebase + tests + REFACTOR-PLAN.md serve as reference and edge-case
-  source.
-- The CONTEXT.md vocabulary is reused.
-- The Vitest + pytest harnesses carry over.
+Part-time pace (~2 evenings per week):
 
 | Phase | Scope | Estimate |
 |---|---|---|
-| Spec finalize + open-question decisions | This document, reviewed | 1-2 sessions |
-| Architectural spike | Native Messaging hello-world; template-override prototype | 2 evenings |
-| V3 backend | One-mode conversion, override applier, native-host wiring | 1-2 weeks |
-| V3 extension | Single download button + override panel, floating/anchored DOM | 1-2 weeks |
-| Migration + Chrome Web Store release | Settings carryover, release flow | 3-5 days |
+| R2 diagnose+fix in V2 | Click regression, most likely "backend not running" → backend-online state | 1 h |
+| V3 walking skeleton | Native Messaging hello-world + Self-Register installer + dummy template-override conversion | 2 evenings |
+| V3 backend | Phase 1 / Phase 2 RPC, override applier, Pin-Map Sidecar resolution, 3D layer integration | 1–2 weeks |
+| V3 extension | Anchor Card injection, Override Panel, Pre-Warm wiring, Skip-Panel logic | 1–2 weeks |
+| Installer hardening | Self-Register correctness across Windows / macOS / Linux, Chrome Web Store packaging | 3–5 days |
+| V3 launch + V2 unpublish | Store submission, V2 unpublish, "Coming from V2" doc | 1–2 days |
 
-**Total: ~5-8 weeks part-time** if the open questions resolve cleanly.
-Compare to "continue REFACTOR-PLAN.md" which is roughly 4-5 weeks part-time
-to reach a clean but functionally-identical V2.
-
-The difference is what you get at the end: V3 has the new features and the
-simplified workflow; refactored-V2 still has the dual-mode UI and the manual
-backend.
-
----
-
-## Decision needed before any code
-
-Review this spec. Note in writing or in our next session:
-
-- Each architectural decision (1–7): **accept / change / strike**.
-- Each in-scope feature: **keep / remove**.
-- Each open question (1–5): **answer**.
-
-Once decisions are recorded, the next deliverable is a **walking skeleton**:
-a minimal end-to-end V3 (anchored button on a fake LCSC page → native host
-hello → template override applied → file written). That spike either proves
-the architecture in ~2 days or surfaces blockers early.
+**Total: ~5–7 weeks part-time.**
 
 ---
 
 ## Current state of the V2 codebase (snapshot 2026-05-29, commit `84df7ab`)
 
-What is **already in place** from V3's vocabulary or architecture:
+Already in place that V3 can reuse / reference:
 
-- **Domain language** — `CONTEXT.md` reflects the V3 mental model: Product
-  Button Group, Datasheet Panel, Job Progress UI, LCSC Dialog,
-  Template Gallery, Pin↔Pad Map, LCSC Page Snapshot, Backend Status
-  Monitor, Category Path.
+- **Domain language** — `CONTEXT.md` has the V3 vocabulary appended after the
+  V2 section. Names will be used verbatim in V3 code.
 - **Single source of truth for Category Path** — `shared/categoryPath.mjs`,
   consumed by content / popup / SW; Python mirror in `helpers.py`. Paired
   drift-detection tests on both sides.
-- **Tailwind-era LCSC scraper** — `lcscPageSnapshot.js`, structural
-  detection, 18 Vitest cases against the live C22548 DE dump. Decouples
-  V3 from any specific LCSC class names.
-- **Float panel infrastructure** — `attachButton` builds a fixed-position
-  Shadow-DOM host (commit `e54a5b9`). Will be downgraded from "default
-  position" to "fallback" once the anchored-injection lands (see
-  Decision #4 above).
-- **Web-accessible-resources guard rail** —
-  `tests/test_extension_manifest.py` (commit `84df7ab`). Catches the class
-  of bug where a newly-extracted content-script module is forgotten in
-  `manifest.json`. Prevents the silent-broken-extension regression that
-  hit PRs #0–#3b retroactively.
-- **52→108 Vitest cases** pinning the cross-cutting state and module
-  boundaries: BackendStatusMonitor, DatasheetPanel, JobStateStore,
-  LcscValueParamDialogs, LcscCategoryDialog, LcscPageSnapshot, plus
-  shared CategoryPath.
+- **Tailwind-era LCSC scraper** — `lcscPageSnapshot.js`, structural detection,
+  18 Vitest cases against the live C22548 DE dump. V3 reuses the table-walk
+  as the anchor detector.
+- **Web-accessible-resources guard rail** — `tests/test_extension_manifest.py`
+  prevents silent-broken-extension regressions. V3 keeps this pattern.
+- **52 → 108 Vitest cases** pinning cross-cutting state. Useful as
+  reference; not all will port to V3's simpler model.
 
-What is **NOT yet there** (open from REFACTOR-PLAN.md, mostly V2 internal):
+NOT yet there (open from REFACTOR-PLAN.md — will likely **not** be done since
+V2 is being unpublished at V3 release):
 
 - Overwrite Dialog still inline in `app.js` (PR #3c).
-- Template Gallery still inline in `app.js` (PR #4) — the biggest
-  remaining chunk.
-- Product Button Group still inline in `app.js` (PR #5) — the JobStateStore
-  consumer side that PR #2 left for later.
+- Template Gallery still inline in `app.js` (PR #4).
+- Product Button Group still inline in `app.js` (PR #5).
 - Download Pipeline still inline (PR #6).
 - Backend candidates B-K3 / B-K4 / B-K5 / B-K6 not started.
 
-`chrome_extension/src/content/app.js`: **5 404 LOC** (was 6 510 LOC at
-session start; -1 106 LOC after the refactor series + today's fix).
+`chrome_extension/src/content/app.js`: **5 404 LOC**.
 
 ---
 
 ## Known regressions / pending fixes
 
-Captured here so they don't get lost in the post-compression pass.
+### R1 — Float button has the wrong UX (won't fix in V2)
 
-### R1 — Float button has the wrong UX (high priority)
+**Status:** V2 will not get an anchored-injection fix. V3's
+Anchor-Card-first injection (Decision #4) is the resolution. V2 stays
+float-only until unpublish.
 
-**Symptom:** float panel renders correctly in the bottom-right corner but
-sits far from where the user reads product info. V2's in-table integration
-was meaningfully better — mouse travel is shorter, the action reads as
-part of the product info.
+### R2 — Click on the float button does nothing (urgent, fix in next session)
 
-**Fix:** see revised Decision #4. Implement the anchored path against the
-header card (Table 0 in the live LCSC layout), keep float as fallback.
+**Symptom:** float panel renders, but clicking Download triggers no observable
+action.
 
-**Affected files:** `chrome_extension/src/content/app.js`
-(`attachButton`, `buildFloatHostStyle`, `cleanupInjectedUi`). Add an
-`findHeaderCardAnchor()` helper that walks tables looking for the LCSC ID
-cell. New CSS for the table-row mode (V2 style) plus the float mode.
+**Hypotheses, ranked:**
 
-**Estimated effort:** half a day. One PR.
-
-### R2 — Click on the float button does nothing (urgent, root cause unclear)
-
-**Symptom:** float panel is visible, but clicking the EasyEDA Download
-button (or the Template button) triggers no observable action.
-
-**Hypotheses to investigate, ranked by probability:**
-
-1. **The button is still in the "Backend: checking" placeholder state**
-   because `refreshButtonGroup` never resolves the backend-online check.
-   The backend may not be running on the user's machine right now, or the
-   `getState` RPC isn't returning what `refreshButtonGroup` expects.
-   First diagnostic: check `chrome://extensions` → service worker
-   console for the extension; look for `[easyeda2kicad]` errors and any
-   WebSocket connection failures.
-2. **`handleDownloadClick` references the deleted `findInsertionPoint` /
-   tbody chain somewhere**. Verify by stepping the click handler in
-   DevTools.
-3. **Shadow DOM event propagation** broken because the float-host's
-   `position: fixed` container sits at `z-index: 2147483646`. LCSC may
-   have an overlay above it intercepting clicks.
-4. **`onclick` assignment timing** — the placeholder button had
-   `setButtonDisabledPlaceholder` applied; the real onclick is set in
-   `refreshButtonGroup`. If that never runs, the button stays a no-op.
+1. **Backend not running.** Button stays in "Backend: checking" placeholder
+   state because `refreshButtonGroup` never resolves the backend-online check.
+   Verify by running `python run_server.py` from the repo and re-clicking.
+   First diagnostic: `chrome://extensions` → service worker console → look
+   for `[easyeda2kicad]` errors / WebSocket failures.
+2. **`handleDownloadClick` references deleted findInsertionPoint / tbody
+   chain.** Step in DevTools.
+3. **Shadow-DOM event propagation broken** because the fixed-position
+   container sits at `z-index: 2147483646` and LCSC may have an overlay
+   intercepting clicks.
+4. **`onclick` assignment timing** — placeholder button had
+   `setButtonDisabledPlaceholder`; the real onclick is set in
+   `refreshButtonGroup`. If that never runs, button stays a no-op.
 
 **Affected files:** `chrome_extension/src/content/app.js` —
 `refreshButtonGroup`, `handleDownloadClick`, `attachButton`.
 
-**Estimated effort:** 1–3 hours to diagnose, less to fix once root cause
-is found.
+**Estimated effort:** 1 hour to diagnose, less to fix.
 
-### R3 — Module manifest oversight (already mitigated)
+### R3 — Module manifest oversight (mitigated)
 
-For the record: PRs #0–#3b shipped six new content-script modules without
-adding them to `web_accessible_resources`. Vitest + node --check did not
-catch it because both lack the manifest context. The fix in commit
-`84df7ab` switches to a glob (`src/content/*.js`) and adds a Pytest
-guard. Mitigated; no further action.
+PRs #0–#3b shipped six new content-script modules without adding them to
+`web_accessible_resources`. Commit `84df7ab` fixed with a glob + Pytest guard.
+Mitigated, no further action.
 
 ---
 
-## What to do next (post-compression checklist)
+## What to do next (post-grilling, sequenced)
 
-In a fresh session after context compression:
-
-1. **Fix R2 (the click regression).** Diagnose via service worker console.
-   Most likely candidate is that the backend WebSocket isn't connected
-   and the buttons stay in the placeholder state — verify by running
-   `python run_server.py` from the repo and watching the console.
-2. **Fix R1 (anchored injection).** Implement
-   `findHeaderCardAnchor()`, fall back to the float panel only when the
-   header-card walk returns null. Keep the test fixture in
-   `lcscPageSnapshot.test.js` as the reference structure.
-3. **Resolve the five open questions** (Backend deployment A/B/C, etc.)
-   in a short workshop. The answers shape what V3's walking skeleton
-   actually looks like.
-4. **Decide phase ordering:** continue the REFACTOR-PLAN.md series to
-   finish V2's cleanup, or pivot to a V3 walking skeleton. The current
-   data suggests V3 is the better investment, but R1+R2 should be fixed
-   regardless.
+1. **Fix R2.** Diagnose via service-worker console. Likely cause: backend
+   wasn't running. Confirm by starting `run_server.py` and clicking.
+2. **V3 Walking Skeleton (2 evenings).** Spike validates the riskiest V3
+   decision (Native Messaging) before committing to the full build:
+   - Native-Host Manifest written by a hand-rolled installer script (one OS
+     to start — Windows since you're on Windows 11).
+   - Service Worker opens a Native-Host port with a placeholder
+     `kicad_importer_host` binary.
+   - Binary responds to a dummy `fetchMetadata` RPC with synthetic data and
+     a dummy `convert` RPC that writes a synthetic file.
+   - LCSC content script (fake fixture, not the real page) calls through and
+     renders an Override Panel skeleton.
+3. **If the spike clears (no Python cold-start blocker, no install-pathology):**
+   commit to the full V3 backend + extension build per the Effort table.
+4. **If the spike surfaces a blocker:** revisit Decision #3 (Native Messaging).
+   The next-best path is Option C (system-tray app); Option B (KiCad plugin)
+   stays rejected.
+5. **Skip everything in REFACTOR-PLAN.md.** Clean break means V2 cleanup is
+   wasted effort.
 
 ---
 
 ## Process lessons from this session
 
-Documented so the next session doesn't repeat them.
-
-- **"Tests green" is not "shipped working"** when the test harness mocks
-  the production loading environment. Vitest with jsdom does not enforce
-  Chrome MV3's web_accessible_resources contract. Six PRs in a row were
-  green and broken. The fix: never claim "done" on an extension PR
-  without `chrome://extensions` → reload → page refresh → user-visible
-  action triggered. Sixty seconds, and it catches an entire class of
-  bug Vitest never will.
+- **"Tests green" is not "shipped working"** when the test harness mocks the
+  production loading environment. Vitest + jsdom does not enforce Chrome MV3's
+  `web_accessible_resources` contract. Six PRs in a row were green and broken.
+  Fix: never claim "done" on an extension PR without `chrome://extensions` →
+  reload → page refresh → user-visible action triggered. Sixty seconds, and it
+  catches an entire class of bug Vitest never will.
 - **Empirical UX beats abstract elegance.** The float-panel decision was
-  defensible in theory (zero DOM dependency, future-proof). It was
-  worse in practice the moment the user moved a mouse. Decisions that
-  sound clean in a spec should still be reality-checked in the first
-  feedback session.
-- **CI guards earn their keep when the cost of the bug they prevent
-  exceeds the cost of writing them.** `test_extension_manifest.py` is
-  30 lines and prevents a class of silent breakage that was producing
-  shipped PRs. Worth it. Apply the same calculus before any V3 module
-  extraction.
+  defensible in theory (zero DOM dependency, future-proof). It was worse in
+  practice the moment the user moved a mouse. V3 returns to anchored-first
+  on empirical grounds.
+- **CI guards earn their keep when the cost of the bug they prevent exceeds
+  the cost of writing them.** `test_extension_manifest.py` is 30 lines and
+  prevents a class of silent breakage. Apply the same calculus before any V3
+  module extraction.
+- **Clean breaks remove huge classes of decisions.** Once V3 was scoped as
+  "new listing, no migration code," half a dozen design questions collapsed
+  to "do what's right for V3, ignore V2." Worth doing whenever the cost of
+  in-place compat exceeds the cost of a one-time discovery push to users.
