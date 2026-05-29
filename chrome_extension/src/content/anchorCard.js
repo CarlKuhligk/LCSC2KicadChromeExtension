@@ -122,10 +122,12 @@ export function buildAnchorCardRow(doc = document, opts = {}) {
 }
 
 /**
- * Insert the V3 anchor `<tr>` directly beneath the detected anchor row.
- * Returns the injected (or pre-existing) row, or `null` when no anchor was
- * found — the caller falls back to the float panel. Idempotent: a second
- * call returns the previously injected row instead of duplicating.
+ * Insert the V3 anchor `<tr>` as the **last row** of the anchor table's body.
+ * Position at the end reads as an action bar; placing it mid-table reads as
+ * a stray data row. Returns the injected (or pre-existing) row, or `null`
+ * when no anchor was found — the caller falls back to the float panel.
+ * Idempotent: a second call returns the previously injected row instead of
+ * duplicating.
  *
  * @param {Document} [doc=document]
  * @returns {HTMLTableRowElement | null}
@@ -139,6 +141,7 @@ export function injectAnchorCard(doc = document) {
 
   const colSpan = Math.max(1, anchor.children.length - 1);
   const row = buildAnchorCardRow(doc, { colSpan });
-  anchor.parentNode.insertBefore(row, anchor.nextSibling);
+  const target = ownerTable?.querySelector("tbody") || anchor.parentNode;
+  target.appendChild(row);
   return row;
 }

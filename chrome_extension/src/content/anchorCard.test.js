@@ -178,28 +178,27 @@ describe("injectAnchorCard", () => {
     document.body.innerHTML = "";
   });
 
-  it("inserts the V3 <tr> directly under the LCSC-Nr. row on the DE fixture", () => {
+  it("inserts the V3 <tr> as the LAST row of the anchor table's tbody on the DE fixture", () => {
     document.body.innerHTML = LCSC_C22548_DE_FIXTURE;
     const inserted = injectAnchorCard();
     expect(inserted).toBeTruthy();
-    const anchor = document
-      .querySelector("table.table-fixed")
-      .querySelectorAll("tr");
-    // The LCSC-Nr. row is index 2 (Hersteller, Herst.-Teilenr., LCSC-Nr.); our row should sit at index 3.
-    const lcscRow = [...anchor].find((tr) => tr.children[0]?.textContent.trim() === "LCSC-Nr.");
-    expect(lcscRow.nextElementSibling).toBe(inserted);
+    const tbody = document.querySelector("table.table-fixed tbody");
+    expect(tbody.lastElementChild).toBe(inserted);
+    // And it must sit AFTER all of the original data rows, not interleaved.
+    const lcscRow = [...tbody.children].find(
+      (tr) => tr.children[0]?.textContent.trim() === "LCSC-Nr.",
+    );
+    expect(lcscRow.nextElementSibling.children[0]?.textContent.trim()).toBe("Verp.");
     expect(inserted.querySelector('[data-k2c-action="download"]')).toBeTruthy();
     expect(inserted.querySelector('[data-k2c-action="customize"]')).toBeTruthy();
   });
 
-  it("inserts under the LCSC Part # row on the EN fixture", () => {
+  it("inserts as the LAST row of the anchor table on the EN fixture", () => {
     document.body.innerHTML = LCSC_C22548_EN_FIXTURE;
     const inserted = injectAnchorCard();
     expect(inserted).toBeTruthy();
-    const lcscRow = [...document.querySelectorAll("tr")].find(
-      (tr) => tr.children[0]?.textContent.trim() === "LCSC Part #",
-    );
-    expect(lcscRow.nextElementSibling).toBe(inserted);
+    const tbody = document.querySelector("table tbody");
+    expect(tbody.lastElementChild).toBe(inserted);
   });
 
   it("returns null when no anchor exists, so the caller can render the float fallback", () => {
