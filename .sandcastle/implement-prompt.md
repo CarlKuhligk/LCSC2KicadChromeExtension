@@ -62,6 +62,21 @@ remains.
 4. **If no issue is eligible** — output the completion signal and stop.
    Do not invent work.
 
+## Branch discipline (read carefully)
+
+The sandbox has put you on branch `{{SOURCE_BRANCH}}`. **Stay on this branch
+for every commit, every push, and the `gh pr create` call.** Do NOT create
+a new branch with a "speaker" name like `v3/issue-N-feature` even if you
+think it would be clearer — the orchestrator counts commits on
+`{{SOURCE_BRANCH}}` to know whether you produced work, and a side-branch
+makes the orchestrator believe the backlog is empty and stop the whole
+pipeline. The PR title carries the human-readable summary; the branch
+name is the orchestrator's internal handle.
+
+Verify before every push: `git rev-parse --abbrev-ref HEAD` must print
+`{{SOURCE_BRANCH}}`. If you accidentally switched branches, return to it
+with `git checkout {{SOURCE_BRANCH}}` and commit there.
+
 ## Workflow per issue
 
 1. **Read the issue body in full**, including `## What to build`,
