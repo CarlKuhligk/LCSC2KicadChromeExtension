@@ -49,6 +49,7 @@ import {
 } from "./lcscCategoryDialog.js";
 import { extractPageData } from "./lcscPageSnapshot.js";
 import { injectAnchorCard, ANCHOR_ROW_ATTR } from "./anchorCard.js";
+import { attachNativeHostStatus } from "./nativeHostStatusButton.js";
 /** Datasheet panel / PDF.js pipeline — always on; filter DevTools console by `[KiCad datasheet]`. */
 function k2cDatasheetLog(...args) {
   console.info("[KiCad datasheet]", ...args);
@@ -4638,6 +4639,24 @@ function showOverwriteDialog(button, lcscId, pageData, existingOverrides, dialog
   lockOverlayPageScroll();
 }
 
+/**
+ * Wire the V3 Anchor Card's Download button to live Pre-Warm status. The
+ * button reflects one of `checking` / `online` / `offline` while the SW
+ * keep-alive heartbeat re-pings the Native Host every 25 s.
+ *
+ * @param {HTMLTableRowElement} anchorRow
+ */
+function wireAnchorCardDownloadStatus(anchorRow) {
+  const downloadBtn = anchorRow?.querySelector?.('button[data-k2c-action="download"]');
+  if (!downloadBtn) return;
+  if (downloadBtn.dataset.k2cNativeHostWired === "true") return;
+  downloadBtn.dataset.k2cNativeHostWired = "true";
+  attachNativeHostStatus(downloadBtn, {
+    send: (payload) => contentRpc(payload.type, payload, k2cRpc(2, 200)),
+    runtime: chrome.runtime.onMessage,
+  }).catch((e) => dbg("wireAnchorCardDownloadStatus failed", e?.message || e));
+}
+
 function attachButton(lcscId) {
   if (document.getElementById(BTN_GROUP_ID)) {
     dbg("attachButton: product button group already present");
@@ -4662,6 +4681,7 @@ function attachButton(lcscId) {
   if (anchorRow) {
     anchorRow.dataset.k2cLcscId = lcscId;
     dbg("attachButton: anchored row injected", lcscId);
+    wireAnchorCardDownloadStatus(anchorRow);
     return true;
   }
 

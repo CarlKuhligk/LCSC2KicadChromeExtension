@@ -1566,6 +1566,15 @@ async function checkPath(path) {
 
 const NATIVE_HOST_NAME = "com.kicad_parts_importer.host";
 const NATIVE_HOST_PING_TIMEOUT_MS = 5000;
+/**
+ * Pre-Warm heartbeat: every 25 s the service worker re-pings the Native Host.
+ * Two jobs: (a) belt-and-suspenders keep-alive against future Chrome
+ * service-worker idle thresholds, (b) cheap freshness check so the Anchor
+ * Card button can flip to `offline` mid-session if the user stops the host.
+ * See V3-SPEC.md §3 (Cold-start mitigation).
+ */
+const NATIVE_HOST_KEEPALIVE_ALARM = "v3-native-host-keepalive";
+const NATIVE_HOST_KEEPALIVE_PERIOD_MIN = 25 / 60;
 
 async function pingNativeHostOnce() {
   let port;
@@ -1604,6 +1613,66 @@ async function pingNativeHostOnce() {
     } catch (e) {
       finish({ online: false, error: e?.message || "postMessage threw" });
     }
+  });
+}
+
+/**
+ * Cached Pre-Warm status. Tri-state matches the Anchor Card button visual:
+ * `checking` while a ping is in flight, `online`/`offline` after it settles.
+ * Refreshed on every prewarm call and on every keep-alive alarm fire.
+ */
+let nativeHostStatus = { state: "checking", version: null, error: null, updatedAt: 0 };
+let nativeHostPrewarmInFlight = null;
+
+function broadcastNativeHostStatus() {
+  const message = { type: "v3NativeHostStatusUpdate", status: { ...nativeHostStatus } };
+  try {
+    chrome.runtime.sendMessage(message).catch(() => { /* popup / extension pages only */ });
+  } catch (_e) { /* ignore */ }
+  broadcastToLcscContentTabs(message);
+}
+
+function updateNativeHostStatus(next) {
+  nativeHostStatus = { ...next, updatedAt: Date.now() };
+  broadcastNativeHostStatus();
+}
+
+async function prewarmNativeHostInternal() {
+  if (nativeHostPrewarmInFlight) return nativeHostPrewarmInFlight;
+  updateNativeHostStatus({ state: "checking", version: null, error: null });
+  const work = (async () => {
+    const result = await pingNativeHostOnce();
+    if (result.online) {
+      updateNativeHostStatus({ state: "online", version: result.version || null, error: null });
+    } else {
+      updateNativeHostStatus({ state: "offline", version: null, error: result.error || "offline" });
+    }
+    return { ...nativeHostStatus };
+  })();
+  nativeHostPrewarmInFlight = work;
+  try {
+    return await work;
+  } finally {
+    nativeHostPrewarmInFlight = null;
+  }
+}
+
+function ensureNativeHostKeepAliveAlarm() {
+  try {
+    chrome.alarms.get(NATIVE_HOST_KEEPALIVE_ALARM, (existing) => {
+      if (!existing) {
+        chrome.alarms.create(NATIVE_HOST_KEEPALIVE_ALARM, {
+          periodInMinutes: NATIVE_HOST_KEEPALIVE_PERIOD_MIN,
+        });
+      }
+    });
+  } catch (_e) { /* `alarms` permission missing — manifest guards this */ }
+}
+
+if (chrome.alarms?.onAlarm?.addListener) {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm?.name !== NATIVE_HOST_KEEPALIVE_ALARM) return;
+    prewarmNativeHostInternal().catch(() => { /* status already updated */ });
   });
 }
 
@@ -2347,6 +2416,17 @@ const RUNTIME_MESSAGE_HANDLERS = {
     return { cleared: true };
   },
   pingNativeHost: async () => pingNativeHostOnce(),
+  /**
+   * V3 Pre-Warm trigger (V3-SPEC.md §3). Content scripts call this on LCSC
+   * page load so the Native Host is hot by the time the user clicks. Idempotent
+   * across tabs: a concurrent call coalesces onto the in-flight ping.
+   */
+  prewarmNativeHost: async () => {
+    ensureNativeHostKeepAliveAlarm();
+    return prewarmNativeHostInternal();
+  },
+  /** Latest cached pre-warm status without forcing a fresh ping. */
+  getNativeHostStatus: async () => ({ ...nativeHostStatus }),
 };
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
