@@ -49,6 +49,7 @@ import {
 } from "./lcscCategoryDialog.js";
 import { extractPageData } from "./lcscPageSnapshot.js";
 import { injectAnchorCard, ANCHOR_ROW_ATTR } from "./anchorCard.js";
+import { wirePhase1Download } from "./phase1Fetch.js";
 /** Datasheet panel / PDF.js pipeline — always on; filter DevTools console by `[KiCad datasheet]`. */
 function k2cDatasheetLog(...args) {
   console.info("[KiCad datasheet]", ...args);
@@ -4661,6 +4662,24 @@ function attachButton(lcscId) {
   const anchorRow = injectAnchorCard(document);
   if (anchorRow) {
     anchorRow.dataset.k2cLcscId = lcscId;
+    // V3 Phase 1 Fetch (Issue #3): Download click → Native-Host
+    // ``fetchMetadata`` via the SW relay. Renders the result inline in the
+    // anchor row's actions cell. Phase 2 and the Override Panel land in
+    // later slices (#4, #5).
+    wirePhase1Download(anchorRow, lcscId, {
+      rpc: async (id, hints) => {
+        // SW dispatch wraps the handler return as `{ok, data}`; unwrap so
+        // `wirePhase1Download` sees the inner `{ok, result|error}` envelope.
+        const resp = await contentRpc(
+          "v3FetchMetadata",
+          { lcscId: id, pageHints: hints },
+          k2cRpc(2, 200),
+        );
+        if (resp?.ok && resp.data) return resp.data;
+        return { ok: false, error: resp?.error || "unknown error" };
+      },
+      log: (...args) => dbg("[phase1]", ...args),
+    });
     dbg("attachButton: anchored row injected", lcscId);
     return true;
   }
