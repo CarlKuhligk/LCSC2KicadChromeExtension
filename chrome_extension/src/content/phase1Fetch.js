@@ -82,7 +82,13 @@ export function ensurePhase1StatusNode(actionsCell, doc = document) {
  *   snapshot?: (doc?: Document) => {category?: string|null, datasheetUrl?: string|null},
  *   doc?: Document,
  *   log?: (...args: any[]) => void,
+ *   onPhase1Ok?: (result: object, anchorRow: HTMLElement) => void | Promise<unknown>,
  * }} deps
+ *
+ * The optional ``onPhase1Ok`` callback fires after the inline OK status is
+ * rendered. The V3 default-path chain (Issue #4) uses this hook to kick off
+ * Phase 2 Conversion — the Override Panel (#5) replaces the hook with its
+ * own user-confirmation step in later slices.
  */
 export function wirePhase1Download(anchorRow, lcscId, deps) {
   if (!anchorRow || !lcscId || !deps || typeof deps.rpc !== "function") return false;
@@ -124,6 +130,19 @@ export function wirePhase1Download(anchorRow, lcscId, deps) {
       if (resp && resp.ok === true && resp.result) {
         log("phase1: ok", resp.result);
         renderStatus("ok", formatPhase1Summary(resp.result));
+        if (typeof deps.onPhase1Ok === "function") {
+          try {
+            // Don't await — Phase 2 owns the status node from this point on
+            // and renders its own progress; awaiting here would block the
+            // click handler for the full conversion duration.
+            const maybe = deps.onPhase1Ok(resp.result, anchorRow);
+            if (maybe && typeof maybe.catch === "function") {
+              maybe.catch((err) => log("phase1: onPhase1Ok threw", err));
+            }
+          } catch (err) {
+            log("phase1: onPhase1Ok threw", err);
+          }
+        }
       } else {
         const err = (resp && resp.error) || "unknown error";
         log("phase1: error", err);

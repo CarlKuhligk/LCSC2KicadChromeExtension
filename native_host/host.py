@@ -14,10 +14,15 @@ Verbs handled:
   pin count, datasheet URL. See ``native_host.phase1`` for the metadata
   resolver and ``docs/adr/0002-two-phase-backend-conversion.md`` for the
   Phase 1 / Phase 2 split rationale.
+- ``convert`` — V3 **Phase 2 Conversion** default-path (Issue #4). Drives
+  the EasyEDA pipeline (Symbol + Footprint; 3D Layer follows in #6) and
+  streams free-form ``progress`` frames on the same port until the terminal
+  ``done`` (``ok=True``) or ``error`` arrives. ADR-0004 — no Job state, no
+  queue. See ``native_host.phase2`` for the runner.
 
-Concurrent ``fetchMetadata`` / future ``convert`` calls return ``busy`` per
-ADR-0004 (no Job state, no queue). The guard lives here so future RPCs
-(``convert`` in Issue #4) inherit it without having to re-implement.
+Concurrent ``fetchMetadata`` / ``convert`` calls return ``busy`` per ADR-0004
+(no Job state, no queue). The single-flight guard lives here so both RPCs
+share one lock — a Phase 1 in-flight blocks Phase 2 and vice versa.
 
 Run directly for dev: ``python native_host/host.py`` (Chrome invokes it via
 ``native_host/kicad-host.bat`` on Windows; see ``install.py`` for the
@@ -42,6 +47,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from native_host.phase1 import fetch_metadata  # noqa: E402  (after sys.path setup)
+from native_host.phase2 import run_phase2_conversion  # noqa: E402
 
 HOST_VERSION = "0.0.1"
 
@@ -105,6 +111,8 @@ def handle(
     request: dict[str, Any],
     *,
     metadata_fetcher: Callable[[str, dict[str, Any] | None], dict[str, Any]] | None = None,
+    conversion_runner: Callable[..., dict[str, Any]] | None = None,
+    emit: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Dispatch one request to its RPC handler.
 
@@ -113,6 +121,15 @@ def handle(
         metadata_fetcher: Optional override for the LCSC metadata resolver — tests
             inject a stub to avoid hitting the EasyEDA API. When ``None``, the
             default ``native_host.phase1.fetch_metadata`` is used.
+        conversion_runner: Optional override for the Phase 2 runner — tests
+            inject a stub that records progress callbacks without driving the
+            real EasyEDA pipeline. When ``None``, the default
+            ``native_host.phase2.run_phase2_conversion`` is used.
+        emit: Optional callable that ships a non-terminal frame on the
+            Native-Messaging port mid-flight. The ``convert`` RPC uses this to
+            stream ``progress`` frames before its terminal ``done``/``error``
+            (ADR-0004). When ``None``, progress frames are dropped — fine for
+            tests that only care about the terminal response.
     """
     verb = request.get("verb")
     request_id = request.get("id")
@@ -144,6 +161,44 @@ def handle(
 
         return _run_with_busy_guard(request_id, run)
 
+    if verb == "convert":
+        raw_params = request.get("params")
+        params = raw_params if isinstance(raw_params, dict) else {}
+        runner = conversion_runner or run_phase2_conversion
+
+        def progress_emit(message: str, percent: Any) -> None:
+            if emit is None:
+                return
+            frame: dict[str, Any] = {
+                "id": request_id,
+                "type": "progress",
+                "message": str(message) if message is not None else "",
+            }
+            if percent is not None:
+                try:
+                    frame["progress"] = int(percent)
+                except (TypeError, ValueError):
+                    pass
+            try:
+                emit(frame)
+            except Exception:  # noqa: BLE001 — never let progress kill conversion
+                pass
+
+        def run() -> dict[str, Any]:
+            try:
+                result = runner(params, progress_emit)
+            except ValueError as exc:
+                return {"id": request_id, "ok": False, "error": str(exc)}
+            except Exception as exc:  # noqa: BLE001 — surface as RPC error
+                return {
+                    "id": request_id,
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            return {"id": request_id, "ok": True, "result": result}
+
+        return _run_with_busy_guard(request_id, run)
+
     return {
         "id": request_id,
         "ok": False,
@@ -157,7 +212,10 @@ def main() -> int:
         if request is None:
             return 0
         try:
-            response = handle(request)
+            # ``emit`` ships progress frames on the same port mid-call so the
+            # ``convert`` RPC can stream Phase 2 progress (ADR-0004) before
+            # its terminal ``done``/``error`` arrives below.
+            response = handle(request, emit=_write_message)
         except Exception as exc:
             response = {
                 "id": request.get("id") if isinstance(request, dict) else None,

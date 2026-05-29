@@ -215,6 +215,59 @@ describe("wirePhase1Download", () => {
     });
   });
 
+  it("invokes onPhase1Ok with the Phase 1 result after rendering the OK status", async () => {
+    const row = mountAnchorRow();
+    const seen = { calls: [] };
+    wirePhase1Download(row, "C22548", {
+      rpc: () =>
+        Promise.resolve({
+          ok: true,
+          result: { categoryPath: "Passives/Resistors", pinCount: 2, datasheetUrl: null },
+        }),
+      snapshot: () => SNAPSHOT_C22548,
+      onPhase1Ok: (result, rowArg) => {
+        seen.calls.push({ result, sameRow: rowArg === row });
+      },
+    });
+    clickDownload(row);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(seen.calls).toHaveLength(1);
+    expect(seen.calls[0].sameRow).toBe(true);
+    expect(seen.calls[0].result.categoryPath).toBe("Passives/Resistors");
+  });
+
+  it("does not invoke onPhase1Ok when Phase 1 reports an error", async () => {
+    const row = mountAnchorRow();
+    let called = 0;
+    wirePhase1Download(row, "C22548", {
+      rpc: () => Promise.resolve({ ok: false, error: "boom" }),
+      snapshot: () => SNAPSHOT_C22548,
+      onPhase1Ok: () => { called += 1; },
+    });
+    clickDownload(row);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(called).toBe(0);
+  });
+
+  it("does not let a rejecting onPhase1Ok crash the click handler", async () => {
+    const row = mountAnchorRow();
+    wirePhase1Download(row, "C22548", {
+      rpc: () =>
+        Promise.resolve({
+          ok: true,
+          result: { categoryPath: "X", pinCount: 1, datasheetUrl: null },
+        }),
+      snapshot: () => SNAPSHOT_C22548,
+      onPhase1Ok: () => Promise.reject(new Error("phase 2 down")),
+    });
+    clickDownload(row);
+    await new Promise((r) => setTimeout(r, 0));
+    // Phase 1's OK status remains visible even when Phase 2's chain throws —
+    // we don't overwrite the row with an error from the downstream hook.
+    const status = row.querySelector(`[${PHASE1_STATUS_ATTR}]`);
+    expect(status.getAttribute(PHASE1_STATUS_ATTR)).toBe("ok");
+  });
+
   it("is idempotent — a second wire call does not register a duplicate listener", async () => {
     const row = mountAnchorRow();
     let callCount = 0;
