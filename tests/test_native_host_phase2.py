@@ -177,11 +177,13 @@ def test_returns_result_with_symbol_and_footprint_paths() -> None:
     assert out["footprintPath"] == "/tmp/MyLib.pretty/R0603.kicad_mod"
 
 
-def test_request_passed_to_runner_omits_3d_layer() -> None:
-    """Issue #4: 'default-path: EasyEDA-Pipeline ohne 3D-Layer (kommt in #6).'
+def test_request_passed_to_runner_enables_three_d_layer() -> None:
+    """Issue #6: '3D Layer integration — follows the Footprint.'
 
-    Verify the ConversionRequest the runner sees has ``generate_model=False``.
-    Symbol + Footprint must be enabled so the conversion writes both files.
+    With EasyEDA as the footprint source (the default path), the 3D Layer
+    reduces to V2-behavior: ``generate_model=True``, EasyEDA downloads the
+    ``.step``, the model ref is written into the .kicad_mod. Symbol +
+    Footprint must remain enabled so all three artefacts land in the lib.
     """
     seen: dict[str, ConversionRequest] = {}
 
@@ -197,7 +199,7 @@ def test_request_passed_to_runner_omits_3d_layer() -> None:
     req = seen["req"]
     assert req.generate_symbol is True
     assert req.generate_footprint is True
-    assert req.generate_model is False
+    assert req.generate_model is True
     assert req.lcsc_id == "C22548"
 
 

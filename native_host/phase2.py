@@ -1,10 +1,12 @@
 """
-V3 **Phase 2 Conversion** runner (Issue #4).
+V3 **Phase 2 Conversion** runner (Issues #4, #6).
 
 Default-path slice: drives the existing EasyEDA → KiCad pipeline
 (``easyeda2kicad.service.conversion.run_conversion``) without user overrides
-and without the 3D Layer (lands in #6). Writes Symbol + Footprint into the
-**Active library** the user picked in Settings.
+but **with the 3D Layer enabled** (#6) — the EasyEDA-Footprint path of
+ADR-0005 "3D follows the Footprint" reduces to V2-behavior here. Writes
+Symbol + Footprint + 3D into the **Active library** the user picked in
+Settings.
 
 The runner is invoked by the Native Host's ``convert`` RPC dispatcher
 (``native_host.host.handle``). It receives an ``emit`` callable that the
@@ -114,10 +116,15 @@ def run_phase2_conversion(
         lcsc_id=lcsc_id,
         output_prefix=output_prefix,
         overwrite=True,
-        # Default-path slice: Symbol + Footprint only. 3D Layer ships with #6.
+        # Default path (#6): 3D follows the Footprint. With EasyEDA as the
+        # footprint source — the only mode the default path exercises — that
+        # collapses to V2's "download EasyEDA-3D + write the (model ...) ref"
+        # behaviour. Template-Footprint carry-over (the other branch of
+        # ADR-0005) plugs in once the Override Panel (#5) supplies a
+        # ``templateFootprintPath`` to feed into ``three_d_resolver``.
         generate_symbol=True,
         generate_footprint=True,
-        generate_model=False,
+        generate_model=True,
     )
 
     def _progress_cb(_stage: ConversionStage, pct: int, message: Optional[str]) -> None:
