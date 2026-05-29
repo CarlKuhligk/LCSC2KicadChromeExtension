@@ -30,9 +30,7 @@ import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 
 // Maximum number of implement→review cycles to run before stopping.
 // Each cycle works on one issue. Raise this to process more issues per run.
-// SMOKE-TEST: temporarily set to 1 to verify the loop end-to-end on issue #2.
-// Restore to 10 (or higher) once the smoke is green.
-const MAX_ITERATIONS = 1;
+const MAX_ITERATIONS = 10;
 
 // Hooks run inside the sandbox before the agent starts each iteration.
 // KiCad-Parts-Importer is a polyglot repo: Python backend + JS extension.

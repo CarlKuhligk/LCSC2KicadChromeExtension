@@ -14,6 +14,7 @@ cross-OS safe even though the actual installer is Windows-only for now.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -99,9 +100,8 @@ def test_write_manifest_returns_true_when_content_differs(tmp_path: Path) -> Non
 
 
 def test_install_returns_expected_result_shape(tmp_path: Path) -> None:
-    # Fake a repo layout: tmp_path/native_host/{kicad-host.bat,host.py}
     (tmp_path / "native_host").mkdir()
-    (tmp_path / "native_host" / "kicad-host.bat").write_text("@echo off")
+    (tmp_path / "native_host" / "host.py").write_text("# stub")
 
     with mock.patch.object(install, "register_in_windows_registry", return_value=True):
         with mock.patch("sys.platform", "win32"):
@@ -109,18 +109,25 @@ def test_install_returns_expected_result_shape(tmp_path: Path) -> None:
 
     assert result["host_name"] == install.HOST_NAME
     assert result["manifest_changed"] is True
+    assert result["bat_changed"] is True
     assert result["registry_changed"] is True
     assert Path(result["manifest_path"]).exists()
+    assert Path(result["host_path"]).exists()
     manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
     assert manifest["name"] == install.HOST_NAME
     assert manifest["allowed_origins"] == [
         f"chrome-extension://{'abcdef' * 5 + 'ab'}/"
     ]
+    # Manifest must point at the generated runtime bat, not the committed shim.
+    assert manifest["path"] == str(Path(result["host_path"]).resolve())
+    bat_text = Path(result["host_path"]).read_text(encoding="utf-8")
+    assert sys.executable in bat_text
+    assert "host.py" in bat_text
 
 
 def test_install_is_idempotent_on_second_run(tmp_path: Path) -> None:
     (tmp_path / "native_host").mkdir()
-    (tmp_path / "native_host" / "kicad-host.bat").write_text("@echo off")
+    (tmp_path / "native_host" / "host.py").write_text("# stub")
 
     with mock.patch.object(install, "register_in_windows_registry", return_value=False):
         with mock.patch("sys.platform", "win32"):
@@ -128,15 +135,35 @@ def test_install_is_idempotent_on_second_run(tmp_path: Path) -> None:
             result_second = install.install("a" * 32, tmp_path)
 
     assert result_second["manifest_changed"] is False
+    assert result_second["bat_changed"] is False
     assert result_second["registry_changed"] is False
 
 
 def test_install_skips_registry_on_non_windows(tmp_path: Path) -> None:
     (tmp_path / "native_host").mkdir()
-    (tmp_path / "native_host" / "kicad-host.bat").write_text("#!/bin/sh")
+    (tmp_path / "native_host" / "host.py").write_text("# stub")
 
     with mock.patch("sys.platform", "linux"):
         result = install.install("a" * 32, tmp_path)
 
     assert result["registry_changed"] is None
     assert result["manifest_changed"] is True
+    assert result["bat_changed"] is True
+
+
+def test_write_runtime_bat_writes_quoted_paths(tmp_path: Path) -> None:
+    bat = tmp_path / "_generated" / "host-launcher.bat"
+    host_py = tmp_path / "native_host" / "host.py"
+    python_exe = r"C:\path with spaces\python.exe"
+    changed = install.write_runtime_bat(bat, python_exe, host_py)
+    assert changed is True
+    text = bat.read_text(encoding="utf-8")
+    assert f'"{python_exe}"' in text
+    assert f'"{host_py}"' in text
+
+
+def test_write_runtime_bat_is_idempotent(tmp_path: Path) -> None:
+    bat = tmp_path / "_generated" / "host-launcher.bat"
+    install.write_runtime_bat(bat, "py.exe", tmp_path / "host.py")
+    changed_second = install.write_runtime_bat(bat, "py.exe", tmp_path / "host.py")
+    assert changed_second is False

@@ -1566,6 +1566,7 @@ async function checkPath(path) {
 
 const NATIVE_HOST_NAME = "com.kicad_parts_importer.host";
 const NATIVE_HOST_PING_TIMEOUT_MS = 5000;
+const NATIVE_HOST_FETCH_METADATA_TIMEOUT_MS = 5000;
 /**
  * Pre-Warm heartbeat: every 25 s the service worker re-pings the Native Host.
  * Two jobs: (a) belt-and-suspenders keep-alive against future Chrome
@@ -1673,6 +1674,74 @@ if (chrome.alarms?.onAlarm?.addListener) {
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm?.name !== NATIVE_HOST_KEEPALIVE_ALARM) return;
     prewarmNativeHostInternal().catch(() => { /* status already updated */ });
+  });
+}
+
+let nativeHostPhase1InFlight = false;
+
+/**
+ * V3 **Phase 1 Fetch** RPC bridge (Issue #3). Opens a fresh Native-Host port
+ * per call, sends one ``fetchMetadata`` frame, awaits the matching response,
+ * disconnects. SW-side single-flight matches the Native-Host busy lock so a
+ * second tab gets ``busy`` (ADR-0004) without round-tripping.
+ *
+ * @param {{ lcscId: string, pageHints?: object }} payload
+ * @returns {Promise<{ok: true, result: object} | {ok: false, error: string}>}
+ */
+async function nativeHostFetchMetadata(payload) {
+  if (nativeHostPhase1InFlight) {
+    return { ok: false, error: "busy" };
+  }
+  const lcscId = typeof payload?.lcscId === "string" ? payload.lcscId.trim().toUpperCase() : "";
+  if (!lcscId || !/^C\d+$/.test(lcscId)) {
+    return { ok: false, error: "invalid lcscId" };
+  }
+  const pageHints =
+    payload?.pageHints && typeof payload.pageHints === "object" ? payload.pageHints : null;
+
+  nativeHostPhase1InFlight = true;
+  let port;
+  try {
+    port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
+  } catch (e) {
+    nativeHostPhase1InFlight = false;
+    return { ok: false, error: e?.message || "connectNative threw" };
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      nativeHostPhase1InFlight = false;
+      try { port.disconnect(); } catch (_e) { /* already gone */ }
+      resolve(result);
+    };
+    const timer = setTimeout(
+      () => finish({ ok: false, error: "timeout" }),
+      NATIVE_HOST_FETCH_METADATA_TIMEOUT_MS,
+    );
+    port.onMessage.addListener((msg) => {
+      clearTimeout(timer);
+      if (msg && msg.ok === true && msg.result && typeof msg.result === "object") {
+        finish({ ok: true, result: msg.result });
+      } else {
+        finish({ ok: false, error: msg?.error || "fetchMetadata returned no result" });
+      }
+    });
+    port.onDisconnect.addListener(() => {
+      clearTimeout(timer);
+      const err = chrome.runtime.lastError;
+      finish({ ok: false, error: err?.message || "disconnected" });
+    });
+    try {
+      port.postMessage({
+        id: Date.now(),
+        verb: "fetchMetadata",
+        params: { lcscId, pageHints },
+      });
+    } catch (e) {
+      finish({ ok: false, error: e?.message || "postMessage threw" });
+    }
   });
 }
 
@@ -2427,6 +2496,17 @@ const RUNTIME_MESSAGE_HANDLERS = {
   },
   /** Latest cached pre-warm status without forcing a fresh ping. */
   getNativeHostStatus: async () => ({ ...nativeHostStatus }),
+  /**
+   * V3 **Phase 1 Fetch** (Issue #3). Content script calls this from the
+   * Anchor Card's Download click; SW relays to the Native Host's
+   * ``fetchMetadata`` RPC. Returns ``{ok, result|error}`` so the content
+   * script can render either Category Path / Pin Count / Datasheet URL or
+   * the failure inline in the anchor row.
+   */
+  v3FetchMetadata: async (message) => nativeHostFetchMetadata({
+    lcscId: message.lcscId,
+    pageHints: message.pageHints,
+  }),
 };
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

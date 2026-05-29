@@ -75,7 +75,9 @@ architectural decisions:
 
 If you find improvements to make:
 
-1. Make the changes directly on this branch.
+1. Make the changes directly on the branch you are already on
+   (`{{SOURCE_BRANCH}}`). Do NOT create a side branch — the implementer's
+   PR is already open against this branch; a side branch breaks the PR.
 2. Run `cd chrome_extension && npm test` (Vitest) and `pytest`
    (from repo root). Both must remain green.
 3. Commit with the same conventional-commits style as the implementer:
@@ -83,6 +85,11 @@ If you find improvements to make:
    `test(v3): add edge-case coverage for ... (#<issue-number>)`.
 4. Sign off with
    `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`.
+5. **Push your commit to origin** with `git push` so the PR includes
+   your refinement. A reviewer commit that stays local is invisible
+   to the human reviewer and effectively unreviewed work. Verify with
+   `git rev-parse origin/{{SOURCE_BRANCH}}` — it must point at your
+   newest commit's SHA before you emit the completion signal.
 
 If the implementation is already clean and correct, do nothing — the
 implementer earned the PR as-is.
