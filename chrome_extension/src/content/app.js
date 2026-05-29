@@ -48,6 +48,7 @@ import {
   showCategoryDialog,
 } from "./lcscCategoryDialog.js";
 import { extractPageData } from "./lcscPageSnapshot.js";
+import { injectAnchorCard, ANCHOR_ROW_ATTR } from "./anchorCard.js";
 /** Datasheet panel / PDF.js pipeline — always on; filter DevTools console by `[KiCad datasheet]`. */
 function k2cDatasheetLog(...args) {
   console.info("[KiCad datasheet]", ...args);
@@ -4643,6 +4644,26 @@ function attachButton(lcscId) {
     ensureProductProgressRow();
     return true;
   }
+  const existingAnchor = document.querySelector(`[${ANCHOR_ROW_ATTR}="true"]`);
+  if (existingAnchor && existingAnchor.isConnected) {
+    dbg("attachButton: anchor row already present");
+    return true;
+  }
+
+  // V3 Anchor Card (V3-SPEC.md §4): try to inject into the LCSC header
+  // table first. If the walk finds the LCSC-Nr. row we mount the new <tr>
+  // there — best UX, mirrors V2's in-table integration. If no anchor is
+  // found we drop through to the Float Fallback below.
+  //
+  // Visual scaffold only in this slice: the Download / Customize buttons are
+  // wired to no-op handlers. Real click behavior lands with #4 (Phase 2
+  // Conversion) and #12 (Customize Button).
+  const anchorRow = injectAnchorCard(document);
+  if (anchorRow) {
+    anchorRow.dataset.k2cLcscId = lcscId;
+    dbg("attachButton: anchored row injected", lcscId);
+    return true;
+  }
 
   // Float-host: fixed-position panel on <body>. No LCSC table dependency.
   const groupDiv = document.createElement("div");
@@ -5169,6 +5190,10 @@ function scheduleProductPageAttachCheck(lcscId) {
         ensureProductProgressRow();
         return;
       }
+      const anchorRow = document.querySelector(`[${ANCHOR_ROW_ATTR}="true"]`);
+      if (anchorRow && anchorRow.isConnected) {
+        return;
+      }
       attachButton(lcscId);
     } catch (_e) {
       // ignore
@@ -5177,6 +5202,10 @@ function scheduleProductPageAttachCheck(lcscId) {
 }
 
 function cleanupInjectedUi() {
+  // V3 anchor row — the in-table <tr> we may have injected on a previous route.
+  document
+    .querySelectorAll(`[${ANCHOR_ROW_ATTR}="true"]`)
+    .forEach((tr) => tr.parentElement?.removeChild(tr));
   // Float panel — single container holds buttons + progress + heading.
   const group = document.getElementById(BTN_GROUP_ID);
   if (group?.parentElement) {
@@ -5218,6 +5247,10 @@ function scheduleDeferredProductAttach(lcscId, attempt = 0) {
         return;
       }
       if (document.getElementById(BTN_GROUP_ID)?.isConnected) {
+        return;
+      }
+      const anchorRow = document.querySelector(`[${ANCHOR_ROW_ATTR}="true"]`);
+      if (anchorRow?.isConnected) {
         return;
       }
       if (attachButton(lcscId)) {
