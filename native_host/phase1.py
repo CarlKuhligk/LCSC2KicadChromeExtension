@@ -44,17 +44,20 @@ def _validate_lcsc_id(raw: Any) -> str:
 
 
 def _count_pins_in_data_str(data_str: dict[str, Any]) -> int:
-    """Pin count = number of ``PIN~…`` lines in ``dataStr.shape``.
+    """Pin count = number of ``P~…`` lines in ``dataStr.shape``.
 
-    Faster than running the full ``EasyedaSymbolImporter`` (Phase 2's job) —
-    we only need a number, not the parsed pin objects.
+    EasyEDA's shape encoding uses single-letter prefixes (``P~`` pin,
+    ``R~`` rectangle, ``T~`` text, …), not the multi-letter ``PIN~`` the
+    original implementation assumed. Faster than running the full
+    ``EasyedaSymbolImporter`` (Phase 2's job) — we only need a number,
+    not the parsed pin objects.
     """
     shape = data_str.get("shape") if isinstance(data_str, dict) else None
     if not isinstance(shape, list):
         return 0
     count = 0
     for line in shape:
-        if isinstance(line, str) and line.startswith("PIN~"):
+        if isinstance(line, str) and line.startswith("P~"):
             count += 1
     return count
 

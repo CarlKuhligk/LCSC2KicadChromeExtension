@@ -25,8 +25,10 @@ from native_host.phase1 import fetch_metadata
 # ---------------------------------------------------------------------------
 # Sample LCSC C22548 (YAGEO 1kΩ 0603 resistor) EasyEDA component-API payload
 # ---------------------------------------------------------------------------
-# Minimal-but-realistic fragment: head + a couple of PIN/RECT shape entries.
-# The exact dataStr.shape lines matter because pin counting scans for ``PIN~``.
+# Minimal-but-realistic fragment: head + a couple of P~ (pin) / R~ (rect)
+# shape entries. EasyEDA uses single-letter prefixes; pin counting scans
+# for ``P~`` and the rectangle ``R~`` line is non-pin filler that proves
+# the matcher doesn't grab everything.
 SAMPLE_C22548_CAD = {
     "lcsc": {
         "number": "C22548",
@@ -44,8 +46,8 @@ SAMPLE_C22548_CAD = {
             },
         },
         "shape": [
-            "PIN~show~...~M -7.5 0 h 5.08~#000000~~0~0~Pin1~gge1~0~^^",
-            "PIN~show~...~M 7.5 0 h -5.08~#000000~~0~0~Pin2~gge2~0~^^",
+            "P~show~...~M -7.5 0 h 5.08~#000000~~0~0~Pin1~gge1~0~^^",
+            "P~show~...~M 7.5 0 h -5.08~#000000~~0~0~Pin2~gge2~0~^^",
             "R~-7.5~-2.5~~~15~5~#000000~1~0~none~gge3~0",
         ],
     },
