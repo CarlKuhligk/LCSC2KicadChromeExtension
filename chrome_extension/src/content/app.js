@@ -52,7 +52,7 @@ import { injectAnchorCard, ANCHOR_ROW_ATTR } from "./anchorCard.js";
 import { attachNativeHostStatus } from "./nativeHostStatusButton.js";
 import { wirePhase1Download } from "./phase1Fetch.js";
 import { runPhase2Convert } from "./phase2Convert.js";
-import { renderOverridePanel } from "./overridePanel.js";
+import { renderOverridePanel, OVERRIDE_PANEL_ROW_ATTR } from "./overridePanel.js";
 /** Datasheet panel / PDF.js pipeline — always on; filter DevTools console by `[KiCad datasheet]`. */
 function k2cDatasheetLog(...args) {
   console.info("[KiCad datasheet]", ...args);
@@ -5283,6 +5283,11 @@ function cleanupInjectedUi() {
   // V3 anchor row — the in-table <tr> we may have injected on a previous route.
   document
     .querySelectorAll(`[${ANCHOR_ROW_ATTR}="true"]`)
+    .forEach((tr) => tr.parentElement?.removeChild(tr));
+  // V3 Override Panel row — sibling of the anchor row when Phase 1 succeeded
+  // and the user navigated away before Confirm/Cancel.
+  document
+    .querySelectorAll(`[${OVERRIDE_PANEL_ROW_ATTR}="true"]`)
     .forEach((tr) => tr.parentElement?.removeChild(tr));
   // Float panel — single container holds buttons + progress + heading.
   const group = document.getElementById(BTN_GROUP_ID);

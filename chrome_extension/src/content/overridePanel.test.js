@@ -123,10 +123,7 @@ describe("selectionToOverrides", () => {
     expect(out.footprint).toEqual({ source: "easyeda" });
   });
 
-  it("symbol name may contain a colon — only the first two ':' delimit the prefix and libPath", () => {
-    // Defensive: Windows drive letters can introduce ':' inside libPath, and
-    // template symbol names are user-authored. The parser splits limit=3 so
-    // the name field captures the trailing remainder verbatim.
+  it("anchors the libPath/name split on the ``.kicad_sym`` suffix, so a Windows drive letter or a name containing ':' round-trips", () => {
     const out = selectionToOverrides({
       symbolValue: "template:C:\\Users\\me\\Templates.kicad_sym:Op_Amp:Variant",
       footprintValue: EASYEDA_OPTION_VALUE,

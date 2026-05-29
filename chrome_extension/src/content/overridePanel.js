@@ -26,6 +26,7 @@
  */
 
 export const OVERRIDE_PANEL_ATTR = "data-k2c-override-panel";
+export const OVERRIDE_PANEL_ROW_ATTR = "data-k2c-override-panel-row";
 export const OVERRIDE_SYMBOL_SELECT_ATTR = "data-k2c-override-symbol";
 export const OVERRIDE_FOOTPRINT_SELECT_ATTR = "data-k2c-override-footprint";
 export const OVERRIDE_CONFIRM_ATTR = "data-k2c-override-confirm";
@@ -141,10 +142,11 @@ export function buildOverridePanel(doc, opts = {}) {
 
 /**
  * Parse the ``<select>`` values back into the structured ``overrides`` payload
- * the Native Host RPC consumes. The option value format is
- * ``"easyeda"`` or ``"template:<libPath>:<name>"`` — ``libPath`` may itself
- * contain ``":"`` (Windows drive letters), so the split runs with ``limit=3``
- * and the trailing remainder is treated as the symbol/footprint name verbatim.
+ * the Native Host RPC consumes. The option value format is ``"easyeda"`` or
+ * ``"template:<libPath>:<name>"``; the split anchors on the ``.kicad_sym``
+ * suffix that always terminates a Template Library path, so Windows drive
+ * letters in ``libPath`` and ``":"`` characters in ``name`` both survive
+ * round-tripping.
  *
  * @param {{ symbolValue?: string, footprintValue?: string }} selection
  */
@@ -155,6 +157,8 @@ export function selectionToOverrides(selection) {
   };
 }
 
+const KICAD_SYM_SUFFIX = ".kicad_sym";
+
 function parseLayer(raw) {
   if (typeof raw !== "string" || !raw || raw === EASYEDA_OPTION_VALUE) {
     return { source: "easyeda" };
@@ -163,22 +167,13 @@ function parseLayer(raw) {
     return { source: "easyeda" };
   }
   const body = raw.slice(TEMPLATE_VALUE_PREFIX.length);
-  // libPath may be a Windows-style "C:\..." or POSIX "/home/...". The first
-  // ":" after the libPath separates name; everything after is the name (so
-  // names containing ":" survive). We find the *last* ":" that leaves a
-  // non-empty libPath and name on either side.
-  const idx = body.lastIndexOf(":");
-  if (idx <= 0 || idx === body.length - 1) {
-    return { source: "easyeda" };
-  }
-  // Handle "C:\..." prefix where the *first* ":" is part of the drive letter.
-  // If the body starts with a single drive letter + ":", treat the second-to-last
-  // delimiter onward as name. We rely on the rule that a template lib path
-  // always ends in ``.kicad_sym``; split on the first ":" *after* the suffix.
-  const suffix = ".kicad_sym";
-  const suffixIdx = body.toLowerCase().indexOf(suffix);
-  if (suffixIdx >= 0 && body.length > suffixIdx + suffix.length) {
-    const sep = suffixIdx + suffix.length;
+
+  // Primary split: a ``.kicad_sym`` suffix anchors the boundary between
+  // libPath and name, so both Windows drive letters (``C:\…``) inside
+  // libPath and any ``":"`` chars inside the user-authored name survive.
+  const suffixIdx = body.toLowerCase().indexOf(KICAD_SYM_SUFFIX);
+  if (suffixIdx > 0) {
+    const sep = suffixIdx + KICAD_SYM_SUFFIX.length;
     if (body[sep] === ":") {
       const libPath = body.slice(0, sep);
       const name = body.slice(sep + 1);
@@ -187,13 +182,15 @@ function parseLayer(raw) {
       }
     }
   }
-  // Fallback: last ":" split (POSIX paths without a drive letter).
-  const libPath = body.slice(0, idx);
-  const name = body.slice(idx + 1);
-  if (!libPath || !name) {
+
+  // Fallback for off-spec libPaths without the ``.kicad_sym`` suffix:
+  // split on the last ``":"``. Names containing ``":"`` are ambiguous here,
+  // but valid inputs never reach this branch.
+  const idx = body.lastIndexOf(":");
+  if (idx <= 0 || idx === body.length - 1) {
     return { source: "easyeda" };
   }
-  return { source: "template", libPath, name };
+  return { source: "template", libPath: body.slice(0, idx), name: body.slice(idx + 1) };
 }
 
 /**
@@ -231,9 +228,9 @@ export function renderOverridePanel(anchorRow, opts = {}) {
   let mount = panel;
   if (anchorRow.tagName?.toLowerCase() === "tr") {
     const tr = doc.createElement("tr");
-    tr.setAttribute("data-k2c-override-panel-row", "true");
+    tr.setAttribute(OVERRIDE_PANEL_ROW_ATTR, "true");
     const td = doc.createElement("td");
-    td.colSpan = Math.max(1, anchorRow.children.length || 1);
+    td.colSpan = Math.max(1, anchorRow.children.length);
     td.appendChild(panel);
     tr.appendChild(td);
     mount = tr;
@@ -246,13 +243,7 @@ export function renderOverridePanel(anchorRow, opts = {}) {
   const confirmBtn = panel.querySelector(`[${OVERRIDE_CONFIRM_ATTR}]`);
   const cancelBtn = panel.querySelector(`[${OVERRIDE_CANCEL_ATTR}]`);
 
-  const removePanel = () => {
-    try {
-      (mount.parentNode || panel.parentNode)?.removeChild(mount.parentNode ? mount : panel);
-    } catch (_e) {
-      /* already detached */
-    }
-  };
+  const removePanel = () => mount.remove();
 
   confirmBtn?.addEventListener("click", () => {
     const overrides = selectionToOverrides({
