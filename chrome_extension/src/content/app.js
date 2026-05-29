@@ -4709,16 +4709,28 @@ function attachButton(lcscId) {
       // Skip-Panel Flow land in #8; this slice always shows the panel.
       onPhase1Ok: async () => {
         let templateLibs = {};
+        let templateLibsFootprints = {};
         try {
-          const state = await contentRpc("getState", {}, k2cRpc(2, 200));
-          if (state?.ok && state.data?.templateSymbolsByLib) {
-            templateLibs = state.data.templateSymbolsByLib || {};
+          // Force a refresh via the Native Host (V3 path) so a freshly added
+          // template library populates without waiting for a popup-close →
+          // re-init cycle. Falls back to the cached state if the RPC fails.
+          const refreshed = await contentRpc("refreshTemplateSymbols", {}, k2cRpc(2, 200));
+          if (refreshed?.ok && refreshed.data) {
+            templateLibs = refreshed.data.templateSymbolsByLib || {};
+            templateLibsFootprints = refreshed.data.templateFootprintsByLib || {};
+          } else {
+            const state = await contentRpc("getState", {}, k2cRpc(2, 200));
+            if (state?.ok && state.data) {
+              templateLibs = state.data.templateSymbolsByLib || {};
+              templateLibsFootprints = state.data.templateFootprintsByLib || {};
+            }
           }
         } catch (e) {
-          dbg("[overridePanel] getState failed", e);
+          dbg("[overridePanel] template fetch failed", e);
         }
         renderOverridePanel(anchorRow, {
           templateLibs,
+          templateLibsFootprints,
           onConfirm: async (overrides) => {
             await runPhase2Convert(anchorRow, lcscId, {
               rpc: async (id, libraryPath, ov) => {

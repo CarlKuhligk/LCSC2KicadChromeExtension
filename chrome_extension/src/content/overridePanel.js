@@ -74,6 +74,7 @@ function populateSelect(select, doc, templateLibs) {
  * @param {Document} doc
  * @param {{
  *   templateLibs?: Record<string, string[]>,
+ *   templateLibsFootprints?: Record<string, string[]>,
  *   onConfirm?: (overrides: object) => void,
  *   onCancel?: () => void,
  * }} opts
@@ -113,7 +114,7 @@ export function buildOverridePanel(doc, opts = {}) {
   fpLabel.appendChild(doc.createTextNode("Footprint"));
   const fpSelect = doc.createElement("select");
   fpSelect.setAttribute(OVERRIDE_FOOTPRINT_SELECT_ATTR, "true");
-  populateSelect(fpSelect, doc, opts.templateLibs);
+  populateSelect(fpSelect, doc, opts.templateLibsFootprints || opts.templateLibs);
   fpLabel.appendChild(fpSelect);
   panel.appendChild(fpLabel);
 

@@ -132,6 +132,7 @@ let state = {
   templateLibraryPath: null,
   templateSymbols: [],
   templateSymbolsByLib: {},
+  templateFootprintsByLib: {},
 };
 
 let healthTimer = null;
@@ -830,37 +831,75 @@ function getTemplateLibraryPaths() {
     .filter(Boolean);
 }
 
+/**
+ * V3: list a Template Library's symbols + footprints via the Native Host's
+ * `listTemplates` RPC. Replaces the V2 WebSocket-backed `templates_symbols`
+ * call so the Override Panel (Issue #5) works without the legacy backend.
+ * Returns `{ symbols, footprints }` (empty lists on any failure — V3 panel
+ * degrades gracefully to "keep EasyEDA"-only).
+ */
+async function nativeHostListTemplates(libPath) {
+  let port;
+  try {
+    port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
+  } catch (e) {
+    return { symbols: [], footprints: [], error: e?.message || "connectNative threw" };
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      try { port.disconnect(); } catch (_e) { /* already gone */ }
+      resolve(result);
+    };
+    const timer = setTimeout(
+      () => finish({ symbols: [], footprints: [], error: "timeout" }),
+      5000,
+    );
+    port.onMessage.addListener((msg) => {
+      clearTimeout(timer);
+      if (msg && msg.ok === true && msg.result && typeof msg.result === "object") {
+        finish({
+          symbols: Array.isArray(msg.result.symbols) ? msg.result.symbols : [],
+          footprints: Array.isArray(msg.result.footprints) ? msg.result.footprints : [],
+        });
+      } else {
+        finish({ symbols: [], footprints: [], error: msg?.error || "no result" });
+      }
+    });
+    port.onDisconnect.addListener(() => {
+      clearTimeout(timer);
+      const err = chrome.runtime.lastError;
+      finish({ symbols: [], footprints: [], error: err?.message || "disconnected" });
+    });
+    try {
+      port.postMessage({ id: Date.now(), verb: "listTemplates", params: { libPath } });
+    } catch (e) {
+      finish({ symbols: [], footprints: [], error: e?.message || "postMessage threw" });
+    }
+  });
+}
+
 async function refreshTemplateStatus() {
   const libPaths = getTemplateLibraryPaths();
   state.templateLibraryPath = libPaths.length ? libPaths[0] : null;
   state.templateSymbols = [];
   state.templateSymbolsByLib = {};
+  state.templateFootprintsByLib = {};
   if (!libPaths.length) {
     broadcastState();
     return;
   }
   const allNames = new Set();
-  try {
-    for (const libPath of libPaths) {
-      const data = await sendExtensionRpc(
-        "templates_symbols",
-        { lib_path: libPath },
-        60000,
-      );
-      const symbols = Array.isArray(data.symbols) ? data.symbols : [];
-      state.templateSymbolsByLib[libPath] = symbols;
-      symbols.forEach((name) => allNames.add(name));
-    }
-    state.templateSymbols = Array.from(allNames).sort();
-    broadcastState();
-  } catch (error) {
-    state.templateSymbols = [];
-    state.templateSymbolsByLib = {};
-    if (state.debugLogs) {
-      console.warn("Template symbols refresh failed", error);
-    }
-    broadcastState();
+  for (const libPath of libPaths) {
+    const { symbols, footprints } = await nativeHostListTemplates(libPath);
+    state.templateSymbolsByLib[libPath] = symbols;
+    state.templateFootprintsByLib[libPath] = footprints;
+    symbols.forEach((name) => allNames.add(name));
   }
+  state.templateSymbols = Array.from(allNames).sort();
+  broadcastState();
 }
 
 async function checkHealth() {
@@ -1138,6 +1177,7 @@ function snapshotState() {
     categorySettings: { ...state.categorySettings },
     templateSymbols: (state.templateSymbols || []).slice(),
     templateSymbolsByLib: state.templateSymbolsByLib ? { ...state.templateSymbolsByLib } : {},
+    templateFootprintsByLib: state.templateFootprintsByLib ? { ...state.templateFootprintsByLib } : {},
     templateLibraryPath: state.templateLibraryPath || null,
     jobs: jobsArray,
     jobHistory: historyArray,
@@ -2178,6 +2218,7 @@ const RUNTIME_MESSAGE_HANDLERS = {
     await refreshTemplateStatus();
     return {
       templateSymbolsByLib: state.templateSymbolsByLib ? { ...state.templateSymbolsByLib } : {},
+      templateFootprintsByLib: state.templateFootprintsByLib ? { ...state.templateFootprintsByLib } : {},
       templateSymbols: (state.templateSymbols || []).slice(),
     };
   },
