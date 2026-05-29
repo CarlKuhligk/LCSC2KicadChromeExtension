@@ -2,7 +2,6 @@
 
 import { normalizeCategoryPath } from "./categoryNormalize.js";
 import {
-  BUTTON_ID,
   EASYEDA_DL_BTN_CLASS,
   TEMPLATE_DL_BTN_CLASS,
   DL_SUB_EASYEDA,
@@ -48,6 +47,7 @@ import {
   removeCategoryDialog,
   showCategoryDialog,
 } from "./lcscCategoryDialog.js";
+import { extractPageData } from "./lcscPageSnapshot.js";
 /** Datasheet panel / PDF.js pipeline — always on; filter DevTools console by `[KiCad datasheet]`. */
 function k2cDatasheetLog(...args) {
   console.info("[KiCad datasheet]", ...args);
@@ -714,167 +714,7 @@ function extractLcscId() {
   return match[1].toUpperCase();
 }
 
-function extractInfoTableRow(label) {
-  const rows = document.querySelectorAll("table.tableInfoWrap tr");
-  for (const row of rows) {
-    const th = row.querySelector("td.font-Bold-600");
-    if (th && th.textContent.trim() === label) {
-      const td = th.nextElementSibling;
-      return td ?? null;
-    }
-  }
-  return null;
-}
-
-function getCellDisplayValue(td) {
-  if (!td) return "";
-  const span = td.querySelector("span.major2--text");
-  if (span) return (span.textContent || "").trim();
-  const a = td.querySelector("a.v2-a, a[href]");
-  if (a) return (a.textContent || "").trim();
-  return (td.textContent || "").replace(/\s+/g, " ").trim();
-}
-
-/** Build params and ordered labels from the product info table (tableInfoWrap) where the KiCad row lives. */
-function extractTableInfoWrapSpecs() {
-  const params = {};
-  const labelsInOrder = [];
-  const rows = document.querySelectorAll("table.tableInfoWrap tbody tr");
-  for (const row of rows) {
-    const labelTd = row.querySelector("td.font-Bold-600");
-    if (!labelTd) continue;
-    const label = (labelTd.textContent || "").replace(/\s+/g, " ").trim();
-    if (!label) continue;
-    if (label === "KiCad") continue;
-    const valueTd = labelTd.nextElementSibling;
-    const value = getCellDisplayValue(valueTd);
-    params[label] = value;
-    labelsInOrder.push(label);
-  }
-  return { params, labelsInOrder };
-}
-
-/**
- * LCSC product page: attributes in Vuetify `.v-data-table.common-table-v7` (Type | Description | …).
- * First column = field name, second = value (links or plain text).
- */
-function extractVDataTableSpecs() {
-  const params = {};
-  const labelsInOrder = [];
-  const table =
-    document.querySelector(".v-data-table.common-table-v7 table")
-    || document.querySelector(".v-data-table .v-data-table__wrapper table");
-  if (!table) return { params, labelsInOrder };
-  const rows = table.querySelectorAll("tbody tr");
-  for (const row of rows) {
-    const tds = row.querySelectorAll("td");
-    if (tds.length < 2) continue;
-    const labelTd = tds[0];
-    const valueTd = tds[1];
-    const label = (labelTd.textContent || "").replace(/\s+/g, " ").trim();
-    if (!label) continue;
-    let value = "";
-    const link = valueTd.querySelector("a.v2-a, a[href]");
-    if (link) value = (link.textContent || "").trim();
-    else value = (valueTd.textContent || "").replace(/\s+/g, " ").trim();
-    params[label] = value;
-    labelsInOrder.push(label);
-  }
-  return { params, labelsInOrder };
-}
-
-function extractPageData() {
-  try {
-    const categoryCell = document.getElementById("category_id");
-    const categoryRaw = categoryCell?.nextElementSibling
-      ?.querySelector("a")?.textContent?.trim() ?? null;
-    const category = categoryRaw ? normalizeCategoryPath(categoryRaw) || null : null;
-
-    const packageCell = document.getElementById("package_id");
-    let pkg = packageCell?.nextElementSibling?.textContent?.trim() ?? null;
-
-    const { params: tableParams, labelsInOrder: wrapLabels } = extractTableInfoWrapSpecs();
-    const { params: vDataParams, labelsInOrder: vDataLabels } = extractVDataTableSpecs();
-    const params = { ...tableParams };
-    for (const [k, v] of Object.entries(vDataParams)) {
-      const existing = params[k];
-      const existingEmpty = existing == null || String(existing).trim() === "";
-      const vStr = v != null ? String(v).trim() : "";
-      if (existingEmpty && vStr) {
-        params[k] = v;
-      }
-    }
-    const labelsInOrder = [...wrapLabels];
-    const labelSeen = new Set(wrapLabels);
-    for (const L of vDataLabels) {
-      if (L && !labelSeen.has(L)) {
-        labelsInOrder.push(L);
-        labelSeen.add(L);
-      }
-    }
-    if (pkg != null && pkg !== "" && params["Package"] == null) {
-      params["Package"] = pkg;
-    }
-    if (pkg == null && params["Package"]) {
-      pkg = params["Package"];
-    }
-
-    document.querySelectorAll("td[id^='paramsItem']").forEach((td) => {
-      const label = (td.textContent || "").replace(/\s+/g, " ").replace(/:\s*$/, "").trim();
-      const value = td.nextElementSibling?.textContent?.trim();
-      if (label && value && params[label] == null) {
-        params[label] = value;
-      }
-    });
-
-    const descriptionTd = extractInfoTableRow("Description");
-    const description = descriptionTd
-      ? getCellDisplayValue(descriptionTd) || null
-      : null;
-
-    const datasheetTd = extractInfoTableRow("Datasheet");
-    const datasheetUrl = datasheetTd?.querySelector("a")?.href ?? null;
-
-    const preferredFirst = [
-      "Mfr. Part #",
-      "Manufacturer Part Number",
-      "Manufacturer",
-      "Category",
-      "Package",
-    ];
-    const valueParamOptions = [];
-    const used = new Set();
-    const add = (k) => {
-      const key = (k || "").trim();
-      if (!key || used.has(key)) return;
-      used.add(key);
-      valueParamOptions.push(key);
-    };
-    preferredFirst.forEach((k) => {
-      if (labelsInOrder.includes(k) || params[k] != null) add(k);
-    });
-    labelsInOrder.forEach(add);
-    Object.keys(params).forEach((k) => add(k));
-
-    return {
-      category,
-      package: pkg,
-      params,
-      description,
-      datasheetUrl,
-      valueParamOptions,
-    };
-  } catch (_err) {
-    return {
-      category: null,
-      package: null,
-      params: {},
-      description: null,
-      datasheetUrl: null,
-      valueParamOptions: [],
-    };
-  }
-}
+// extractPageData → ./lcscPageSnapshot.js
 
 /**
  * After user cancels the category dialog, restore buttons + status (pending/spinner otherwise sticks).
@@ -925,24 +765,29 @@ function abortPreDownloadIf(button, lcscId, shouldAbort) {
   return true;
 }
 
-function findInsertionPoint() {
-  try {
-    const tableWrap = document.querySelector("table.tableInfoWrap tbody");
-    if (tableWrap) {
-      return tableWrap;
-    }
-    const fuzzy = document.querySelector("table[class*='tableInfo'] tbody");
-    if (fuzzy) {
-      return fuzzy;
-    }
-    // Legacy LCSC layout: fragile (sibling index breaks when Vue adds wrappers). Keep last.
-    const fromImgSlide = document
-      .querySelector(".productImgSlide")
-      ?.parentNode?.parentNode?.children?.[1]?.querySelector("tbody");
-    return fromImgSlide || null;
-  } catch (_error) {
-    return null;
-  }
+/**
+ * Float-button mode (V3 pattern). The button group lives in a fixed-position
+ * panel attached to `<body>`, decoupled from LCSC's product-page DOM. LCSC
+ * can repaint, rearrange, or rename its tables — the button stays put.
+ *
+ * Style: bottom-right corner, modest shadow, high z-index so LCSC's own
+ * floating widgets don't cover us. The Shadow DOM (see ensureProductBtnGroupShadow)
+ * still isolates our internal styles from LCSC's Tailwind utility classes.
+ */
+function buildFloatHostStyle() {
+  return [
+    "position:fixed",
+    "right:24px",
+    "bottom:24px",
+    "z-index:2147483646",
+    "background:#ffffff",
+    "border:1px solid rgba(0,0,0,0.08)",
+    "border-radius:10px",
+    "box-shadow:0 8px 28px rgba(0,0,0,0.18),0 2px 8px rgba(0,0,0,0.10)",
+    "padding:10px 12px",
+    "min-width:240px",
+    "font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif",
+  ].join(";");
 }
 
 function setIcon(button, color, type = "download") {
@@ -1494,28 +1339,25 @@ function applyComponentState(button, data) {
 }
 
 /**
- * LCSC/Vue often re-renders the table and drops our progress <tr> while keeping the button host.
- * Recreate the row after the KiCad product row when missing so setProgressUI never silently no-ops.
+ * Progress section lives inside the float panel (sibling of the Shadow-DOM mount).
+ * No LCSC table dependency; LCSC repaints leave it untouched.
  */
 function ensureProductProgressRow() {
   if (document.getElementById(PRODUCT_PROGRESS_ROW_ID)) {
     return;
   }
   const group = document.getElementById(BTN_GROUP_ID);
-  const btnRow = group?.closest?.("tr");
-  const tbody = btnRow?.parentElement;
-  if (!btnRow || !tbody || String(tbody.tagName).toLowerCase() !== "tbody") {
-    return;
-  }
+  if (!group) return;
 
-  const progressRow = document.createElement("tr");
+  const progressRow = document.createElement("div");
   progressRow.id = PRODUCT_PROGRESS_ROW_ID;
   progressRow.style.display = "none";
-
-  const progressCell = document.createElement("td");
-  progressCell.setAttribute("colspan", "2");
-  progressCell.style.paddingTop = "2px";
-  progressCell.style.paddingBottom = "6px";
+  progressRow.style.cssText += [
+    "display:none",
+    "margin-top:8px",
+    "padding-top:8px",
+    "border-top:1px solid rgba(0,0,0,0.08)",
+  ].join(";");
 
   const track = document.createElement("div");
   track.id = "easyeda2kicad-progress-track";
@@ -1527,10 +1369,9 @@ function ensureProductProgressRow() {
   const statusText = document.createElement("div");
   statusText.id = "easyeda2kicad-status-text";
 
-  progressCell.appendChild(track);
-  progressCell.appendChild(statusText);
-  progressRow.appendChild(progressCell);
-  btnRow.insertAdjacentElement("afterend", progressRow);
+  progressRow.appendChild(track);
+  progressRow.appendChild(statusText);
+  group.appendChild(progressRow);
 }
 
 function getProgressElements() {
@@ -4797,23 +4638,32 @@ function showOverwriteDialog(button, lcscId, pageData, existingOverrides, dialog
 }
 
 function attachButton(lcscId) {
-  const tbody = findInsertionPoint();
-  if (!tbody) {
-    dbg("attachButton: no tbody found");
-    return false;
-  }
-
   if (document.getElementById(BTN_GROUP_ID)) {
     dbg("attachButton: product button group already present");
     ensureProductProgressRow();
     return true;
   }
 
-  // Create button group wrapper
+  // Float-host: fixed-position panel on <body>. No LCSC table dependency.
   const groupDiv = document.createElement("div");
   groupDiv.id = BTN_GROUP_ID;
+  groupDiv.style.cssText = buildFloatHostStyle();
   backendOnlineMonitorLcscId = lcscId;
   backendOnlineMonitorGroupDiv = groupDiv;
+
+  // Small heading so the panel reads as ours when LCSC content scrolls past.
+  const heading = document.createElement("div");
+  heading.id = `${BTN_GROUP_ID}-heading`;
+  heading.textContent = "KiCad";
+  heading.style.cssText = [
+    "font-size:11px",
+    "font-weight:600",
+    "letter-spacing:0.04em",
+    "text-transform:uppercase",
+    "color:#475569",
+    "margin:0 0 6px 2px",
+  ].join(";");
+  groupDiv.appendChild(heading);
 
   const mount = ensureProductBtnGroupShadow(groupDiv);
 
@@ -4833,51 +4683,12 @@ function attachButton(lcscId) {
   button.dataset[INIT_ATTR] = "false";
   mount.appendChild(button);
 
-  const row = document.createElement("tr");
-  row.id = `${BUTTON_ID}-row`;
-
-  const labelCell = document.createElement("td");
-  labelCell.textContent = "KiCad";
-  labelCell.style.fontWeight = "600";
-  labelCell.style.whiteSpace = "nowrap";
-
-  const actionCell = document.createElement("td");
-  actionCell.style.padding = "6px 0 6px 12px";
-  actionCell.appendChild(groupDiv);
-
-  row.appendChild(labelCell);
-  row.appendChild(actionCell);
-  tbody.appendChild(row);
-
-  // Progress / status row (initially hidden, spans both columns)
-  const progressRow = document.createElement("tr");
-  progressRow.id = PRODUCT_PROGRESS_ROW_ID;
-  progressRow.style.display = "none";
-
-  const progressCell = document.createElement("td");
-  progressCell.setAttribute("colspan", "2");
-  progressCell.style.paddingTop = "2px";
-  progressCell.style.paddingBottom = "6px";
-
-  const track = document.createElement("div");
-  track.id = "easyeda2kicad-progress-track";
-
-  const bar = document.createElement("div");
-  bar.id = "easyeda2kicad-progress-bar";
-  track.appendChild(bar);
-
-  const statusText = document.createElement("div");
-  statusText.id = "easyeda2kicad-status-text";
-
-  progressCell.appendChild(track);
-  progressCell.appendChild(statusText);
-  progressRow.appendChild(progressCell);
-  tbody.appendChild(progressRow);
+  document.body.appendChild(groupDiv);
+  ensureProductProgressRow();
 
   // Defer expensive "exists" checks to refreshButtonGroup() to keep UI responsive.
-  // Async: add template buttons if templates are configured for this category
   refreshButtonGroup(lcscId, groupDiv);
-  dbg("attachButton: inserted product button", lcscId);
+  dbg("attachButton: float panel attached", lcscId);
   return true;
 }
 
@@ -5366,12 +5177,14 @@ function scheduleProductPageAttachCheck(lcscId) {
 }
 
 function cleanupInjectedUi() {
-  const productRow = document.getElementById(`${BUTTON_ID}-row`);
-  if (productRow?.parentElement) {
-    productRow.parentElement.removeChild(productRow);
+  // Float panel — single container holds buttons + progress + heading.
+  const group = document.getElementById(BTN_GROUP_ID);
+  if (group?.parentElement) {
+    group.parentElement.removeChild(group);
   }
+  // Legacy progress row (V2 table layout) — kept for graceful upgrade.
   const progressRow = document.getElementById(PRODUCT_PROGRESS_ROW_ID);
-  if (progressRow?.parentElement) {
+  if (progressRow?.parentElement && progressRow.parentElement !== group) {
     progressRow.parentElement.removeChild(progressRow);
   }
   jobState.reset();

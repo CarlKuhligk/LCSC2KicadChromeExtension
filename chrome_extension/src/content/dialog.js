@@ -248,6 +248,10 @@ export const PREFERRED_VALUE_PARAM_KEYS = [
   "Model",
   "Product Name",
   "Name",
+  // Localized (DE) — modern LCSC ships these on German-locale visitors.
+  "Herst.-Teilenr.",
+  "Hersteller-Teilenr.",
+  "Hersteller Teilenummer",
 ];
 
 /**
