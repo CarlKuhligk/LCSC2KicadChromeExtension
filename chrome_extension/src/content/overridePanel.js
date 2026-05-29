@@ -20,7 +20,6 @@
  */
 
 const PANEL_ATTR = "data-k2c-override-panel";
-const ROW_PANEL_REF_ATTR = "data-k2c-override-panel-mounted";
 
 /** Option value for "no template, run the EasyEDA pipeline for this layer". */
 export const SOURCE_VALUE_EASYEDA = "easyeda";
@@ -243,14 +242,12 @@ export function renderOverridePanel(anchorRow, opts = {}) {
   const panel = buildOverridePanel({ templateLibs: opts.templateLibs, doc });
   const actionsCell = anchorRow.querySelector('[data-k2c-anchor-actions="true"]') || anchorRow;
   actionsCell.appendChild(panel);
-  anchorRow.setAttribute(ROW_PANEL_REF_ATTR, "true");
 
   const confirmBtn = panel.querySelector('[data-k2c-override-action="confirm"]');
   const cancelBtn = panel.querySelector('[data-k2c-override-action="cancel"]');
 
   const dismiss = () => {
     if (panel.parentNode) panel.parentNode.removeChild(panel);
-    anchorRow.removeAttribute(ROW_PANEL_REF_ATTR);
   };
 
   if (confirmBtn) {
