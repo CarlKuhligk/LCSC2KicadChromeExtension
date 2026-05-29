@@ -27,12 +27,21 @@ Native-Host-Manifest setup).
 from __future__ import annotations
 
 import json
+import os
 import struct
 import sys
 import threading
 from typing import Any, Callable
 
-from native_host.phase1 import fetch_metadata
+# When Chrome invokes host.py via the .bat shim, CWD is whatever Chrome chose
+# and the parent of native_host/ is NOT on sys.path — so `from native_host.X
+# import ...` raises ModuleNotFoundError. Insert the repo root explicitly.
+# Idempotent: no-op when already importable (e.g. when imported by tests).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from native_host.phase1 import fetch_metadata  # noqa: E402  (after sys.path setup)
 
 HOST_VERSION = "0.0.1"
 
