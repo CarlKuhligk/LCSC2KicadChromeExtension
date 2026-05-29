@@ -52,6 +52,7 @@ import { injectAnchorCard, ANCHOR_ROW_ATTR } from "./anchorCard.js";
 import { attachNativeHostStatus } from "./nativeHostStatusButton.js";
 import { wirePhase1Download } from "./phase1Fetch.js";
 import { runPhase2Convert } from "./phase2Convert.js";
+import { renderOverridePanel } from "./overridePanel.js";
 /** Datasheet panel / PDF.js pipeline — always on; filter DevTools console by `[KiCad datasheet]`. */
 function k2cDatasheetLog(...args) {
   console.info("[KiCad datasheet]", ...args);
@@ -4699,23 +4700,41 @@ function attachButton(lcscId) {
         return { ok: false, error: resp?.error || "unknown error" };
       },
       log: (...args) => dbg("[phase1]", ...args),
-      // V3 Phase 2 default-path chain (Issue #4): after Phase 1 completes,
-      // fire the EasyEDA conversion straight away — no Override Panel yet
-      // (#5), no Category Rules yet (#8). Symbol + Footprint land in the
-      // user's Active library (SW resolves ``libraryPath`` from
-      // ``state.selectedLibraryPath`` when the content script omits it).
+      // V3 Override Panel (Issue #5): after Phase 1 succeeds, render the
+      // inline Symbol/Footprint source picker beneath the Anchor Card. On
+      // Confirm the user's selection flows into Phase 2 as the
+      // ``overrides`` payload (Native Host applies them at conversion-bake
+      // time). Cancel leaves Phase 1's metadata visible — the user can
+      // click Download again to re-open the panel. Category Rules /
+      // Skip-Panel Flow land in #8; this slice always shows the panel.
       onPhase1Ok: async () => {
-        await runPhase2Convert(anchorRow, lcscId, {
-          rpc: async (id, libraryPath) => {
-            const resp = await contentRpc(
-              "v3Convert",
-              { lcscId: id, libraryPath },
-              k2cRpc(2, 200),
-            );
-            if (resp?.ok && resp.data) return resp.data;
-            return { ok: false, error: resp?.error || "unknown error" };
+        let templateLibs = {};
+        try {
+          const state = await contentRpc("getState", {}, k2cRpc(2, 200));
+          if (state?.ok && state.data?.templateSymbolsByLib) {
+            templateLibs = state.data.templateSymbolsByLib || {};
+          }
+        } catch (e) {
+          dbg("[overridePanel] getState failed", e);
+        }
+        renderOverridePanel(anchorRow, {
+          templateLibs,
+          onConfirm: async (overrides) => {
+            await runPhase2Convert(anchorRow, lcscId, {
+              rpc: async (id, libraryPath, ov) => {
+                const resp = await contentRpc(
+                  "v3Convert",
+                  { lcscId: id, libraryPath, overrides: ov },
+                  k2cRpc(2, 200),
+                );
+                if (resp?.ok && resp.data) return resp.data;
+                return { ok: false, error: resp?.error || "unknown error" };
+              },
+              overrides,
+              log: (...args) => dbg("[phase2]", ...args),
+            });
           },
-          log: (...args) => dbg("[phase2]", ...args),
+          onCancel: () => dbg("[overridePanel] cancelled"),
         });
       },
     });

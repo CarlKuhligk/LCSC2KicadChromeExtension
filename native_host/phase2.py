@@ -1,10 +1,11 @@
 """
-V3 **Phase 2 Conversion** runner (Issue #4).
+V3 **Phase 2 Conversion** runner (Issue #4, extended in #5).
 
-Default-path slice: drives the existing EasyEDA → KiCad pipeline
-(``easyeda2kicad.service.conversion.run_conversion``) without user overrides
-and without the 3D Layer (lands in #6). Writes Symbol + Footprint into the
-**Active library** the user picked in Settings.
+Drives the existing EasyEDA → KiCad pipeline
+(``easyeda2kicad.service.conversion.run_conversion``) with the optional
+**Override Panel** (#5) source choices baked in. Writes Symbol + Footprint
+into the **Active library** the user picked in Settings. 3D Layer lands in
+#6; Pin↔Pad Map in #9; full footprint-template path also #9.
 
 The runner is invoked by the Native Host's ``convert`` RPC dispatcher
 (``native_host.host.handle``). It receives an ``emit`` callable that the
@@ -18,6 +19,21 @@ Inputs (``params`` dict, validated below):
 - ``libraryPath`` — required, the library prefix without the ``.kicad_sym``
   suffix. Symbol writes go to ``<libraryPath>.kicad_sym``; footprints to
   ``<libraryPath>.pretty/*.kicad_mod``.
+- ``overrides`` — optional, the Override Panel payload:
+
+    {
+      "symbol":    {"source": "easyeda"} | {"source": "template", "libPath": str, "name": str},
+      "footprint": {"source": "easyeda"} | {"source": "template", "libPath": str, "name": str}
+    }
+
+  Missing / null ``overrides`` ⇒ default-path EasyEDA pipeline (#4 behavior).
+  ``symbol.source == "template"`` flows into the existing ``TemplateMerger``
+  via ``use_template`` / ``template_name`` / ``template_lib_path``;
+  **Always Re-Resolve** is honored because ``TemplateMerger`` reads the
+  template file fresh from disk on every conversion — no caching layer.
+  ``footprint.source == "template"`` is rejected for now: the full
+  footprint-template path needs the Pin-Map Sidecar (#9) and the 3D Layer
+  follow-the-Footprint logic (#6) to land first.
 
 Progress frames are intentionally free-form strings ("Connecting to
 EasyEDA…", "Writing .kicad_mod file…") plus an integer ``progress`` 0–100.
@@ -77,6 +93,57 @@ def _validate_library_path(raw: Any) -> str:
     return candidate
 
 
+def _validate_layer_override(raw: Any, *, layer: str) -> dict[str, Any]:
+    """Normalize one Override Panel layer entry.
+
+    Returns ``{"source": "easyeda"}`` when ``raw`` is missing / ``None``;
+    raises ``ValueError`` on a malformed shape so the RPC envelope carries
+    the explanation back to the user (instead of crashing the host port).
+    """
+    if raw is None:
+        return {"source": "easyeda"}
+    if not isinstance(raw, dict):
+        raise ValueError(f"overrides.{layer} must be an object")
+    source = raw.get("source")
+    if source == "easyeda" or source is None:
+        return {"source": "easyeda"}
+    if source != "template":
+        raise ValueError(
+            f"overrides.{layer}.source must be 'easyeda' or 'template' (got {source!r})"
+        )
+    lib_path = raw.get("libPath")
+    name = raw.get("name")
+    if not isinstance(lib_path, str) or not lib_path.strip():
+        raise ValueError(f"overrides.{layer}.libPath is required for template source")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(f"overrides.{layer}.name is required for template source")
+    return {"source": "template", "libPath": lib_path.strip(), "name": name.strip()}
+
+
+def _validate_overrides(raw: Any) -> dict[str, dict[str, Any]]:
+    """Normalize the full Override Panel payload (or default to both EasyEDA).
+
+    Footprint-template overrides are explicitly rejected for now — the full
+    footprint-template assembly path needs the Pin-Map Sidecar (#9) plus
+    the 3D Layer follow-the-Footprint logic (#6) to land first. Until then
+    the panel UI may still send the choice, but Phase 2 surfaces a clear
+    RPC error instead of silently producing EasyEDA output the user did
+    not pick.
+    """
+    if raw is None:
+        return {"symbol": {"source": "easyeda"}, "footprint": {"source": "easyeda"}}
+    if not isinstance(raw, dict):
+        raise ValueError("overrides must be an object")
+    symbol = _validate_layer_override(raw.get("symbol"), layer="symbol")
+    footprint = _validate_layer_override(raw.get("footprint"), layer="footprint")
+    if footprint["source"] == "template":
+        raise ValueError(
+            "footprint template override is not yet wired "
+            "(needs Pin-Map Sidecar #9 + 3D follows Footprint #6)"
+        )
+    return {"symbol": symbol, "footprint": footprint}
+
+
 def run_phase2_conversion(
     params: Any,
     emit: ProgressEmitter,
@@ -109,6 +176,10 @@ def run_phase2_conversion(
 
     lcsc_id = _validate_lcsc_id(params.get("lcscId"))
     output_prefix = _validate_library_path(params.get("libraryPath"))
+    overrides = _validate_overrides(params.get("overrides"))
+
+    symbol_override = overrides["symbol"]
+    use_template = symbol_override["source"] == "template"
 
     request = ConversionRequest(
         lcsc_id=lcsc_id,
@@ -118,6 +189,14 @@ def run_phase2_conversion(
         generate_symbol=True,
         generate_footprint=True,
         generate_model=False,
+        # Override Panel (#5): Symbol = Template flows the user's template
+        # name + lib path into the existing TemplateMerger. ``force_template``
+        # surfaces a clear error if the template is missing instead of
+        # silently falling back to the EasyEDA symbol the user did not pick.
+        use_template=use_template,
+        template_name=symbol_override.get("name") if use_template else None,
+        template_lib_path=symbol_override.get("libPath") if use_template else None,
+        force_template=use_template,
     )
 
     def _progress_cb(_stage: ConversionStage, pct: int, message: Optional[str]) -> None:

@@ -222,4 +222,23 @@ describe("runPhase2Convert", () => {
     });
     expect(seen.calls).toEqual([{ id: "C22548", libraryPath: "/abs/OverrideLib" }]);
   });
+
+  it("forwards the Override Panel overrides payload to the SW relay", async () => {
+    const row = mountAnchorRow();
+    const seen = { calls: [] };
+    const overrides = {
+      symbol: { source: "template", libPath: "/t/Templates.kicad_sym", name: "R0603" },
+      footprint: { source: "easyeda" },
+    };
+    await runPhase2Convert(row, "C22548", {
+      rpc: (id, libraryPath, ov) => {
+        seen.calls.push({ id, libraryPath, ov });
+        return Promise.resolve({ ok: true, result: { symbolPath: "/x.kicad_sym" } });
+      },
+      overrides,
+      subscribe: () => () => {},
+    });
+    expect(seen.calls).toHaveLength(1);
+    expect(seen.calls[0].ov).toEqual(overrides);
+  });
 });

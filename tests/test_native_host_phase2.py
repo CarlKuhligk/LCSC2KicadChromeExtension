@@ -374,3 +374,224 @@ def test_handle_convert_tolerates_missing_emit_for_unit_tests() -> None:
     )
     assert response["ok"] is True
     assert response["id"] == 42
+
+
+# ---------------------------------------------------------------------------
+# Issue #5 — Override Panel: symbol/footprint source override
+# ---------------------------------------------------------------------------
+
+
+def test_default_path_omits_template_fields() -> None:
+    """No ``overrides`` ⇒ pre-#5 default-path: EasyEDA symbol + footprint."""
+    seen: dict[str, ConversionRequest] = {}
+
+    def runner(request: ConversionRequest, _cb: Callable[..., None]) -> _StubResult:
+        seen["req"] = request
+        return _StubResult(symbol_path=f"{request.output_prefix}.kicad_sym")
+
+    run_phase2_conversion(
+        {"lcscId": "C22548", "libraryPath": "/tmp/MyLib"},
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    req = seen["req"]
+    assert req.use_template is False
+    assert req.template_name is None
+    assert req.template_lib_path is None
+    assert req.force_template is False
+
+
+def test_symbol_template_override_flows_into_request() -> None:
+    """Override Panel symbol=Template-X ⇒ ConversionRequest carries the
+    template name + lib path so the existing TemplateMerger pipeline writes
+    the user-picked symbol instead of the EasyEDA one.
+
+    Acceptance criterion (Issue #5): 'Python convert mit overrides.symbol=
+    Template-X schreibt das Template-Symbol (nicht EasyEDA-Symbol) in die
+    Library.'
+    """
+    seen: dict[str, ConversionRequest] = {}
+
+    def runner(request: ConversionRequest, _cb: Callable[..., None]) -> _StubResult:
+        seen["req"] = request
+        return _StubResult(symbol_path=f"{request.output_prefix}.kicad_sym")
+
+    run_phase2_conversion(
+        {
+            "lcscId": "C22548",
+            "libraryPath": "/tmp/MyLib",
+            "overrides": {
+                "symbol": {
+                    "source": "template",
+                    "libPath": "/home/user/Templates.kicad_sym",
+                    "name": "R0603_Custom",
+                },
+                "footprint": {"source": "easyeda"},
+            },
+        },
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    req = seen["req"]
+    assert req.use_template is True
+    assert req.template_name == "R0603_Custom"
+    assert req.template_lib_path == "/home/user/Templates.kicad_sym"
+    # ``force_template`` makes a missing template a hard error rather than a
+    # silent EasyEDA fallback the user did not pick.
+    assert req.force_template is True
+
+
+def test_overrides_with_explicit_easyeda_is_equivalent_to_default_path() -> None:
+    """``{source: 'easyeda'}`` for both layers is the explicit form of the
+    default-path — must not toggle ``use_template`` on."""
+    seen: dict[str, ConversionRequest] = {}
+
+    def runner(request: ConversionRequest, _cb: Callable[..., None]) -> _StubResult:
+        seen["req"] = request
+        return _StubResult(symbol_path=f"{request.output_prefix}.kicad_sym")
+
+    run_phase2_conversion(
+        {
+            "lcscId": "C22548",
+            "libraryPath": "/tmp/MyLib",
+            "overrides": {
+                "symbol": {"source": "easyeda"},
+                "footprint": {"source": "easyeda"},
+            },
+        },
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    assert seen["req"].use_template is False
+    assert seen["req"].template_name is None
+
+
+def test_symbol_template_override_requires_lib_path() -> None:
+    with pytest.raises(ValueError, match="overrides.symbol.libPath"):
+        run_phase2_conversion(
+            {
+                "lcscId": "C22548",
+                "libraryPath": "/tmp/MyLib",
+                "overrides": {
+                    "symbol": {"source": "template", "name": "R0603"},
+                    "footprint": {"source": "easyeda"},
+                },
+            },
+            emit=lambda *_: None,
+            conversion_runner=_stub_runner(),
+        )
+
+
+def test_symbol_template_override_requires_name() -> None:
+    with pytest.raises(ValueError, match="overrides.symbol.name"):
+        run_phase2_conversion(
+            {
+                "lcscId": "C22548",
+                "libraryPath": "/tmp/MyLib",
+                "overrides": {
+                    "symbol": {
+                        "source": "template",
+                        "libPath": "/home/user/T.kicad_sym",
+                    },
+                    "footprint": {"source": "easyeda"},
+                },
+            },
+            emit=lambda *_: None,
+            conversion_runner=_stub_runner(),
+        )
+
+
+def test_rejects_unknown_source_value() -> None:
+    with pytest.raises(ValueError, match="must be 'easyeda' or 'template'"):
+        run_phase2_conversion(
+            {
+                "lcscId": "C22548",
+                "libraryPath": "/tmp/MyLib",
+                "overrides": {
+                    "symbol": {"source": "lcsc-cad"},
+                    "footprint": {"source": "easyeda"},
+                },
+            },
+            emit=lambda *_: None,
+            conversion_runner=_stub_runner(),
+        )
+
+
+def test_footprint_template_override_rejected_until_pin_map_lands() -> None:
+    """Until #9 (Pin-Map Sidecar) + #6 (3D follows Footprint) land, choosing
+    a template footprint cannot produce a correct conversion — surface the
+    constraint as a clear RPC error instead of silently dropping back to
+    the EasyEDA footprint the user did not pick.
+    """
+    with pytest.raises(ValueError, match="footprint template override is not yet wired"):
+        run_phase2_conversion(
+            {
+                "lcscId": "C22548",
+                "libraryPath": "/tmp/MyLib",
+                "overrides": {
+                    "symbol": {"source": "easyeda"},
+                    "footprint": {
+                        "source": "template",
+                        "libPath": "/home/user/T.kicad_sym",
+                        "name": "R0603",
+                    },
+                },
+            },
+            emit=lambda *_: None,
+            conversion_runner=_stub_runner(),
+        )
+
+
+def test_handle_convert_returns_validation_error_for_bad_overrides() -> None:
+    """Bad overrides shape → ``error`` envelope, not a process crash."""
+    response = host.handle(
+        {
+            "id": 9,
+            "verb": "convert",
+            "params": {
+                "lcscId": "C22548",
+                "libraryPath": "/tmp/MyLib",
+                "overrides": "not-an-object",
+            },
+        },
+        conversion_runner=_outer_runner_with(_stub_runner()),
+    )
+    assert response["id"] == 9
+    assert response["ok"] is False
+    assert "overrides" in response["error"]
+
+
+def test_handle_convert_template_override_round_trip() -> None:
+    """End-to-end through ``host.handle``: the overrides payload reaches the
+    runner and the request hands the template fields to the inner pipeline.
+    """
+    seen: dict[str, ConversionRequest] = {}
+
+    def inner(request: ConversionRequest, _cb: Callable[..., None]) -> _StubResult:
+        seen["req"] = request
+        return _StubResult(symbol_path=f"{request.output_prefix}.kicad_sym")
+
+    response = host.handle(
+        {
+            "id": 11,
+            "verb": "convert",
+            "params": {
+                "lcscId": "C22548",
+                "libraryPath": "/tmp/MyLib",
+                "overrides": {
+                    "symbol": {
+                        "source": "template",
+                        "libPath": "/home/user/Templates.kicad_sym",
+                        "name": "R0603",
+                    },
+                    "footprint": {"source": "easyeda"},
+                },
+            },
+        },
+        conversion_runner=_outer_runner_with(inner),
+    )
+    assert response["ok"] is True
+    req = seen["req"]
+    assert req.use_template is True
+    assert req.template_name == "R0603"
+    assert req.template_lib_path == "/home/user/Templates.kicad_sym"

@@ -111,11 +111,18 @@ export function subscribeConvertProgress(lcscId, onProgress, deps = {}) {
  * Run Phase 2 for the given Anchor Card row + LCSC id. Renders progress
  * inline in the row's status node and resolves with the terminal envelope.
  *
+ * The optional ``overrides`` payload is the **Override Panel** (#5) output —
+ * ``{symbol:{source,...}, footprint:{source,...}}`` — passed straight through
+ * to the SW relay so the Native Host's Phase 2 RPC can apply the user's
+ * source choices. Omitted overrides yield the default-path EasyEDA pipeline
+ * (#4 behavior).
+ *
  * @param {HTMLElement} anchorRow  result of ``injectAnchorCard``
  * @param {string} lcscId
  * @param {{
- *   rpc: (lcscId: string, libraryPath?: string) => Promise<{ok:boolean, result?:object, error?:string}>,
+ *   rpc: (lcscId: string, libraryPath?: string, overrides?: object) => Promise<{ok:boolean, result?:object, error?:string}>,
  *   libraryPath?: string,
+ *   overrides?: object,
  *   subscribe?: typeof subscribeConvertProgress,
  *   doc?: Document,
  *   log?: (...args: any[]) => void,
@@ -143,7 +150,7 @@ export async function runPhase2Convert(anchorRow, lcscId, deps) {
 
   let envelope;
   try {
-    envelope = await deps.rpc(lcscId, deps.libraryPath);
+    envelope = await deps.rpc(lcscId, deps.libraryPath, deps.overrides);
   } catch (e) {
     envelope = { ok: false, error: e?.message || String(e) };
   } finally {

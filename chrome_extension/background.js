@@ -1763,7 +1763,7 @@ let nativeHostConvertInFlight = false;
  * SW-side single-flight matches the Native Host's busy lock so a second tab
  * gets ``busy`` immediately (no port open, no round-trip).
  *
- * @param {{ lcscId: string, libraryPath?: string }} payload
+ * @param {{ lcscId: string, libraryPath?: string, overrides?: object }} payload
  * @returns {Promise<{ok: true, result: object} | {ok: false, error: string}>}
  */
 async function nativeHostConvert(payload) {
@@ -1780,6 +1780,12 @@ async function nativeHostConvert(payload) {
   if (!libraryPath) {
     return { ok: false, error: "no Active library selected" };
   }
+  // V3 Override Panel (Issue #5): pass the user-resolved sources through to
+  // the Native Host verbatim. Shape validation happens host-side so the SW
+  // does not need to understand the override grammar.
+  const overrides = payload && typeof payload.overrides === "object" && payload.overrides !== null
+    ? payload.overrides
+    : null;
 
   nativeHostConvertInFlight = true;
   let port;
@@ -1829,10 +1835,12 @@ async function nativeHostConvert(payload) {
       finish({ ok: false, error: err?.message || "disconnected" });
     });
     try {
+      const params = { lcscId, libraryPath };
+      if (overrides) params.overrides = overrides;
       port.postMessage({
         id: Date.now(),
         verb: "convert",
-        params: { lcscId, libraryPath },
+        params,
       });
     } catch (e) {
       finish({ ok: false, error: e?.message || "postMessage threw" });
@@ -2612,6 +2620,7 @@ const RUNTIME_MESSAGE_HANDLERS = {
   v3Convert: async (message) => nativeHostConvert({
     lcscId: message.lcscId,
     libraryPath: message.libraryPath,
+    overrides: message.overrides,
   }),
 };
 
