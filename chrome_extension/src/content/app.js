@@ -52,6 +52,7 @@ import { injectAnchorCard, ANCHOR_ROW_ATTR } from "./anchorCard.js";
 import { attachNativeHostStatus } from "./nativeHostStatusButton.js";
 import { wirePhase1Download } from "./phase1Fetch.js";
 import { runPhase2Convert } from "./phase2Convert.js";
+import { renderOverridePanel } from "./overridePanel.js";
 /** Datasheet panel / PDF.js pipeline — always on; filter DevTools console by `[KiCad datasheet]`. */
 function k2cDatasheetLog(...args) {
   console.info("[KiCad datasheet]", ...args);
@@ -4699,23 +4700,48 @@ function attachButton(lcscId) {
         return { ok: false, error: resp?.error || "unknown error" };
       },
       log: (...args) => dbg("[phase1]", ...args),
-      // V3 Phase 2 default-path chain (Issue #4): after Phase 1 completes,
-      // fire the EasyEDA conversion straight away — no Override Panel yet
-      // (#5), no Category Rules yet (#8). Symbol + Footprint land in the
-      // user's Active library (SW resolves ``libraryPath`` from
-      // ``state.selectedLibraryPath`` when the content script omits it).
+      // V3 Phase 1 → Override Panel → Phase 2 chain (Issue #5). After
+      // Phase 1 succeeds we render the Override Panel inline on the same
+      // Anchor Card row. Confirm threads the user's per-layer source choice
+      // (Symbol + Footprint) into the Phase 2 RPC; Cancel resets the row so
+      // the user can click Download again. The default selection is the
+      // Issue #4 default-path: ``keep EasyEDA`` on both layers. Category
+      // Rules / Skip-Panel Flow (#8) replaces this unconditional render in
+      // a later slice.
       onPhase1Ok: async () => {
-        await runPhase2Convert(anchorRow, lcscId, {
-          rpc: async (id, libraryPath) => {
-            const resp = await contentRpc(
-              "v3Convert",
-              { lcscId: id, libraryPath },
-              k2cRpc(2, 200),
-            );
-            if (resp?.ok && resp.data) return resp.data;
-            return { ok: false, error: resp?.error || "unknown error" };
+        // Pull fresh state from the SW so the dropdown reflects the latest
+        // ``state.templateSymbolsByLib`` — the user may have added a
+        // Template Library after this content script loaded. "Always
+        // Re-Resolve" applies to the lib list too, not just the symbol file.
+        let templateLibs = {};
+        try {
+          const stateResp = await contentRpc("getState", {}, k2cRpc(2, 200));
+          if (stateResp?.ok && stateResp.data) {
+            templateLibs = stateResp.data.templateSymbolsByLib || {};
+          }
+        } catch (e) {
+          dbg("[overridePanel] getState failed", e);
+        }
+        renderOverridePanel(anchorRow, {
+          templateLibs,
+          onConfirm: async ({ overrides }) => {
+            await runPhase2Convert(anchorRow, lcscId, {
+              rpc: async (id, libraryPath, overridesPayload) => {
+                const resp = await contentRpc(
+                  "v3Convert",
+                  { lcscId: id, libraryPath, overrides: overridesPayload },
+                  k2cRpc(2, 200),
+                );
+                if (resp?.ok && resp.data) return resp.data;
+                return { ok: false, error: resp?.error || "unknown error" };
+              },
+              overrides,
+              log: (...args) => dbg("[phase2]", ...args),
+            });
           },
-          log: (...args) => dbg("[phase2]", ...args),
+          onCancel: () => {
+            dbg("[overridePanel] cancelled");
+          },
         });
       },
     });

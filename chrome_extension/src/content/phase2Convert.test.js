@@ -213,13 +213,38 @@ describe("runPhase2Convert", () => {
     const row = mountAnchorRow();
     const seen = { calls: [] };
     await runPhase2Convert(row, "C22548", {
-      rpc: (id, libraryPath) => {
-        seen.calls.push({ id, libraryPath });
+      rpc: (id, libraryPath, overrides) => {
+        seen.calls.push({ id, libraryPath, overrides });
         return Promise.resolve({ ok: true, result: { symbolPath: "/x.kicad_sym" } });
       },
       libraryPath: "/abs/OverrideLib",
       subscribe: () => () => {},
     });
-    expect(seen.calls).toEqual([{ id: "C22548", libraryPath: "/abs/OverrideLib" }]);
+    expect(seen.calls).toEqual([{
+      id: "C22548",
+      libraryPath: "/abs/OverrideLib",
+      overrides: null,
+    }]);
+  });
+
+  it("forwards the Override Panel selection through to the SW relay", async () => {
+    const row = mountAnchorRow();
+    const seen = { calls: [] };
+    await runPhase2Convert(row, "C22548", {
+      rpc: (id, libraryPath, overrides) => {
+        seen.calls.push({ id, libraryPath, overrides });
+        return Promise.resolve({ ok: true, result: { symbolPath: "/x.kicad_sym" } });
+      },
+      libraryPath: "/abs/OverrideLib",
+      overrides: {
+        symbol: { source: "template", libPath: "/u/T.kicad_sym", name: "R_0603" },
+        footprint: { source: "easyeda" },
+      },
+      subscribe: () => () => {},
+    });
+    expect(seen.calls[0].overrides).toEqual({
+      symbol: { source: "template", libPath: "/u/T.kicad_sym", name: "R_0603" },
+      footprint: { source: "easyeda" },
+    });
   });
 });

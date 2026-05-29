@@ -77,18 +77,73 @@ def _validate_library_path(raw: Any) -> str:
     return candidate
 
 
+_VALID_SOURCES = frozenset({"easyeda", "template"})
+
+
+def _parse_layer_override(layer_name: str, raw: Any) -> dict[str, Any]:
+    """Validate and normalize a single layer's override entry.
+
+    Accepts:
+
+    - ``None`` / missing → ``{"source": "easyeda"}`` (no-op, EasyEDA default).
+    - ``{"source": "easyeda"}`` → same.
+    - ``{"source": "template", "libPath": "...", "name": "..."}`` → template
+      override; both ``libPath`` and ``name`` required.
+
+    Raises ``ValueError`` with a layer-prefixed message so the SW relay's
+    error envelope tells the user exactly which dropdown produced the bad
+    state (much easier to debug than a bare "invalid override").
+    """
+    if raw is None:
+        return {"source": "easyeda"}
+    if not isinstance(raw, dict):
+        raise ValueError(f"overrides.{layer_name} must be an object")
+    source = raw.get("source")
+    if source not in _VALID_SOURCES:
+        raise ValueError(
+            f"overrides.{layer_name}.source must be one of {sorted(_VALID_SOURCES)!r}"
+        )
+    if source == "easyeda":
+        return {"source": "easyeda"}
+    lib_path = raw.get("libPath")
+    name = raw.get("name")
+    if not isinstance(lib_path, str) or not lib_path.strip():
+        raise ValueError(f"overrides.{layer_name}.libPath is required for template source")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(f"overrides.{layer_name}.name is required for template source")
+    return {"source": "template", "libPath": lib_path.strip(), "name": name.strip()}
+
+
+def _normalize_overrides(raw: Any) -> dict[str, dict[str, Any]]:
+    """Parse the ``overrides`` payload into a uniform two-layer dict.
+
+    Missing payload → both layers default to EasyEDA so the Native Host can
+    skip the Override Panel logic entirely and fall through to the Issue #4
+    default path.
+    """
+    if raw is None:
+        return {"symbol": {"source": "easyeda"}, "footprint": {"source": "easyeda"}}
+    if not isinstance(raw, dict):
+        raise ValueError("overrides must be an object")
+    return {
+        "symbol": _parse_layer_override("symbol", raw.get("symbol")),
+        "footprint": _parse_layer_override("footprint", raw.get("footprint")),
+    }
+
+
 def run_phase2_conversion(
     params: Any,
     emit: ProgressEmitter,
     *,
     conversion_runner: ConversionRunner = run_conversion,
 ) -> dict[str, Any]:
-    """Execute the default-path Phase 2 conversion for ``params``.
+    """Execute the Phase 2 conversion for ``params``.
 
     Args:
-        params: ``{"lcscId", "libraryPath", "libraryName"?}``. Other override
-            fields are ignored in this slice — overrides land with the
-            Override Panel (#5) and Category Rules (#8).
+        params: ``{"lcscId", "libraryPath", "overrides"?}``. ``overrides`` is
+            the Override Panel's (#5) per-layer source choice; defaults to
+            ``{symbol: easyeda, footprint: easyeda}`` when missing — the
+            Issue #4 default-path.
         emit: Called for every progress notification. The host wires this to
             its Native-Messaging writer so each call becomes one wire frame.
             Receives ``(message, percent)`` where ``percent`` may be ``None``
@@ -109,6 +164,21 @@ def run_phase2_conversion(
 
     lcsc_id = _validate_lcsc_id(params.get("lcscId"))
     output_prefix = _validate_library_path(params.get("libraryPath"))
+    overrides = _normalize_overrides(params.get("overrides"))
+
+    # Footprint=template flows depend on the **3D Layer** (#6) and the
+    # **Pin-Map Sidecar** (#9) so we refuse the path here until both land —
+    # surfacing a clear, actionable error beats silently dropping the user's
+    # selection back to EasyEDA. Symbol=template can land standalone because
+    # the existing TemplateMerger already covers that case in V2.
+    if overrides["footprint"]["source"] == "template":
+        raise ValueError(
+            "footprint template override is not yet wired "
+            "(needs Pin-Map Sidecar #9 + 3D follows Footprint #6)"
+        )
+
+    symbol_override = overrides["symbol"]
+    use_template_symbol = symbol_override["source"] == "template"
 
     request = ConversionRequest(
         lcsc_id=lcsc_id,
@@ -118,6 +188,13 @@ def run_phase2_conversion(
         generate_symbol=True,
         generate_footprint=True,
         generate_model=False,
+        use_template=use_template_symbol,
+        template_name=symbol_override.get("name") if use_template_symbol else None,
+        template_lib_path=symbol_override.get("libPath") if use_template_symbol else None,
+        # If the user picked a Template symbol we must NOT silently fall back
+        # to EasyEDA when the template fails to load — that would write a
+        # different file than the user asked for. Surface the failure instead.
+        force_template=use_template_symbol,
     )
 
     def _progress_cb(_stage: ConversionStage, pct: int, message: Optional[str]) -> None:

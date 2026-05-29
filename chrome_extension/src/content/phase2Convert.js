@@ -114,12 +114,19 @@ export function subscribeConvertProgress(lcscId, onProgress, deps = {}) {
  * @param {HTMLElement} anchorRow  result of ``injectAnchorCard``
  * @param {string} lcscId
  * @param {{
- *   rpc: (lcscId: string, libraryPath?: string) => Promise<{ok:boolean, result?:object, error?:string}>,
+ *   rpc: (lcscId: string, libraryPath?: string, overrides?: object|null) => Promise<{ok:boolean, result?:object, error?:string}>,
  *   libraryPath?: string,
+ *   overrides?: object|null,
  *   subscribe?: typeof subscribeConvertProgress,
  *   doc?: Document,
  *   log?: (...args: any[]) => void,
  * }} deps
+ *
+ * ``deps.overrides`` is the Override Panel's (#5) selection payload — a
+ * ``{symbol:{source,...}, footprint:{source,...}}`` object the Native Host
+ * threads into ``ConversionRequest``. Omit to run the EasyEDA default-path
+ * unchanged (Issue #4).
+ *
  * @returns {Promise<{ok:boolean, result?:object, error?:string}>}
  */
 export async function runPhase2Convert(anchorRow, lcscId, deps) {
@@ -143,7 +150,7 @@ export async function runPhase2Convert(anchorRow, lcscId, deps) {
 
   let envelope;
   try {
-    envelope = await deps.rpc(lcscId, deps.libraryPath);
+    envelope = await deps.rpc(lcscId, deps.libraryPath, deps.overrides || null);
   } catch (e) {
     envelope = { ok: false, error: e?.message || String(e) };
   } finally {

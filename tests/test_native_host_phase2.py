@@ -202,6 +202,211 @@ def test_request_passed_to_runner_omits_3d_layer() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Override Panel (#5) — overrides payload threading
+# ---------------------------------------------------------------------------
+
+
+def _capture_request_runner() -> tuple[dict[str, ConversionRequest], Callable[..., _StubResult]]:
+    seen: dict[str, ConversionRequest] = {}
+
+    def runner(request: ConversionRequest, _cb: Callable[..., None]) -> _StubResult:
+        seen["req"] = request
+        return _StubResult(symbol_path="/tmp/lib.kicad_sym")
+
+    return seen, runner
+
+
+def test_default_overrides_keep_easyeda_pipeline_request_unchanged() -> None:
+    """Missing/empty ``overrides`` defaults to the Issue #4 EasyEDA-only path:
+    no template fields set on the ConversionRequest, no force_template flag."""
+    seen, runner = _capture_request_runner()
+    run_phase2_conversion(
+        {"lcscId": "C22548", "libraryPath": "/tmp/MyLib"},
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    req = seen["req"]
+    assert req.use_template is False
+    assert req.template_name is None
+    assert req.template_lib_path is None
+    assert req.force_template is False
+
+
+def test_symbol_template_override_flows_into_request() -> None:
+    """Symbol=template thread the (libPath, name) tuple straight into
+    ``ConversionRequest`` — that's what V2's TemplateMerger already consumes,
+    so V3 reuses it. ``force_template=True`` so a missing template file
+    surfaces as a clear error instead of silently falling back to EasyEDA.
+    """
+    seen, runner = _capture_request_runner()
+    run_phase2_conversion(
+        {
+            "lcscId": "C22548",
+            "libraryPath": "/tmp/MyLib",
+            "overrides": {
+                "symbol": {
+                    "source": "template",
+                    "libPath": "/u/Templates.kicad_sym",
+                    "name": "R_0603_HiCount",
+                },
+                "footprint": {"source": "easyeda"},
+            },
+        },
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    req = seen["req"]
+    assert req.use_template is True
+    assert req.template_name == "R_0603_HiCount"
+    assert req.template_lib_path == "/u/Templates.kicad_sym"
+    assert req.force_template is True
+
+
+def test_footprint_template_override_is_explicitly_rejected_until_blockers_land() -> None:
+    """Issue #5's slice intentionally ships only the Symbol-template path;
+    the Footprint-template path needs the Pin-Map Sidecar (#9) and the
+    3D-follows-Footprint resolver (#6). Refuse loudly so the user knows the
+    selection would otherwise be silently dropped.
+    """
+    with pytest.raises(ValueError, match="footprint template"):
+        run_phase2_conversion(
+            {
+                "lcscId": "C22548",
+                "libraryPath": "/tmp/MyLib",
+                "overrides": {
+                    "symbol": {"source": "easyeda"},
+                    "footprint": {
+                        "source": "template",
+                        "libPath": "/u/Templates.pretty",
+                        "name": "R_0603",
+                    },
+                },
+            },
+            emit=lambda *_: None,
+            conversion_runner=_stub_runner(),
+        )
+
+
+def test_rejects_malformed_overrides_payload_shape() -> None:
+    """``overrides`` must be a dict; a string / list raises a clean
+    ValueError that the host wraps as ``{ok: False, error: ...}``."""
+    with pytest.raises(ValueError, match="overrides must be an object"):
+        run_phase2_conversion(
+            {"lcscId": "C22548", "libraryPath": "/tmp/MyLib", "overrides": "easyeda"},
+            emit=lambda *_: None,
+            conversion_runner=_stub_runner(),
+        )
+
+
+def test_rejects_template_source_without_libpath_or_name() -> None:
+    """Defensive: encoding bugs in the panel must not slip past the host as
+    half-formed template references. The error message identifies the layer
+    so the user-facing error envelope is actionable.
+    """
+    with pytest.raises(ValueError, match="overrides.symbol.libPath"):
+        run_phase2_conversion(
+            {
+                "lcscId": "C22548",
+                "libraryPath": "/tmp/MyLib",
+                "overrides": {"symbol": {"source": "template", "name": "R_0603"}},
+            },
+            emit=lambda *_: None,
+            conversion_runner=_stub_runner(),
+        )
+    with pytest.raises(ValueError, match="overrides.symbol.name"):
+        run_phase2_conversion(
+            {
+                "lcscId": "C22548",
+                "libraryPath": "/tmp/MyLib",
+                "overrides": {
+                    "symbol": {"source": "template", "libPath": "/u/T.kicad_sym"}
+                },
+            },
+            emit=lambda *_: None,
+            conversion_runner=_stub_runner(),
+        )
+
+
+def test_rejects_unknown_source_value() -> None:
+    """The Override Panel only emits ``easyeda`` or ``template``; anything
+    else is a protocol violation worth surfacing rather than silently
+    treating as EasyEDA."""
+    with pytest.raises(ValueError, match="overrides.symbol.source"):
+        run_phase2_conversion(
+            {
+                "lcscId": "C22548",
+                "libraryPath": "/tmp/MyLib",
+                "overrides": {"symbol": {"source": "lcsc"}},
+            },
+            emit=lambda *_: None,
+            conversion_runner=_stub_runner(),
+        )
+
+
+def test_handle_convert_template_override_round_trip() -> None:
+    """End-to-end through ``host.handle``: the SW-relayed ``overrides`` body
+    survives the dispatcher and lands as template fields on the
+    ConversionRequest the inner pipeline sees."""
+    seen: dict[str, ConversionRequest] = {}
+
+    def inner(request: ConversionRequest, _cb: Callable[..., None]) -> _StubResult:
+        seen["req"] = request
+        return _StubResult(symbol_path="/tmp/lib.kicad_sym")
+
+    response = host.handle(
+        {
+            "id": 9,
+            "verb": "convert",
+            "params": {
+                "lcscId": "C22548",
+                "libraryPath": "/tmp/MyLib",
+                "overrides": {
+                    "symbol": {
+                        "source": "template",
+                        "libPath": "/u/Templates.kicad_sym",
+                        "name": "R_0603_HiCount",
+                    },
+                    "footprint": {"source": "easyeda"},
+                },
+            },
+        },
+        conversion_runner=_outer_runner_with(inner),
+    )
+    assert response["ok"] is True
+    req = seen["req"]
+    assert req.use_template is True
+    assert req.template_name == "R_0603_HiCount"
+    assert req.template_lib_path == "/u/Templates.kicad_sym"
+
+
+def test_handle_convert_rejects_footprint_template_with_actionable_error() -> None:
+    """The footprint=template rejection arrives at the SW as the host's
+    standard error envelope — same shape as any other validation failure."""
+    response = host.handle(
+        {
+            "id": 11,
+            "verb": "convert",
+            "params": {
+                "lcscId": "C22548",
+                "libraryPath": "/tmp/MyLib",
+                "overrides": {
+                    "symbol": {"source": "easyeda"},
+                    "footprint": {
+                        "source": "template",
+                        "libPath": "/u/T.pretty",
+                        "name": "R_0603",
+                    },
+                },
+            },
+        },
+        conversion_runner=_outer_runner_with(_stub_runner()),
+    )
+    assert response["ok"] is False
+    assert "footprint template" in response["error"]
+    assert response["id"] == 11
+
+
+# ---------------------------------------------------------------------------
 # host.handle — convert RPC dispatch + progress streaming
 # ---------------------------------------------------------------------------
 
