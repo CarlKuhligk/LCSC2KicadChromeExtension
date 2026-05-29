@@ -5,7 +5,8 @@
   "description": "Download KiCad 9+ compatible symbols, footprints & 3D from LCSC. Local backend via WebSocket (API URL in Settings).",
   "permissions": [
     "storage",
-    "nativeMessaging"
+    "nativeMessaging",
+    "alarms"
   ],
   "host_permissions": [
     "http://localhost:8087/*",
