@@ -51,11 +51,11 @@ export function formatPhase2Progress(frame) {
 }
 
 /**
- * Render the terminal frame's summary. On success we lead with a checkmark
- * and the symbol library path so the user has an actionable confirmation
- * the file landed in the Active library. On failure we surface the backend
- * error verbatim — Phase 2 errors are short ("busy", "no Active library
- * selected", "Failed to fetch data for C99999: HTTP 404") and useful as-is.
+ * Render the terminal frame's summary. On success we surface the symbol
+ * library path so the user has an actionable confirmation the file landed
+ * in the Active library. On failure we surface the backend error verbatim —
+ * Phase 2 errors are short ("busy", "no Active library selected", "Failed
+ * to fetch data for C99999: HTTP 404") and useful as-is.
  *
  * @param {{ok: boolean, result?: object, error?: string}} envelope
  */

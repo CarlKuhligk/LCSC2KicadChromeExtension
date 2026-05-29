@@ -30,7 +30,6 @@ EasyEDA API.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Any, Callable, Optional
 
 from easyeda2kicad.service.conversion import (
@@ -139,13 +138,3 @@ def run_phase2_conversion(
         "footprintPath": getattr(result, "footprint_path", None),
         "messages": list(getattr(result, "messages", []) or []),
     }
-
-
-def expected_symbol_path(library_path: str) -> str:
-    """Return the .kicad_sym path the conversion will write to.
-
-    Lives next to the runner so the SW relay can echo the expected path back
-    to the content script before the conversion completes (useful for the
-    progress UI; not load-bearing).
-    """
-    return str(Path(_validate_library_path(library_path)).with_suffix(".kicad_sym"))
