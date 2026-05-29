@@ -2,10 +2,38 @@ import logging
 import math
 import re
 import textwrap
+import unicodedata
 from typing import TYPE_CHECKING, Any, List, Tuple
 
 if TYPE_CHECKING:
     from easyeda2kicad.easyeda.parameters_easyeda import EeSymbol
+
+
+def normalize_category_path(raw: Any) -> str:
+    """Python mirror of the JavaScript Category Path normalization rule.
+
+    Canonical implementation:
+    ``chrome_extension/shared/categoryPath.mjs::normalizeCategoryPath``.
+
+    Rule (in order):
+        1. Non-string or ``None`` input → ``""``.
+        2. Convert backslashes to forward slashes (``\\`` → ``/``).
+        3. Collapse runs of slashes (``//+`` → ``/``), then strip
+           leading/trailing whitespace.
+        4. Apply Unicode NFC normalization.
+        5. Split on ``/``, trim each segment, drop empty segments, rejoin
+           with ``/``.
+
+    Drift between the two sides is detected by
+    ``tests/test_category_path_mirror.py``, which exercises the same corpus as
+    ``chrome_extension/shared/categoryPath.test.mjs``.
+    """
+    if not isinstance(raw, str):
+        return ""
+    s = raw.replace("\\", "/")
+    s = re.sub(r"/+", "/", s).strip()
+    s = unicodedata.normalize("NFC", s)
+    return "/".join(seg for seg in (part.strip() for part in s.split("/")) if seg)
 
 sym_lib_regex_kicad_sym = (
     r'\n(?P<indent>[ \t]*)\(symbol "{component_name}".*?\n(?P=indent)\)'

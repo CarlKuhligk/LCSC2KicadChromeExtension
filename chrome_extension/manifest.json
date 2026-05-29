@@ -52,7 +52,8 @@
         "src/content/categoryNormalize.js",
         "src/content/constants.js",
         "src/content/dialog.js",
-        "src/content/rpc.js"
+        "src/content/rpc.js",
+        "shared/categoryPath.mjs"
       ],
       "matches": [
         "https://www.lcsc.com/*",
