@@ -1608,6 +1608,8 @@ async function pingNativeHostOnce() {
   });
 }
 
+let nativeHostPhase1InFlight = false;
+
 /**
  * V3 **Phase 1 Fetch** RPC bridge (Issue #3). Opens a fresh Native-Host port
  * per call, sends one ``fetchMetadata`` frame, awaits the matching response,
@@ -1617,8 +1619,6 @@ async function pingNativeHostOnce() {
  * @param {{ lcscId: string, pageHints?: object }} payload
  * @returns {Promise<{ok: true, result: object} | {ok: false, error: string}>}
  */
-let nativeHostPhase1InFlight = false;
-
 async function nativeHostFetchMetadata(payload) {
   if (nativeHostPhase1InFlight) {
     return { ok: false, error: "busy" };

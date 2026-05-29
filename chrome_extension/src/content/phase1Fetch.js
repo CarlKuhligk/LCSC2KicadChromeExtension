@@ -90,9 +90,9 @@ export function wirePhase1Download(anchorRow, lcscId, deps) {
   if (!doc) return false;
   const downloadBtn = anchorRow.querySelector('[data-k2c-action="download"]');
   if (!downloadBtn) return false;
-  // Re-wiring guard: a second call replaces the listener cleanly so each
-  // injection-cycle has a single live handler (matches app.js's `.onclick =`
-  // pattern for the float-host primary button).
+  // Idempotent guard: a second call on the same button is a no-op so
+  // re-injecting the Anchor Card (LCSC reflow, attachButton retries) does
+  // not stack duplicate click handlers.
   if (downloadBtn.__k2cPhase1Wired) return true;
   downloadBtn.__k2cPhase1Wired = true;
 

@@ -112,17 +112,17 @@ def handle(
         return {"id": request_id, "ok": True, "version": HOST_VERSION}
 
     if verb == "fetchMetadata":
-        params = request.get("params") if isinstance(request.get("params"), dict) else {}
-        lcsc_id = params.get("lcscId") if isinstance(params, dict) else None
-        page_hints = (
-            params.get("pageHints") if isinstance(params, dict) else None
-        )
+        raw_params = request.get("params")
+        params = raw_params if isinstance(raw_params, dict) else {}
+        lcsc_id = params.get("lcscId")
+        raw_hints = params.get("pageHints")
+        page_hints = raw_hints if isinstance(raw_hints, dict) else None
 
         fetcher = metadata_fetcher or fetch_metadata
 
         def run() -> dict[str, Any]:
             try:
-                result = fetcher(lcsc_id, page_hints if isinstance(page_hints, dict) else None)
+                result = fetcher(lcsc_id, page_hints)
             except ValueError as exc:
                 return {"id": request_id, "ok": False, "error": str(exc)}
             except Exception as exc:  # noqa: BLE001 — propagate as RPC error

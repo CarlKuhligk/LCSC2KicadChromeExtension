@@ -4667,8 +4667,17 @@ function attachButton(lcscId) {
     // anchor row's actions cell. Phase 2 and the Override Panel land in
     // later slices (#4, #5).
     wirePhase1Download(anchorRow, lcscId, {
-      rpc: (id, hints) =>
-        contentRpc("v3FetchMetadata", { lcscId: id, pageHints: hints }, k2cRpc(2, 200)),
+      rpc: async (id, hints) => {
+        // SW dispatch wraps the handler return as `{ok, data}`; unwrap so
+        // `wirePhase1Download` sees the inner `{ok, result|error}` envelope.
+        const resp = await contentRpc(
+          "v3FetchMetadata",
+          { lcscId: id, pageHints: hints },
+          k2cRpc(2, 200),
+        );
+        if (resp?.ok && resp.data) return resp.data;
+        return { ok: false, error: resp?.error || "unknown error" };
+      },
       log: (...args) => dbg("[phase1]", ...args),
     });
     dbg("attachButton: anchored row injected", lcscId);
