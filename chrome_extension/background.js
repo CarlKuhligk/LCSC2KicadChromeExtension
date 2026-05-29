@@ -1559,6 +1559,55 @@ async function checkPath(path) {
 }
 
 // =============================================================================
+// V3 walking skeleton — Native Host ping (ADR-0001). Real V3 RPCs land in
+// later slices (#3 Phase 1 Fetch, #4 Phase 2 Conversion). Coexists with the
+// V2 WebSocket transport above; V3 has its own transport on a separate port.
+// =============================================================================
+
+const NATIVE_HOST_NAME = "com.kicad_parts_importer.host";
+const NATIVE_HOST_PING_TIMEOUT_MS = 5000;
+
+async function pingNativeHostOnce() {
+  let port;
+  try {
+    port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
+  } catch (e) {
+    return { online: false, error: e?.message || "connectNative threw" };
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      try { port.disconnect(); } catch (_e) { /* already gone */ }
+      resolve(result);
+    };
+    const timer = setTimeout(
+      () => finish({ online: false, error: "timeout" }),
+      NATIVE_HOST_PING_TIMEOUT_MS,
+    );
+    port.onMessage.addListener((msg) => {
+      clearTimeout(timer);
+      if (msg && msg.ok === true) {
+        finish({ online: true, version: msg.version || null });
+      } else {
+        finish({ online: false, error: msg?.error || "no ok flag" });
+      }
+    });
+    port.onDisconnect.addListener(() => {
+      clearTimeout(timer);
+      const err = chrome.runtime.lastError;
+      finish({ online: false, error: err?.message || "disconnected" });
+    });
+    try {
+      port.postMessage({ id: Date.now(), verb: "ping" });
+    } catch (e) {
+      finish({ online: false, error: e?.message || "postMessage threw" });
+    }
+  });
+}
+
+// =============================================================================
 // chrome.runtime.onMessage — handler map (popup + content script)
 // =============================================================================
 
@@ -2297,6 +2346,7 @@ const RUNTIME_MESSAGE_HANDLERS = {
     broadcastState();
     return { cleared: true };
   },
+  pingNativeHost: async () => pingNativeHostOnce(),
 };
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

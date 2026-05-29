@@ -264,6 +264,29 @@ async function init() {
   await loadUiPreferences();
   await hydrate();
   chrome.runtime.onMessage.addListener(handleRuntimeMessage);
+  refreshNativeHostStatus();
+}
+
+async function refreshNativeHostStatus() {
+  const textEl = document.getElementById("native-host-status-text");
+  if (!textEl) return;
+  try {
+    // SW dispatcher wraps handler results: { ok: true, data } on success,
+    // { ok: false, error } on dispatcher-side failure (see background.js).
+    const response = await chrome.runtime.sendMessage({ type: "pingNativeHost" });
+    const payload = response?.ok ? response.data : null;
+    if (payload?.online) {
+      textEl.textContent = `online · v${payload.version || "?"}`;
+      textEl.style.color = "var(--bs-success, #198754)";
+    } else {
+      const err = payload?.error || response?.error || "no host";
+      textEl.textContent = `offline — ${err} (run the installer?)`;
+      textEl.style.color = "var(--bs-danger, #dc3545)";
+    }
+  } catch (e) {
+    textEl.textContent = `offline — ${e?.message || "ping failed"}`;
+    textEl.style.color = "var(--bs-danger, #dc3545)";
+  }
 }
 
 function cacheElements() {
