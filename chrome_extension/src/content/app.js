@@ -35,6 +35,12 @@ import {
 import { contentRpc, k2cRpc } from "./rpc.js";
 import { BackendStatusMonitor } from "./backendStatusMonitor.js";
 import { DatasheetPanel } from "./datasheetPanel.js";
+import {
+  JobStateStore,
+  formatStatusColon,
+  formatJobStatusMessage,
+  progressBarFieldsFromJob,
+} from "./jobStateStore.js";
 /** Datasheet panel / PDF.js pipeline — always on; filter DevTools console by `[KiCad datasheet]`. */
 function k2cDatasheetLog(...args) {
   console.info("[KiCad datasheet]", ...args);
@@ -73,11 +79,11 @@ const LCSC_BTN = {
   fontSize: "0.875rem",
 };
 
-const jobWatchers = new Map();
-/** Same completed/failed job must not run terminal UI twice (duplicate poll / race). */
-const terminalJobHandled = new Set();
-/** One confetti burst per successful job id. */
-const confettiDoneForJobId = new Set();
+/**
+ * Cross-cutting job state (watchers, terminal-once, confetti-once, monotone UI).
+ * Constructed early; `dbg` is forwarded via closure so debug-flag flips are picked up.
+ */
+const jobState = new JobStateStore({ log: (...args) => dbg(...args) });
 const activeObservers = new Set();
 let spinnerStyleInjected = false;
 let debugEnabled = false;
@@ -521,100 +527,8 @@ async function initDebug() {
   }
 }
 
-function clearJobWatcher(jobId) {
-  const entry = jobWatchers.get(jobId);
-  if (typeof entry === "number") {
-    clearTimeout(entry);
-  }
-  jobWatchers.delete(jobId);
-}
-
-/** Never regress UI (e.g. running → queued) when snapshots arrive out of order. */
-const jobUiMonotone = new Map();
-
-function forgetJobUi(jobId) {
-  if (jobId) jobUiMonotone.delete(jobId);
-}
-
-function normalizeJobProgressValue(job) {
-  const p = job?.progress ?? job?.Progress;
-  if (typeof p === "number" && Number.isFinite(p)) return Math.max(0, Math.min(100, p));
-  const n = Number(p);
-  if (Number.isFinite(n)) return Math.max(0, Math.min(100, n));
-  return null;
-}
-
-function classifyJobTier(job) {
-  const s = String(job?.status || "").toLowerCase();
-  if (s === "completed" || s === "failed") return 3;
-  if (s === "running") return 2;
-  if (s === "queued") return 1;
-  return 0;
-}
-
-/** @returns {boolean} false if update should be skipped (stale regression). */
-function shouldApplyJobUiUpdate(jobId, job) {
-  if (!jobUiMonotone.has(jobId)) {
-    jobUiMonotone.set(jobId, { maxTier: 0, maxProgress: 0 });
-  }
-  const st = jobUiMonotone.get(jobId);
-  const tier = classifyJobTier(job);
-  if (tier === 1 && st.maxTier >= 2) {
-    dbg("jobUi: skip stale queued after running", jobId);
-    return false;
-  }
-  const prog = normalizeJobProgressValue(job) ?? 0;
-  if (tier === 2 && st.maxProgress >= 5 && prog === 0) {
-    dbg("jobUi: skip running 0% after meaningful progress", jobId);
-    return false;
-  }
-  st.maxTier = Math.max(st.maxTier, tier);
-  if (tier === 2) st.maxProgress = Math.max(st.maxProgress, prog);
-  return true;
-}
-
-/** Same pattern as {@link formatLibraryStatusMessage}: "Lead: detail". */
-function formatStatusColon(lead, detail) {
-  const d = detail != null ? String(detail).trim() : "";
-  return d ? `${lead}: ${d}` : lead;
-}
-
-function formatJobStatusMessage(job) {
-  const s = String(job?.status || "").toLowerCase();
-  const qp = job?.queue_position != null ? Number(job.queue_position) : null;
-  const prog = normalizeJobProgressValue(job);
-  if (s === "queued") {
-    if (Number.isFinite(qp) && qp > 1) return formatStatusColon("In queue", `position ${qp}`);
-    return formatStatusColon("In queue", "waiting");
-  }
-  if (s === "running") {
-    const serverMsg = typeof job.message === "string" && job.message.trim() ? job.message.trim() : "";
-    const pctKnown = prog != null && Number.isFinite(prog);
-    const pct = pctKnown ? Math.round(Math.max(0, Math.min(100, prog))) : null;
-    if (pct != null) {
-      if (serverMsg) return formatStatusColon("Converting", `${serverMsg} (${pct}%)`);
-      return formatStatusColon("Converting", `${pct}%`);
-    }
-    return serverMsg ? formatStatusColon("Converting", serverMsg) : formatStatusColon("Converting", "waiting");
-  }
-  return formatStatusColon("Status", "working");
-}
-
-function progressBarFieldsFromJob(job) {
-  const s = String(job?.status || "").toLowerCase();
-  const prog = normalizeJobProgressValue(job);
-  if (s === "queued") {
-    return { progress: 0 };
-  }
-  if (s === "running") {
-    const p = prog ?? 0;
-    return { progress: Math.max(0, Math.min(100, p)) };
-  }
-  return { progress: prog ?? 0 };
-}
-
 function applyJobStatusToButton(button, jobId, job) {
-  if (!shouldApplyJobUiUpdate(jobId, job)) {
+  if (!jobState.shouldApplyUpdate(jobId, job)) {
     return false;
   }
   const { progress } = progressBarFieldsFromJob(job);
@@ -2045,12 +1959,12 @@ function updateButtonState(button, state, options = {}) {
       const celebrate = options.celebrate !== false;
       const cjid = options.celebrateJobId;
       let doConfetti = celebrate && cjid && group && btnGroupHostContains(group, button);
-      if (doConfetti && confettiDoneForJobId.has(cjid)) {
+      if (doConfetti && jobState.hadConfetti(cjid)) {
         doConfetti = false;
       }
       if (doConfetti && cjid) {
-        confettiDoneForJobId.add(cjid);
-        setTimeout(() => confettiDoneForJobId.delete(cjid), 180000);
+        jobState.markConfetti(cjid);
+        setTimeout(() => jobState.forgetConfetti(cjid), 180000);
         requestAnimationFrame(() => {
           requestAnimationFrame(() => triggerConfetti(group));
         });
@@ -5934,10 +5848,10 @@ async function handleDownloadClick(button, lcscId, overrides = {}) {
     if (jobId) {
       const prevWatch = button.dataset.k2cWatchJobId;
       if (prevWatch && prevWatch !== jobId) {
-        clearJobWatcher(prevWatch);
-        forgetJobUi(prevWatch);
+        jobState.clearWatcher(prevWatch);
+        jobState.forgetUi(prevWatch);
       }
-      forgetJobUi(jobId);
+      jobState.forgetUi(jobId);
       button.dataset.k2cWatchJobId = jobId;
       applyJobStatusToButton(button, jobId, {
         status: data.status || "queued",
@@ -5969,11 +5883,11 @@ async function handleDownloadClick(button, lcscId, overrides = {}) {
 /** Terminal UI from WebSocket-driven state (no getJobStatus polling). */
 function applyTerminalJobUI(button, jobId, job) {
   if (!button || !jobId || !job) return;
-  if (terminalJobHandled.has(jobId)) return;
-  terminalJobHandled.add(jobId);
-  setTimeout(() => terminalJobHandled.delete(jobId), 180000);
-  forgetJobUi(jobId);
-  clearJobWatcher(jobId);
+  if (jobState.isTerminalHandled(jobId)) return;
+  jobState.markTerminal(jobId);
+  setTimeout(() => jobState.forgetTerminal(jobId), 180000);
+  jobState.forgetUi(jobId);
+  jobState.clearWatcher(jobId);
   delete button.dataset.k2cWatchJobId;
   const messages = Array.isArray(job.messages)
     ? job.messages
@@ -6007,11 +5921,11 @@ function applyTerminalJobUI(button, jobId, job) {
 function startJobWatcher(button, jobId) {
   const prevBtnJob = button.dataset.k2cWatchJobId;
   if (prevBtnJob && prevBtnJob !== jobId) {
-    clearJobWatcher(prevBtnJob);
-    forgetJobUi(prevBtnJob);
+    jobState.clearWatcher(prevBtnJob);
+    jobState.forgetUi(prevBtnJob);
   }
   button.dataset.k2cWatchJobId = jobId;
-  jobWatchers.set(jobId, true);
+  jobState.setWatcher(jobId, true);
   dbg("startJobWatcher(ws push)", jobId);
 }
 
@@ -6067,10 +5981,7 @@ function cleanupInjectedUi() {
   if (progressRow?.parentElement) {
     progressRow.parentElement.removeChild(progressRow);
   }
-  jobWatchers.forEach((_, jobId) => clearJobWatcher(jobId));
-  jobUiMonotone.clear();
-  terminalJobHandled.clear();
-  confettiDoneForJobId.clear();
+  jobState.reset();
   backendStatusMonitor.stop();
   if (importDestRefreshTimer) {
     clearTimeout(importDestRefreshTimer);
