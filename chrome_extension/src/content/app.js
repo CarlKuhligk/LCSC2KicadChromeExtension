@@ -34,10 +34,14 @@ import {
 } from "./dialog.js";
 import { contentRpc, k2cRpc } from "./rpc.js";
 import { BackendStatusMonitor } from "./backendStatusMonitor.js";
+import { DatasheetPanel } from "./datasheetPanel.js";
 /** Datasheet panel / PDF.js pipeline — always on; filter DevTools console by `[KiCad datasheet]`. */
 function k2cDatasheetLog(...args) {
   console.info("[KiCad datasheet]", ...args);
 }
+
+/** Singleton — owns the PDF.js viewer iframe lifecycle, cancellation token, blob-URL bookkeeping. */
+const datasheetPanel = new DatasheetPanel({ log: k2cDatasheetLog });
 
 /** Service worker reports fetch progress; template gallery matches on {@code requestId}. */
 let k2cActiveDatasheetDownloadUi = null;
@@ -53,191 +57,6 @@ async function k2cBase64ToUint8Array(b64) {
   return new Uint8Array(ab);
 }
 
-/**
- * PDF.js cannot load reliably in the content-script isolated world. Render inside an extension-origin
- * iframe ({@code pdf_viewer.html}) and pass bytes via postMessage.
- * @param {HTMLElement} scrollHost
- * @param {Uint8Array} pdfBytes
- * @param {HTMLElement} overlay
- * @param {number} myGen
- * @param {() => void} hideLoad
- */
-function k2cMountExtensionPdfViewer(scrollHost, pdfBytes, overlay, myGen, hideLoad) {
-  const extOrigin = new URL(chrome.runtime.getURL("")).origin;
-  k2cDatasheetLog(
-    "mount extension PDF viewer",
-    "bytes=",
-    pdfBytes?.length ?? 0,
-    "extOrigin=",
-    extOrigin,
-    "pageOrigin=",
-    window.location.origin,
-  );
-
-  scrollHost.textContent = "";
-  scrollHost.style.overflow = "hidden";
-
-  if (overlay._k2cPdfResizeObserver) {
-    try {
-      overlay._k2cPdfResizeObserver.disconnect();
-    } catch (_e) {
-      /* ignore */
-    }
-    overlay._k2cPdfResizeObserver = null;
-  }
-  if (overlay._k2cPdfROTimer) {
-    clearTimeout(overlay._k2cPdfROTimer);
-    overlay._k2cPdfROTimer = null;
-  }
-  if (overlay._k2cPdfParentMsgHandler) {
-    window.removeEventListener("message", overlay._k2cPdfParentMsgHandler);
-    overlay._k2cPdfParentMsgHandler = null;
-  }
-
-  let stallTimer = null;
-
-  const finishFailure = (reason) => {
-    if (stallTimer != null) {
-      clearTimeout(stallTimer);
-      stallTimer = null;
-    }
-    window.removeEventListener("message", onParentMsg);
-    overlay._k2cPdfParentMsgHandler = null;
-    if (overlay._k2cPdfRenderGen !== myGen) {
-      return;
-    }
-    k2cDatasheetLog("viewer failure:", reason);
-    hideLoad();
-    scrollHost.textContent = "";
-    k2cMountPdfPreviewFailurePlaceholder(scrollHost, () => {});
-  };
-
-  const onParentMsg = (e) => {
-    const d = e.data;
-    const ours = d && typeof d.type === "string" && d.type.startsWith("k2c-pdf");
-    if (e.origin !== extOrigin) {
-      if (ours) {
-        k2cDatasheetLog(
-          "ignored postMessage (wrong origin); expected extension frame",
-          e.origin,
-          "type=",
-          d.type,
-        );
-      }
-      return;
-    }
-    if (d?.type === "k2c-pdf-log-v1" && Array.isArray(d.parts)) {
-      k2cDatasheetLog("(pdf iframe)", ...d.parts);
-      return;
-    }
-    if (d?.type === "k2c-pdf-ready-v1") {
-      if (overlay._k2cPdfRenderGen !== myGen) {
-        return;
-      }
-      k2cDatasheetLog("iframe ready, sending PDF bytes to viewer");
-      try {
-        const ab = pdfBytes.buffer.slice(
-          pdfBytes.byteOffset,
-          pdfBytes.byteOffset + pdfBytes.byteLength,
-        );
-        try {
-          iframe.contentWindow?.postMessage(
-            { type: "k2c-pdf-render-v1", buffer: ab },
-            extOrigin,
-            [ab],
-          );
-        } catch (_transferErr) {
-          const copy = new Uint8Array(pdfBytes);
-          iframe.contentWindow?.postMessage(
-            { type: "k2c-pdf-render-v1", buffer: copy.buffer },
-            extOrigin,
-          );
-        }
-        /* Hide immediately — iframe paints asynchronously (was waiting until all pages finished). */
-        hideLoad();
-      } catch (err) {
-        k2cDatasheetLog("postMessage(render) threw:", err?.message || err);
-        finishFailure("postMessage to iframe failed");
-      }
-      return;
-    }
-    if (d?.type === "k2c-pdf-done") {
-      if (stallTimer != null) {
-        clearTimeout(stallTimer);
-        stallTimer = null;
-      }
-      window.removeEventListener("message", onParentMsg);
-      overlay._k2cPdfParentMsgHandler = null;
-      if (overlay._k2cPdfRenderGen !== myGen) {
-        return;
-      }
-      /* Overlay usually hidden already on render start; safe if duplicate. */
-      hideLoad();
-      if (!d.ok) {
-        k2cDatasheetLog("iframe reported render failure", d.detail || "(no detail)");
-        scrollHost.textContent = "";
-        k2cMountPdfPreviewFailurePlaceholder(scrollHost, () => {});
-      } else {
-        k2cDatasheetLog("iframe reported render success");
-      }
-    }
-  };
-
-  overlay._k2cPdfParentMsgHandler = onParentMsg;
-  window.addEventListener("message", onParentMsg);
-
-  stallTimer = setTimeout(() => finishFailure("timeout (25s): no ready+done from pdf_viewer iframe"), 25000);
-
-  const iframe = document.createElement("iframe");
-  iframe.title = "Datasheet PDF";
-  iframe.style.cssText = cssJoin([
-    "position:absolute",
-    "inset:0",
-    "width:100%",
-    "height:100%",
-    "border:none",
-    "background:#334155",
-  ]);
-  const pdfViewerUrl = chrome.runtime.getURL("pdf_viewer.html");
-  iframe.addEventListener("load", () => {
-    k2cDatasheetLog("pdf_viewer iframe load event fired", pdfViewerUrl);
-  });
-  iframe.addEventListener("error", () => {
-    k2cDatasheetLog("pdf_viewer iframe error event (often unused in Chrome; if load never follows, check WAR/manifest)");
-  });
-  iframe.src = pdfViewerUrl;
-  scrollHost.appendChild(iframe);
-}
-
-/**
- * Shown when PDF.js cannot render; avoid Chrome’s iframe PDF plugin (tiny embedded viewer).
- * @param {HTMLElement} scrollHost
- * @param {() => void} hideLoad
- */
-function k2cMountPdfPreviewFailurePlaceholder(scrollHost, hideLoad) {
-  scrollHost.textContent = "";
-  scrollHost.style.overflow = "auto";
-  const wrap = document.createElement("div");
-  wrap.style.cssText = cssJoin([
-    "padding:24px",
-    "max-width:480px",
-    "margin:0 auto",
-    "color:#e2e8f0",
-    "font-size:13px",
-    "line-height:1.55",
-    "text-align:center",
-  ]);
-  const p1 = document.createElement("p");
-  p1.style.margin = "0 0 12px 0";
-  p1.textContent = "Could not render the datasheet in this panel.";
-  const p2 = document.createElement("p");
-  p2.style.margin = "0";
-  p2.textContent = "Use “Open in tab” above for the full PDF.";
-  wrap.appendChild(p1);
-  wrap.appendChild(p2);
-  scrollHost.appendChild(wrap);
-  hideLoad();
-}
 const COLORS = {
   primary: "#1166dd",
   success: "#15803d",
@@ -3196,33 +3015,9 @@ function fpPadCopperCssSelectors(groupPrefix) {
 
 function closeTemplateGalleryModal() {
   cancelTemplateHoverInteraction();
+  datasheetPanel.unmount();
   const el = document.getElementById(TEMPLATE_GALLERY_MODAL_ID);
   if (el) {
-    el._k2cPdfRenderGen = (el._k2cPdfRenderGen || 0) + 1;
-    if (el._k2cPdfResizeObserver) {
-      try {
-        el._k2cPdfResizeObserver.disconnect();
-      } catch (_e) {
-        /* ignore */
-      }
-      el._k2cPdfResizeObserver = null;
-    }
-    if (el._k2cPdfROTimer) {
-      clearTimeout(el._k2cPdfROTimer);
-      el._k2cPdfROTimer = null;
-    }
-    if (el._k2cPdfParentMsgHandler) {
-      window.removeEventListener("message", el._k2cPdfParentMsgHandler);
-      el._k2cPdfParentMsgHandler = null;
-    }
-    if (el._k2cDatasheetBlobUrl) {
-      try {
-        URL.revokeObjectURL(el._k2cDatasheetBlobUrl);
-      } catch (_e) {
-        /* ignore */
-      }
-      el._k2cDatasheetBlobUrl = null;
-    }
     const esc = el._easyeda2kicadGalleryEsc;
     if (typeof esc === "function") {
       document.removeEventListener("keydown", esc, true);
@@ -3821,7 +3616,6 @@ async function openTemplateGallery(anchorButton, groupDiv, lcscId, state, galler
 
   const overlay = document.createElement("div");
   overlay.id = TEMPLATE_GALLERY_MODAL_ID;
-  overlay._k2cPdfRenderGen = 0;
   overlay.setAttribute("role", "dialog");
   overlay.setAttribute("aria-modal", "true");
   overlay.setAttribute("aria-label", "Import from KiCad template");
@@ -4538,14 +4332,14 @@ async function openTemplateGallery(anchorButton, groupDiv, lcscId, state, galler
     }
 
     void (async () => {
-      const myGen = (overlay._k2cPdfRenderGen = (overlay._k2cPdfRenderGen || 0) + 1);
+      const myGen = datasheetPanel.cancel();
       const hideLoad = () => {
         pdfLoading.style.display = "none";
       };
 
       function showLargeDatasheetApproval(data) {
         return new Promise((resolve) => {
-          if (overlay._k2cPdfRenderGen !== myGen) {
+          if (!datasheetPanel.isCurrent(myGen)) {
             resolve(false);
             return;
           }
@@ -4604,7 +4398,7 @@ async function openTemplateGallery(anchorButton, groupDiv, lcscId, state, galler
         k2cActiveDatasheetDownloadUi = {
           requestId: myGen,
           onProgress: (received, total) => {
-            if (overlay._k2cPdfRenderGen !== myGen) {
+            if (!datasheetPanel.isCurrent(myGen)) {
               return;
             }
             setPdfDownloadProgress(received, total);
@@ -4621,14 +4415,14 @@ async function openTemplateGallery(anchorButton, groupDiv, lcscId, state, galler
         k2cDatasheetLog("fetchDatasheetBlob →", datasheetUrl);
         let resp = await runFetch(false);
 
-        if (overlay._k2cPdfRenderGen !== myGen) {
+        if (!datasheetPanel.isCurrent(myGen)) {
           return;
         }
 
         if (resp?.ok && resp.data?.needsApproval) {
           k2cActiveDatasheetDownloadUi = null;
           const ok = await showLargeDatasheetApproval(resp.data);
-          if (overlay._k2cPdfRenderGen !== myGen) {
+          if (!datasheetPanel.isCurrent(myGen)) {
             return;
           }
           if (!ok) {
@@ -4648,7 +4442,7 @@ async function openTemplateGallery(anchorButton, groupDiv, lcscId, state, galler
           k2cActiveDatasheetDownloadUi = {
             requestId: myGen,
             onProgress: (received, total) => {
-              if (overlay._k2cPdfRenderGen !== myGen) {
+              if (!datasheetPanel.isCurrent(myGen)) {
                 return;
               }
               setPdfDownloadProgress(received, total);
@@ -4675,7 +4469,7 @@ async function openTemplateGallery(anchorButton, groupDiv, lcscId, state, galler
           );
           const blob = new Blob([u8], { type: resp.data.contentType || "application/pdf" });
           const blobUrl = URL.createObjectURL(blob);
-          overlay._k2cDatasheetBlobUrl = blobUrl;
+          datasheetPanel.trackBlobUrl(blobUrl);
         } else {
           k2cDatasheetLog(
             "fetchDatasheetBlob RPC not usable",
@@ -4694,24 +4488,24 @@ async function openTemplateGallery(anchorButton, groupDiv, lcscId, state, galler
         k2cActiveDatasheetDownloadUi = null;
       }
 
-      if (overlay._k2cPdfRenderGen !== myGen) {
+      if (!datasheetPanel.isCurrent(myGen)) {
         return;
       }
 
       await new Promise((r) => {
         requestAnimationFrame(() => requestAnimationFrame(r));
       });
-      if (overlay._k2cPdfRenderGen !== myGen) {
+      if (!datasheetPanel.isCurrent(myGen)) {
         return;
       }
 
       if (pdfBytes && pdfBytes.length > 0) {
         k2cDatasheetLog("using extension PDF.js viewer (fetched bytes)");
-        k2cMountExtensionPdfViewer(pdfScrollHost, pdfBytes, overlay, myGen, hideLoad);
+        datasheetPanel.mountViewer(pdfScrollHost, pdfBytes, { gen: myGen, onShown: hideLoad });
         return;
       }
 
-      if (overlay._k2cPdfRenderGen !== myGen) {
+      if (!datasheetPanel.isCurrent(myGen)) {
         return;
       }
 
