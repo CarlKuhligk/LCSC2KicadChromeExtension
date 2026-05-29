@@ -51,6 +51,7 @@ import { extractPageData } from "./lcscPageSnapshot.js";
 import { injectAnchorCard, ANCHOR_ROW_ATTR } from "./anchorCard.js";
 import { attachNativeHostStatus } from "./nativeHostStatusButton.js";
 import { wirePhase1Download } from "./phase1Fetch.js";
+import { runPhase2Convert } from "./phase2Convert.js";
 /** Datasheet panel / PDF.js pipeline — always on; filter DevTools console by `[KiCad datasheet]`. */
 function k2cDatasheetLog(...args) {
   console.info("[KiCad datasheet]", ...args);
@@ -4698,6 +4699,25 @@ function attachButton(lcscId) {
         return { ok: false, error: resp?.error || "unknown error" };
       },
       log: (...args) => dbg("[phase1]", ...args),
+      // V3 Phase 2 default-path chain (Issue #4): after Phase 1 completes,
+      // fire the EasyEDA conversion straight away — no Override Panel yet
+      // (#5), no Category Rules yet (#8). Symbol + Footprint land in the
+      // user's Active library (SW resolves ``libraryPath`` from
+      // ``state.selectedLibraryPath`` when the content script omits it).
+      onPhase1Ok: async () => {
+        await runPhase2Convert(anchorRow, lcscId, {
+          rpc: async (id, libraryPath) => {
+            const resp = await contentRpc(
+              "v3Convert",
+              { lcscId: id, libraryPath },
+              k2cRpc(2, 200),
+            );
+            if (resp?.ok && resp.data) return resp.data;
+            return { ok: false, error: resp?.error || "unknown error" };
+          },
+          log: (...args) => dbg("[phase2]", ...args),
+        });
+      },
     });
     dbg("attachButton: anchored row injected", lcscId);
     wireAnchorCardDownloadStatus(anchorRow);

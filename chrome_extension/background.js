@@ -1567,6 +1567,10 @@ async function checkPath(path) {
 const NATIVE_HOST_NAME = "com.kicad_parts_importer.host";
 const NATIVE_HOST_PING_TIMEOUT_MS = 5000;
 const NATIVE_HOST_FETCH_METADATA_TIMEOUT_MS = 5000;
+/** Phase 2 ceiling: ~5–10 s typical (V3-SPEC.md §1), 60 s envelope for
+ *  slow EasyEDA / first-time PDF cache. ADR-0004: one RPC per click, busy
+ *  on concurrent attempts — there is no queue. */
+const NATIVE_HOST_CONVERT_TIMEOUT_MS = 60000;
 /**
  * Pre-Warm heartbeat: every 25 s the service worker re-pings the Native Host.
  * Two jobs: (a) belt-and-suspenders keep-alive against future Chrome
@@ -1738,6 +1742,97 @@ async function nativeHostFetchMetadata(payload) {
         id: Date.now(),
         verb: "fetchMetadata",
         params: { lcscId, pageHints },
+      });
+    } catch (e) {
+      finish({ ok: false, error: e?.message || "postMessage threw" });
+    }
+  });
+}
+
+let nativeHostConvertInFlight = false;
+
+/**
+ * V3 **Phase 2 Conversion** RPC bridge (Issue #4). Opens a fresh Native-Host
+ * port, sends one ``convert`` frame, then reads progress frames from the same
+ * port until the terminal ``done`` (``ok=true``) or ``error`` arrives —
+ * ADR-0004: streamed progress on a single bidirectional Native-Messaging
+ * channel. Each progress frame is broadcast to all LCSC content tabs as a
+ * ``v3ConvertProgress`` message keyed by ``lcscId`` so the originating
+ * Anchor Card button can render the live message.
+ *
+ * SW-side single-flight matches the Native Host's busy lock so a second tab
+ * gets ``busy`` immediately (no port open, no round-trip).
+ *
+ * @param {{ lcscId: string, libraryPath?: string }} payload
+ * @returns {Promise<{ok: true, result: object} | {ok: false, error: string}>}
+ */
+async function nativeHostConvert(payload) {
+  if (nativeHostConvertInFlight) {
+    return { ok: false, error: "busy" };
+  }
+  const lcscId = typeof payload?.lcscId === "string" ? payload.lcscId.trim().toUpperCase() : "";
+  if (!lcscId || !/^C\d+$/.test(lcscId)) {
+    return { ok: false, error: "invalid lcscId" };
+  }
+  const libraryPath = typeof payload?.libraryPath === "string" && payload.libraryPath.trim()
+    ? payload.libraryPath.trim()
+    : normalizePath(state.selectedLibraryPath || "");
+  if (!libraryPath) {
+    return { ok: false, error: "no Active library selected" };
+  }
+
+  nativeHostConvertInFlight = true;
+  let port;
+  try {
+    port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
+  } catch (e) {
+    nativeHostConvertInFlight = false;
+    return { ok: false, error: e?.message || "connectNative threw" };
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      nativeHostConvertInFlight = false;
+      try { port.disconnect(); } catch (_e) { /* already gone */ }
+      resolve(result);
+    };
+    const timer = setTimeout(
+      () => finish({ ok: false, error: "timeout" }),
+      NATIVE_HOST_CONVERT_TIMEOUT_MS,
+    );
+    port.onMessage.addListener((msg) => {
+      // Progress frames keep the port open; only the terminal ``ok`` field
+      // resolves the promise. Match on ``type === "progress"`` so a future
+      // backend addition (e.g. ``warning`` frames) does not accidentally
+      // resolve here as ``error``.
+      if (msg && msg.type === "progress") {
+        broadcastToLcscContentTabs({
+          type: "v3ConvertProgress",
+          lcscId,
+          message: typeof msg.message === "string" ? msg.message : "",
+          progress: typeof msg.progress === "number" ? msg.progress : null,
+        });
+        return;
+      }
+      clearTimeout(timer);
+      if (msg && msg.ok === true && msg.result && typeof msg.result === "object") {
+        finish({ ok: true, result: msg.result });
+      } else {
+        finish({ ok: false, error: msg?.error || "convert returned no result" });
+      }
+    });
+    port.onDisconnect.addListener(() => {
+      clearTimeout(timer);
+      const err = chrome.runtime.lastError;
+      finish({ ok: false, error: err?.message || "disconnected" });
+    });
+    try {
+      port.postMessage({
+        id: Date.now(),
+        verb: "convert",
+        params: { lcscId, libraryPath },
       });
     } catch (e) {
       finish({ ok: false, error: e?.message || "postMessage threw" });
@@ -2506,6 +2601,17 @@ const RUNTIME_MESSAGE_HANDLERS = {
   v3FetchMetadata: async (message) => nativeHostFetchMetadata({
     lcscId: message.lcscId,
     pageHints: message.pageHints,
+  }),
+  /**
+   * V3 **Phase 2 Conversion** default-path (Issue #4). Content script calls
+   * this after Phase 1 succeeds; SW relays to the Native Host's ``convert``
+   * RPC and broadcasts the streamed ``progress`` frames to the originating
+   * tab as ``v3ConvertProgress``. Returns ``{ok, result|error}`` for the
+   * Anchor Card button to render the terminal state.
+   */
+  v3Convert: async (message) => nativeHostConvert({
+    lcscId: message.lcscId,
+    libraryPath: message.libraryPath,
   }),
 };
 
