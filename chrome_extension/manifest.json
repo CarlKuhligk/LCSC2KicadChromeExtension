@@ -47,12 +47,7 @@
         "pdf_viewer.html",
         "pdf_viewer_page.mjs",
         "vendor/pdfjs/*",
-        "src/content/main.js",
-        "src/content/app.js",
-        "src/content/categoryNormalize.js",
-        "src/content/constants.js",
-        "src/content/dialog.js",
-        "src/content/rpc.js",
+        "src/content/*.js",
         "shared/categoryPath.mjs"
       ],
       "matches": [
