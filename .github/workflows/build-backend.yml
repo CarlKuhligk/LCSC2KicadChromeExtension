@@ -1,10 +1,11 @@
 name: Build backend binaries
 
 on:
+  # PARKED 2026-06-04 (V3 fresh-start): tag auto-trigger disabled.
+  # The PyInstaller entry-point must move from the deleted run_server.py (V2 WebSocket
+  # server) to native_host/host.py once native-host bundling lands — see KONZEPT.md §Install
+  # ("ci-entry-point-fix") and native_host README issue #13. Re-add the tag trigger then.
   workflow_dispatch: {}
-  push:
-    tags:
-      - "v*.*.*"
 
 permissions:
   contents: write
