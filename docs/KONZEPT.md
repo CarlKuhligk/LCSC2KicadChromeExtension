@@ -8,9 +8,9 @@
 Ein-Klick-Import eines LCSC-Bauteils direkt in die aktive KiCad-Bibliothek — Symbol, Footprint, 3D, Metadaten — mit **Einfluss auf jedes Puzzleteil**:
 
 - **Konsistenz statt EasyEDA-Wildwuchs:** Gleiche Bauform → immer derselbe Footprint (ein 0402-Widerstand bekommt *immer* den Standard-0402-Footprint). Das **Template-System** ersetzt Symbol/Footprint/3D durch standardisierte Varianten.
-- **Auto-Vorschlag** anhand **LCSC-Kategorie + Pin-Zahl + erkannter Bauform** (Kategorie „Widerstände" → nur Widerstands-Templates), als Regel-Liste in den Settings konfigurierbar (vorschlagen vs. automatisch ersetzen).
+- **Auto-Vorschlag** anhand **LCSC-Kategorie + Pin-Zahl + erkannter Bauform** (Kategorie „Widerstände" → nur Widerstands-Templates), als Regel-Liste in den Settings konfigurierbar (welche Quelle pro Kategorie); ob ein Import Ein-Klick ist, leitet sich aus der **Confidence** ab (🟢/🟡/⚪, ADR-0006), nicht aus einem Auto/Manuell-Schalter.
 - **Metadaten als Symbol-Labels** (Value, Toleranz, Hersteller, MPN, Package …) automatisch von der Seite geholt und gesetzt.
-- **Perfektfall:** Das System wählt automatisch das richtige Symbol + Footprint + passendes 3D — selbst wenn EasyEDA nichts liefert.
+- **Perfektfall:** Das System schlägt automatisch das richtige Symbol + Footprint + passendes 3D vor (sichtbare Preview) — selbst wenn EasyEDA nichts liefert — und importiert mit einem Klick (🟢).
 - **Intuitiv:** klicken/auswählen/tippen, Datei-Explorer-artiger Pfad-Picker, Mehr-Dialog-Flows („kein Footprint — was nun?"). Der Nutzer soll es *benutzen*, nicht *studieren*.
 
 
@@ -21,7 +21,7 @@ Ein-Klick-Import eines LCSC-Bauteils direkt in die aktive KiCad-Bibliothek — S
 
 # Feature-Block G+ — Auto-Selection Intelligence (das Herz der V3-Vision)
 
-> Erweitert KONZEPT.md §12 (Category Rules + Skip-Panel-Flow). Diese Spec ist **buildable**: ein autonomer Coding-Agent kann daraus implementieren. Sie ist *additiv* zum existierenden V2-Code — sie ersetzt das schmale `categorySettings`-Modell, behält aber den bereits korrekten Deepest-Prefix-Matcher (`background.js:50` `resolveCategorySettings`), den Param-Mapper (`background.js:33` `mapParamKey` / `LCSC_PARAMS_MAP`) und den Metadaten-Merge (`template_merger.py:222` `_build_value_map`).
+> Erweitert KONZEPT.md §12 (Category Rules + Confidence-driven Apply, ADR-0006). Der frühere Skip-Panel-Flow entfällt. Diese Spec ist **buildable**: ein autonomer Coding-Agent kann daraus implementieren. Sie ist *additiv* zum existierenden V2-Code — sie ersetzt das schmale `categorySettings`-Modell, behält aber den bereits korrekten Deepest-Prefix-Matcher (`background.js:50` `resolveCategorySettings`), den Param-Mapper (`background.js:33` `mapParamKey` / `LCSC_PARAMS_MAP`) und den Metadaten-Merge (`template_merger.py:222` `_build_value_map`).
 
 ## 0. Was heute existiert (Ground Truth, file:line) — was bleibt, was wächst
 
@@ -35,7 +35,7 @@ Ein-Klick-Import eines LCSC-Bauteils direkt in die aktive KiCad-Bibliothek — S
 | Phase-1-Resolver | `native_host/phase1.py:92` `fetch_metadata` → `{lcscId,categoryPath,pinCount,datasheetUrl}` | ⚠️ kein Package, keine Lib-Existenz | **EXTEND** (siehe §3.1) |
 | Param-Label-Mapper | `background.js:8` `LCSC_PARAMS_MAP` + `mapParamKey` | ✅ | **KEEP**, in Rule-`labelMapping` wiederverwenden |
 | Metadaten-als-Labels (Symbol-Properties) | `template_merger.py:222` `_build_value_map`, `background.js:1324` Value-Override | ✅ implementiert | **KEEP**, durch Rule konfigurierbar machen |
-| Override Panel (Symbol/Footprint-Dropdowns) | `src/content/overridePanel.js:82` `buildOverridePanel`, `:154` `selectionToOverrides` | ✅ Symbol+Footprint-Source | **EXTEND**: Preselect aus Rule, Confidence-Badges, „Auto"-Hinweis |
+| Override Panel (Symbol/Footprint-Dropdowns) | `src/content/overridePanel.js:82` `buildOverridePanel`, `:154` `selectionToOverrides` | ✅ Symbol+Footprint-Source | **EXTEND**: Preselect aus Rule, Confidence-Badges (🟢/🟡/⚪), Rolle als Import-Editor |
 | Phase-2-Runner | `native_host/phase2.py:147` `run_phase2_conversion` | ⚠️ Footprint-Template **rejected** (`phase2.py:139`) | **EXTEND** wenn #6/#9 landen — diese Spec liefert die Auto-Selection davor |
 | Template-Listing pro Lib | `background.js` `templateSymbolsByLib` / `templateFootprintsByLib` (`:134/:135`, befüllt `:897`) | ✅ Symbol- und Footprint-Namen pro Lib | **KEEP**, Matcher liest daraus |
 
@@ -59,13 +59,9 @@ type ComponentRule = {
   footprintSource?: LayerChoice;   // default { source: "easyeda" }
   // 3D: KEIN eigenes Feld — 3D folgt dem Footprint (KONZEPT §11.3, ADR-0005).
 
-  // ── NEU: Auto-Apply-Steuerung ──
-  autoApply?: "off" | "suggest" | "auto";  // default "suggest"
-  //   off     = Rule matcht, aber Panel zeigt EasyEDA-Default, keine Vorauswahl
-  //   suggest = Panel öffnet mit vorausgewählten Sources + Confidence-Badge (Default)
-  //   auto    = Skip-Panel-Flow: bei voller Auflösung Phase 2 direkt (KONZEPT §12.4)
+  // ── Kein autoApply-Feld mehr — Ein-Klick leitet sich aus Confidence ab (ADR-0006). ──
 
-  // ── NEU: Erwartungs-Constraints (Guards gegen Fehlanwendung) ──
+  // ── NEU: Erwartungs-Constraints (Match-/Confidence-Signale (Pin-Count / Package-Form)) ──
   expectedPinCount?: PinCountSpec | null;  // s. §1.1 — z.B. {exact:2} oder {min:2,max:3}
   packageForm?: string | null;             // erwartete normalisierte Package-Form, z.B. "0603"
   //   Wenn gesetzt: Rule gilt nur, wenn detektierte Package-Form == packageForm
@@ -95,7 +91,6 @@ type PinCountSpec =
   hidePinNumbers: true, hidePinNames: true, valueParam: "Resistance",
   symbolSource: { source: "easyeda" },          // bis Stock-Lib (§5) installiert ist
   footprintSource: { source: "easyeda" },
-  autoApply: "suggest",
   expectedPinCount: { exact: 2 },
   packageForm: null,                             // gilt für alle Widerstands-Packages
   labelMapping: null                             // null = Default-Mapping (§1.2)
@@ -225,8 +220,9 @@ type MatchResult = {
   rule: ComponentRule | null;
   symbol: LayerSuggestion;
   footprint: LayerSuggestion;
-  autoApply: "off" | "suggest" | "auto";
-  guards: {                     // warum NICHT auto (für Skip-Panel-Entscheid §3.5)
+  state: "green" | "yellow" | "white";   // ADR-0006
+  confidence: number;           // 0..1 — aggregierter Confidence-Wert (Symbol-/Footprint-Match)
+  guards: {                     // Confidence-Faktoren (fließen in computeConfidenceState ein — KEIN Skip-Gate)
     pinCountOk: boolean;        // expectedPinCount erfüllt?
     packageFormOk: boolean;     // packageForm erfüllt?
     templatesResolvable: boolean; // alle template-Sources existieren in templateXByLib?
@@ -274,9 +270,11 @@ INPUT: phase1 (§3.1), state.categorySettings, templateSymbolsByLib, templateFoo
         footprint = autoTemplateMatch("footprint", phase1, templateFootprintsByLib)
                     ?? easyedaFallback
 
-6. autoApply = rule?.autoApply ?? "suggest"   (keine Rule → "suggest" mit easyeda-Defaults)
+6. state = computeConfidenceState(rule, symbol, footprint, factors) → green|yellow|white
+   (keine Rule → white; §3.5)
 
-7. GUARDS für Skip-Panel (§3.5): templatesResolvable, pinPadResolvable, overwriteClear.
+7. Confidence-Faktoren: templatesResolvable, pinPadResolvable, overwriteClear — fließen in
+   computeConfidenceState ein (§3.5).
 
 OUTPUT: MatchResult
 ```
@@ -301,32 +299,29 @@ FOOTPRINT:
       +0.1 wenn pinSuffix matcht
   - Score ≥ 0.6 → suggestion. Sonst null.
 ```
-🟢 ENTSCHIEDEN: Auto-Template-Match feuert **nur als Vorschlag** (nie Skip-Panel), selbst bei hoher Confidence, solange keine explizite Rule mit `autoApply:"auto"` existiert. Begründung: Namens-Heuristik ist fehleranfällig (User-Benennungen sind frei); Auto-Apply darf nur bei *explizit vom User gesetzter* Rule passieren — sonst landen falsche Footprints still in der Library. Confidence steuert nur die Vorauswahl + Badge-Farbe im Panel.
+🟢 ENTSCHIEDEN (ÜBERHOLT durch ADR-0006 — auf Confidence-Modell umformuliert): Auto-Template-Match (Heuristik ohne registrierte Rule) ergibt **NIE 🟢**, höchstens 🟡 — selbst bei hoher Confidence; 🟢 erfordert eine registrierte Rule (ADR-0006). Begründung: Namens-Heuristik ist fehleranfällig (User-Benennungen sind frei); Ein-Klick darf nur bei *explizit vom User registrierter* Rule passieren — sonst landen falsche Footprints in der Library. Confidence steuert den Apply-Zustand (🟢/🟡/⚪) sowie Vorauswahl und Badge-Farbe.
 
-### 3.5 Wann Auto-Apply (Skip-Panel) vs. Panel zeigen
-Erweitert KONZEPT §12.4. Skip-Panel-Flow **nur wenn alle** erfüllt:
-```
-autoApply === "auto"
-&& guards.pinCountOk && guards.packageFormOk
-&& guards.templatesResolvable
-&& guards.pinPadResolvable          // Sidecar ODER symPins==fpPads (KONZEPT §13.2)
-&& guards.overwriteClear            // (!exists) ODER Settings.defaultOverwrite==true
-&& !forcePanel                      // Customize-Button (KONZEPT §12.5)
-&& !Settings.alwaysShowOverridePanel  // Master-Toggle (KONZEPT §12.6)
-```
-→ Phase 2 startet direkt; Inline-Status-Span zeigt z.B. `Auto: Resistor_Std → SMD_0603 · 0603 · 2 pins`.
-Sonst → Override Panel mit Vorauswahl + Confidence-Badges (§3.6).
+### 3.5 computeConfidenceState — Apply-Zustand aus Confidence (ersetzt den früheren Skip-Panel-Entscheid, ADR-0006)
+`computeConfidenceState(rule, symbol, footprint, factors) → "green" | "yellow" | "white"`
+Eingaben: rule = gematchte registrierte Category Rule (oder null); factors = { pinCountOk, packageFormOk, templatesResolvable, pinPadResolvable, overwriteClear }; interne confidence-Floats (0..1) aus dem Symbol-/Footprint-Match.
+- ⚪ **white**: KEINE registrierte Rule UND kein verwertbarer Heuristik-Match (confidence < medium) → aktiver Register-Prompt ("nur EasyEDA ODER registrieren?").
+- 🟢 **green**: registrierte Rule existiert UND alle MVP-relevanten Faktoren erfüllt (Symbol-Template resolvable + Kategorie erkannt + Metadaten-Labels gemappt) UND confidence ≥ high → Ein-Klick-Import + [Modifizieren].
+- 🟡 **yellow**: alles dazwischen — (a) Heuristik-Match OHNE registrierte Rule (ergibt NIE green, AD-4), ODER (b) registrierte Rule, aber ein Faktor fehlt / confidence nur medium → user-Setting (keepEasyeda vs openEditor).
+- **MVP (Symbol-first):** green braucht nur die Symbol-Layer-Faktoren; Footprint/3D-Faktoren (pinPadResolvable etc.) werden erst mit dem Footprint-Folge-Slice green-relevant — bis dahin fahren sie auf EasyEDA-Default mit und blockieren green NICHT.
 
 ### 3.6 Panel-Vorauswahl & Confidence-Darstellung (erweitert overridePanel.js)
 `renderOverridePanel` (`overridePanel.js:216`) bekommt neuen `opts.match: MatchResult`. Verhalten:
 - `symSelect.value` / `fpSelect.value` werden auf `match.symbol.choice` / `match.footprint.choice` vorgesetzt (encode via `encodeTemplateValue`, `overridePanel.js:43`).
 - Pro Dropdown ein **Confidence-Badge** rechts: 🟢 high (≥0.85) / 🟡 medium (0.6–0.85) / ⚪ low (<0.6, „EasyEDA fallback").
 - Tooltip = `match.<layer>.reasons.join(" · ")`.
-- Header-Zeile: `Auto-suggested from rule "<ruleKey>"` oder `No rule — best guess` oder `No rule — keeping EasyEDA`.
+- Header-Zeile nach Confidence-Zustand (i18n-Keys §U8, kein Literal — d1):
+  - 🟢 `k2c.header.green` → „Registriert: {ruleKey} — Ein-Klick"
+  - 🟡 `k2c.header.yellow` → „Niedrige Confidence — prüfen oder EasyEDA behalten"
+  - ⚪ `k2c.header.white` → „Neues Bauteil — nur EasyEDA ODER registrieren"
 
 ```
 ┌─ Override sources ───────────────────────────────────────────┐
-│  Auto-suggested from rule "Passives/Resistors"   [Customize]  │
+│  🟢 Registriert: "Passives/Resistors"          [Modifizieren] │
 │                                                               │
 │  Symbol     [ Resistor_Std (StdLib) ▾ ]   🟢 high             │
 │             ↳ Category rule · 2 pins                          │
@@ -335,7 +330,7 @@ Sonst → Override Panel mit Vorauswahl + Confidence-Badges (§3.6).
 │  3D         (follows footprint — not user-selectable)         │
 │                                                               │
 │  ⚠ Symbol already in active library — overwrite? [ ]          │
-│                                   [ Cancel ]  [ Confirm ]     │
+│                                [ Abbrechen ]  [ Importieren ]  │
 └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -344,6 +339,8 @@ Sonst → Override Panel mit Vorauswahl + Confidence-Badges (§3.6).
 ## 4. Perfect-Workflow Auto-Assembly (EasyEDA fehlt Symbol/Footprint/3D)
 
 **Use-Case (User-Vision Punkt 5):** LCSC kennt das Bauteil (Page hat Specs), aber EasyEDA liefert kein/leeres Symbol oder keinen Footprint. Das System soll trotzdem die richtigen Teile aus den Template-Libs zusammenklicken — perfekt: voll automatisch.
+
+> **Hinweis:** Das **Override Panel** (Code: `overridePanel.js`) ist der **Import-Editor** i.S.v. ADR-0006 — dieselbe UI, aufgerufen aus Registrieren / Modifizieren / Low-Confidence.
 
 ### 4.1 Erkennung „EasyEDA-Layer fehlt"
 - **Symbol fehlt/leer:** `helpers.py:43` `symbol_is_empty(symbol)` existiert bereits. In Phase 1 als Flag `easyedaHas.symbol` (= `pinCount>0 && !empty`) hochreichen.
@@ -406,16 +403,16 @@ StdLib.3dshapes/:  (optional; Footprints können auch auf ${KICAD9_3DMODEL_DIR} 
 ### 5.3 Installation & Default-Rule-Seeding
 - Installer (`native_host/install.py`) legt `StdLib.*` unter einem festen App-Daten-Pfad ab und schreibt den Pfad in eine Manifest-Datei.
 - Beim ersten Extension-Start (background.js init) wird die Stock-Lib **automatisch** als Template-Library in `state.libraries` aufgenommen (falls Pfad existiert und noch nicht registriert).
-- **Setup-Hint (kein Zwang):** Falls Stock-Lib vorhanden und noch keine Rule eine Stock-Source nutzt, zeigt der Categories-Tab einen Button „Standard-Regeln aus StdLib übernehmen" → seedet erweiterte Default-Rules (Resistor→`Resistor_Std`+`R_<pkg>`, etc., je mit `autoApply:"suggest"`).
-🟢 ENTSCHIEDEN: Auto-Apply der Stock-Rules ist initial **`"suggest"`, nie `"auto"`**. Begründung: Der User soll die ersten Imports sehen und bestätigen; erst nach Vertrauen schaltet er einzelne Kategorien auf `"auto"` (One-Click). Das matcht KONZEPT-Zielbild „nach ein paar Imports kennt das Tool die Kategorien" ohne stille Überraschungen am Tag 1.
+- **Setup-Hint (kein Zwang):** Falls Stock-Lib vorhanden und noch keine Rule eine Stock-Source nutzt, zeigt der Categories-Tab einen Button „Standard-Regeln aus StdLib übernehmen" → seedet erweiterte Default-Rules (Resistor→`Resistor_Std`+`R_<pkg>`, etc., **nur Sources/Linkage, kein `autoApply`-Feld**).
+🟢 ENTSCHIEDEN (ÜBERHOLT durch ADR-0006 — auf Confidence-Aufbau umformuliert): Es gibt **keinen `autoApply`-Schalter** mehr. Frisch geseedete Stock-Rules starten mit **niedriger Confidence → 🟡** (der User sieht die ersten Imports und bestätigt); mit Nutzung steigt die Confidence, bis die Kategorie **🟢 (Ein-Klick)** erreicht. Begründung: Der User soll die ersten Imports sehen und bestätigen — ohne stille Überraschungen am Tag 1; Ein-Klick ergibt sich aus Confidence, nicht aus einem manuell umgelegten Schalter. Das matcht das KONZEPT-Zielbild „nach ein paar Imports kennt das Tool die Kategorien".
 
 ---
 
-## 6. End-to-End Decision Flow (Phase1 → suggest → panel-or-skip → Phase2)
+## 6. End-to-End Decision Flow (Phase1 → match/confidence → 🟢/🟡/⚪ → Phase2)
 
 ```
                  ┌────────────────────────────────────────────────────────────┐
-                 │ User klickt Download (oder Customize → forcePanel=true)     │
+                 │ User klickt Download (Preview ist immer sichtbar)           │
                  └───────────────────────────────┬────────────────────────────┘
                                                  ▼
    ┌──────────────────────── PHASE 1 FETCH (native_host/phase1.py, ~1s) ───────────────────┐
@@ -430,27 +427,30 @@ StdLib.3dshapes/:  (optional; Footprints können auch auf ${KICAD9_3DMODEL_DIR} 
    │ 2. Guards: pinCountOk, packageFormOk                                      │
    │ 3. Symbol-/Footprint-Suggestion (Rule > Auto-Match §3.4 > EasyEDA)        │
    │ 4. Perfect-Workflow: easyedaHas[L]==false ⇒ Template Pflicht (§4.2)       │
-   │ → MatchResult { symbol, footprint, autoApply, guards }                    │
+   │ 5. computeConfidenceState (§3.5) → state ∈ {green,yellow,white}            │
+   │ → MatchResult { symbol, footprint, state, confidence, guards }            │
    └───────────────────────────────────────────┬──────────────────────────────┘
                                                  ▼
-                              ┌──────────────── SKIP-PANEL? (§3.5) ───────────────┐
-                              │ autoApply=="auto" && alle guards ok && !forcePanel │
-                              │ && !alwaysShowOverridePanel                        │
-                              └───────┬───────────────────────────┬───────────────┘
-                                  JA  │                           │  NEIN
-                                      ▼                           ▼
-              Inline-Status:                       ┌─ OVERRIDE PANEL (overridePanel.js, §3.6) ─┐
-              "Auto: Resistor_Std →                │ Dropdowns vorausgewählt aus MatchResult    │
-                 SMD_0603 · 0603 · 2 pins"         │ Confidence-Badges 🟢🟡⚪ + reasons-Tooltip │
-                                      │            │ conditional: Overwrite-Warn, fehlende Layer│
-                                      │            │ (Pflicht), Datasheet-Preview               │
-                                      │            │ Confirm → overrides ; Cancel → Abbruch     │
-                                      │            └───────────────┬────────────────────────────┘
-                                      │                            │ Confirm
-                                      └─────────────┬──────────────┘
-                                                    ▼
+                              ┌──────────── CONFIDENCE-STATE (§3.5) ──────────────┐
+                              │ 🟢 green  registrierte Rule + confidence high      │
+                              │ 🟡 yellow Heuristik/medium → user-Setting          │
+                              │ ⚪ white  keine Rule → Register-Prompt             │
+                              └───────────────────────┬───────────────────────────┘
+                                                       ▼
+                    ┌─ OVERRIDE PANEL / IMPORT-EDITOR (overridePanel.js, §3.6) ──┐
+                    │ Preview IMMER sichtbar; Dropdowns vorausgewählt aus        │
+                    │ MatchResult; Confidence-Badges 🟢🟡⚪ + reasons-Tooltip    │
+                    │ conditional: Overwrite-Warn, fehlende Layer (Pflicht),     │
+                    │   Datasheet-Preview                                        │
+                    │ 🟢: kein separates Confirm → [Importieren] (Ein-Klick) +   │
+                    │     [Modifizieren] (öffnet vollen Editor)                  │
+                    │ 🟡: keepEasyeda ODER openEditor (Setting)                  │
+                    │ ⚪: "nur EasyEDA ODER registrieren?"                       │
+                    └───────────────────────┬────────────────────────────────────┘
+                                             │ Importieren
+                                             ▼
    ┌──────────────── PHASE 2 (native_host/phase2.py → service/conversion.py) ────────────────┐
-   │ overrides = selectionToOverrides(...) ODER MatchResult-Choices (Skip-Pfad)               │
+   │ overrides = selectionToOverrides(...) ODER MatchResult-Choices                           │
    │ phase2Mode:                                                                              │
    │   - beide template + FP hat (model) ⇒ Template-Assembly (KONZEPT §9.2, KEIN EasyEDA-Call)│
    │   - sonst ⇒ EasyEDA-Pipeline (overrides pro Layer)                                        │
@@ -473,7 +473,7 @@ StdLib.3dshapes/:  (optional; Footprints können auch auf ${KICAD9_3DMODEL_DIR} 
 - Drift-Test JS↔Python mit geteiltem Fixture-Corpus (`tests/test_package_form_mirror.py` + `packageForm.test.mjs`), Muster wie `categoryPath`.
 
 **Erweiterung `categorySettings`-CRUD (popup.js Categories-Tab, `buildCategoryItem` :1073)**
-- Neue Felder im Body: Symbol-Source-Dropdown (EasyEDA + Template-Optgroups, identisch overridePanel `populateSelect`), Footprint-Source-Dropdown, `autoApply`-Segmented-Control (off/suggest/auto), `expectedPinCount` (exact/range), `packageForm` (Text mit Taxonomie-Autocomplete), LabelMapping-Editor (Key→Value-Rows, optional/collapsible).
+- Neue Felder im Body: Symbol-Source-Dropdown (EasyEDA + Template-Optgroups, identisch overridePanel `populateSelect`), Footprint-Source-Dropdown, `expectedPinCount` (exact/range), `packageForm` (Text mit Taxonomie-Autocomplete), LabelMapping-Editor (Key→Value-Rows, optional/collapsible). **Kein `autoApply`-Control mehr** — Ein-Klick leitet sich aus Confidence ab (ADR-0006).
 - `readCategoryTableState` (`popup.js:1318`) + `dedupeCategorySettings` (`categoryPath.mjs:91`) erweitern, um die neuen Felder zu lesen/mergen. **mergeCategoryConfig** (`categoryPath.mjs:73`) muss um die neuen Felder ergänzt werden (OR für Booleans, first-non-empty für Sources/Mapping).
 
 ---
@@ -483,11 +483,11 @@ StdLib.3dshapes/:  (optional; Footprints können auch auf ${KICAD9_3DMODEL_DIR} 
 - [ ] PinCountSpec: exact/range/0-skip korrekt.
 - [ ] PackageForm: `0603`, `0603(1608 Metric)`, `1608`, `SOT-23`, `SOT-23-3`(pinCount-abgeleitet), `SOP-8_3.9x4.9x1.27P`, leer → korrekte canonical + confidence. JS↔Python drift-frei.
 - [ ] Matcher: Rule-Template resolvable → suggestion; Template fehlt auf Disk → easyeda-fallback + reason.
-- [ ] Auto-Template-Match: feuert nur als Vorschlag, nie Skip-Panel ohne explizite `autoApply:"auto"`-Rule.
-- [ ] Skip-Panel-Flow nur wenn alle Guards ok; jeder Guard einzeln blockt.
+- [ ] Auto-Template-Match (Heuristik ohne registrierte Rule): ergibt NIE 🟢 (green), höchstens 🟡 (yellow) — `computeConfidenceState` liefert `green` nur mit registrierter Rule (ADR-0006).
+- [ ] computeConfidenceState: registrierte Rule + alle MVP-Faktoren + confidence high → green; fehlender Faktor / medium → yellow; keine Rule → white.
 - [ ] Perfect-Workflow: EasyEDA ohne Symbol + Template-Symbol vorhanden → Template Pflicht, Panel-Pflichtfeld bis Auswahl.
 - [ ] LabelMapping: per-Rule-Override schlägt `LCSC_PARAMS_MAP`; include/exclude greift; Value=50R/Tolerance=±1%/Package=0603 landen als Properties.
-- [ ] Stock-Lib: nach Install auto-registriert als Template-Lib; Default-Rule-Seeding setzt `autoApply:"suggest"`.
+- [ ] Stock-Lib: nach Install auto-registriert als Template-Lib; Default-Rule-Seeding schreibt **kein `autoApply`-Feld** (nur Sources/Linkage) → frisch geseedete Rule startet 🟡, kein Skip-Panel-Test.
 
 ---
 **Quellen (Package-Naming-Recherche):**
@@ -1297,7 +1297,7 @@ Native-Messaging-Progress kann nicht durch `sendResponse` (nur eine Antwort). De
 
 ## UI/UX — On-Page Flow (Feature-Block A/C/H/J + State Inventory)
 
-Ganzheitliche, baubare UI/UX-Spezifikation für alles, was auf der LCSC-Produktseite passiert: Anchor-Card, inline Override Panel in allen bedingten Konfigurationen, Auto-Suggest-Präsentation, Multi-Dialog-Entscheidungsflüsse bei fehlenden Layern, Pin↔Pad-Sub-UI, Datasheet-Preview und das vollständige State-Inventar inkl. 7 Fehlercodes → User-Texte.
+Ganzheitliche, baubare UI/UX-Spezifikation für alles, was auf der LCSC-Produktseite passiert: Anchor-Card, inline Override Panel in allen bedingten Konfigurationen, Confidence-getriebene Vorschlags-Präsentation (🟢/🟡/⚪, ADR-0006), Multi-Dialog-Entscheidungsflüsse bei fehlenden Layern, Pin↔Pad-Sub-UI, Datasheet-Preview und das vollständige State-Inventar inkl. 7 Fehlercodes → User-Texte.
 
 Grounding: `chrome_extension/src/content/anchorCard.js`, `overridePanel.js`, `phase1Fetch.js`, `phase2Convert.js`, `dialog.js`, `lcscValueParamDialogs.js`, `lcscCategoryDialog.js`, `datasheetPanel.js`; KONZEPT §6/§8/§12/§13/§14/§15/§16; Fehlercodes aus KONZEPT §5.2.4 + `native_host/host.py` (`busy`). Transport = Native Messaging (SW-Relay `background.js` → Native-Host-RPC `fetchMetadata`/`convert`/`ping`/`listTemplates`), NICHT gRPC — KONZEPT-Texte, die noch „gRPC" sagen, sind in diesem Bereich als Native-Host-RPC zu lesen.
 
@@ -1309,24 +1309,24 @@ Grounding: `chrome_extension/src/content/anchorCard.js`, `overridePanel.js`, `ph
 
 1. **Eine Status-Oberfläche pro Karte.** Es gibt genau einen Status-Span (`data-k2c-phase1-status`, von Phase 1 + Phase 2 geteilt — siehe `phase1Fetch.js:52` / `phase2Convert.js:27`). Idle/Loading/OK/Error rendern alle in dasselbe Element. 🟢 ENTSCHIEDEN: nicht zwei konkurrierende Status-Knoten.
 2. **Inline vor Modal.** Reihenfolge der Eskalation: (a) Inline-Status im `<tr>` → (b) inline Override Panel als zweite `<tr>` → (c) Sub-Pane *innerhalb* des Panels (Pin↔Pad, Datasheet) → (d) Vollbild-Modal NUR für die „was nun?"-Entscheidungsflüsse bei fehlenden Layern (§U4). Modals stehlen den Fokus; sie sind das letzte Mittel. 🟢 ENTSCHIEDEN.
-3. **Auto-Suggest ist vorausgefüllt, nicht aufgezwungen.** Best-Guess-Quellen sind im Panel bereits selektiert + mit Confidence-Badge markiert; der User muss nur „Bestätigen". Auto-Apply (Skip-Panel) überspringt das Panel nur bei `autoConfirm`+High-Confidence (§U3.4). 🟢 ENTSCHIEDEN.
+3. **Vorausgefüllt, nicht aufgezwungen.** Best-Guess-Quellen sind im Panel bereits selektiert + mit Confidence-Badge markiert; der User muss nur „Bestätigen". Der „One-Click" entsteht aus Vorbelegung + einem Confirm im stets sichtbaren Preview (§U3.3); kein Überspringen, kein `autoConfirm` — Ein-Klick leitet sich aus der Confidence ab (🟢/🟡/⚪, ADR-0006). 🟢 ENTSCHIEDEN.
 4. **Dismiss-Konsistenz.** Esc + Backdrop-Klick schließen Modals (`mountCsModal`, `dialog.js:288`); Cancel/Esc auf dem Panel = identisch zu „Abbrechen" (kein Phase 2). Jeder Dismiss zählt als „Cancel"-Outcome.
 5. **Idempotenz.** Jeder Render (Panel, Sub-Pane, Dialog, Status-Node) ist idempotent gegen LCSC-React-Reflows — bestehender Knoten wird wiederverwendet, keine Doppel-Listener (Muster aus `anchorCard.js:139`, `phase1Fetch.js:102`, `overridePanel.js:221`).
-6. **Busy ist global.** Native Host ist Single-Flight (`host.py:_busy`). Solange ein Convert/Fetch läuft, sind ALLE Download-/Customize-/Confirm-Buttons (auch in anderen Tabs) disabled mit Busy-Hint.
+6. **Busy ist global.** Native Host ist Single-Flight (`host.py:_busy`). Solange ein Convert/Fetch läuft, sind ALLE Importieren-/Modifizieren-Buttons (auch in anderen Tabs) disabled mit Busy-Hint.
 
 ---
 
 ### U1. Anchor-Card `<tr>` (Feature-Block A)
 
-Erweitert die heute existierende Scaffold-Zeile (`anchorCard.js:88 buildAnchorCardRow`) um Host-Status-Dot, geteilten Status-Span und Disabled-States. Heute: 2 Buttons (`data-k2c-action="download"`, `="customize"`) + Status-Span aus Phase 1. Soll-Zustand:
+Erweitert die heute existierende Scaffold-Zeile (`anchorCard.js:88 buildAnchorCardRow`) um Host-Status-Dot, geteilten Status-Span und Disabled-States. Heute: 2 Buttons (`data-k2c-action="download"`, `="modify"`) + Status-Span aus Phase 1. Soll-Zustand:
 
 ```
 ANCHORED CASE (in der Header-Card-Tabelle, als letzte <tr>):
 ┌──────────┬─────────────────────────────────────────────────────────────┐
-│ KiCad    │  ● [ In KiCad importieren ]  [ ⚙ Anpassen ]   <status-span>  │
+│ KiCad    │  ● [ In KiCad importieren ]  [ ⚙ Modifizieren ] <status-span>│
 │ (label)  │  ▲dot                                                        │
 └──────────┴─────────────────────────────────────────────────────────────┘
-  data-k2c-anchor-label   data-k2c-host-status  data-k2c-action=download/customize  data-k2c-phase1-status
+  data-k2c-anchor-label   data-k2c-host-status  data-k2c-action=download/modify  data-k2c-phase1-status
 ```
 
 ```
@@ -1334,7 +1334,7 @@ FLOAT FALLBACK (kein Anchor gefunden, position:fixed bottom-right, Shadow-DOM):
                           ┌───────────────────────────────┐
                           │ ● KiCad Parts Importer        │
                           │ [ In KiCad importieren ]      │
-                          │ [ ⚙ Anpassen ]                │
+                          │ [ ⚙ Modifizieren ]            │
                           │ <status-span>                 │
                           └───────────────────────────────┘
 ```
@@ -1345,20 +1345,20 @@ FLOAT FALLBACK (kein Anchor gefunden, position:fixed bottom-right, Shadow-DOM):
 |---|---|---|
 | Label-Cell | `data-k2c-anchor-label` | statisch „KiCad" |
 | Host-Status-Dot | `data-k2c-host-status` | 🟢 online / 🟡 checking / 🔴 offline; Tooltip = `k2c.host.tooltip.<state>` (KONZEPT §16.4) |
-| Primär-Button | `data-k2c-action="download"` | Label `k2c.btn.import`. Startet Phase 1 → (Skip-Flow ODER Panel). Im Default-Click NICHT `forcePanel`. |
-| Sekundär-Button | `data-k2c-action="customize"` | Label `k2c.btn.customize`. Startet Phase 1 mit `forcePanel=true` → Panel rendert IMMER, auch bei vollem Auto-Resolve (KONZEPT §12.5). |
+| Primär-Button | `data-k2c-action="download"` | Label `k2c.btn.import`. Startet Phase 1 → stets sichtbarer Import-Preview; bei 🟢 Ein-Klick-Confirm, sonst voller Import-Editor; kein Skip-Flow (ADR-0006). |
+| Sekundär-Button | `data-k2c-action="modify"` | Label `k2c.btn.modify`. Startet Phase 1 und öffnet den vollen Import-Editor (`forcePanel` entfällt — das Preview ist ohnehin immer sichtbar). |
 | Status-Span | `data-k2c-phase1-status` | geteilt P1/P2; `data-…-status`-Attribut trägt den State-Namen (idle/loading/ok/error/suggesting/…) für CSS-Hooks. |
 
 **Button-Disabled-Matrix:**
 
-| Host-Status | Active-Library gesetzt? | Busy? | Download | Customize |
+| Host-Status | Active-Library gesetzt? | Busy? | Download | Modifizieren |
 |---|---|---|---|---|
 | offline/checking | — | — | disabled, Hint `k2c.status.offline` | disabled |
 | online | nein | — | disabled, Hint `k2c.status.noActiveLib` + Inline-Link „Bibliothek wählen" (öffnet Popup-Tab Library) | disabled |
 | online | ja | ja | disabled, Hint `k2c.status.busy` | disabled |
 | online | ja | nein | **enabled** | **enabled** |
 
-🟢 ENTSCHIEDEN: Customize ist gleich disabled wie Download (gleiche Vorbedingungen) — kein „halb-aktiver" Zustand, der den User verwirrt.
+🟢 ENTSCHIEDEN: Modifizieren ist gleich disabled wie Download (gleiche Vorbedingungen) — kein „halb-aktiver" Zustand, der den User verwirrt.
 
 🟢 ENTSCHIEDEN: Kein MutationObserver (KONZEPT §6.5). Einmaliger Walk bei `document_idle`. Geht der Trigger durch React-Reflow verloren, ist das ein sichtbares Symptom → Reload. Re-Inject-Schutz via Idempotenz.
 
@@ -1411,7 +1411,7 @@ Erweitert `overridePanel.js` (heute nur Symbol/Footprint-Dropdown + Cancel/Confi
 #### U2.2 Symbol-Source-Dropdown
 - `<select data-k2c-override-symbol>` (existiert). Optionen: `Keep EasyEDA` + optgroup pro **aktiver** Template-Library mit Symbol-Namen (`populateSelect`, `overridePanel.js:47`).
 - Style: `applyDialogStyleSelect` (`dialog.js:40`) statt Browser-Default — visuelle Konsistenz mit den Modal-Dialogen. 🟢 ENTSCHIEDEN (heute roher `<select>`; upgraden).
-- Default-Selektion: Auto-Suggest (§U3) — sonst `Keep EasyEDA`.
+- Default-Selektion: Confidence-Vorbelegung (§U3) — sonst `Keep EasyEDA`.
 - Confidence-Badge rechts daneben (§U3.2).
 
 #### U2.3 Footprint-Source-Dropdown
@@ -1450,9 +1450,9 @@ Erweitert `overridePanel.js` (heute nur Symbol/Footprint-Dropdown + Cancel/Confi
 
 ---
 
-### U3. Auto-Suggest-Präsentation (das neue Herzstück)
+### U3. Confidence-Präsentation & Vorbelegung (🟢/🟡/⚪ — ADR-0006)
 
-Verbindet die User-Vision Punkt 3 (Kategorie + Pin-Count + Paketform → Vorschlag) mit der Skip-Panel-Logik (KONZEPT §12). Die **Suggestion-Engine** (Matching-Logik) ist NICHT mein Bereich — ich spezifiziere ihre **Präsentation** und das Datenformat, das sie an die UI liefert.
+Verbindet die User-Vision Punkt 3 (Kategorie + Pin-Count + Paketform → Vorschlag) mit dem Confidence-Zustandsautomaten (ADR-0006). Die **Suggestion-Engine** (Matching-Logik) ist NICHT mein Bereich — ich spezifiziere ihre **Präsentation** und das Datenformat, das sie an die UI liefert.
 
 #### U3.1 Suggestion-Eingabevertrag (von der Engine an die UI)
 ```js
@@ -1462,7 +1462,6 @@ type Suggestion = {
   confidence: "high" | "medium" | "low",
   reason: string,                 // i18n-Key + Args, z.B. k2c.suggest.reason.rule / .package / .pincount
   reasonArgs?: object,            // {category:"Passives/Resistors", package:"0603", pins:2}
-  ruleAutoConfirm?: boolean,      // aus matched Category Rule (KONZEPT §12.2)
 }
 ```
 🟢 ENTSCHIEDEN: Confidence ist ein 3-stufiges Enum (high/medium/low), kein Float — Float-Prozente suggerieren Scheingenauigkeit und sind für den User nicht handlungsleitend. Schwellen/Float bleiben intern in der Engine.
@@ -1478,28 +1477,16 @@ type Suggestion = {
 - Der Dropdown ist bereits auf `choice` vorselektiert. Ändert der User die Selektion manuell, verschwindet das Badge (es war ja ein Vorschlag, der nun überstimmt wurde) und ein dezentes `✎ manuell` erscheint.
 
 #### U3.3 „One-Click-Accept"
-- Bei vorhandenem Suggest sind die Dropdowns bereits gesetzt → der „One-Click" IST der `[ Importieren ]`-Button. Kein separater Accept-Button (das wäre ein zweiter Confirm). 🟢 ENTSCHIEDEN: kein doppelter Accept; Vorbelegung + ein Confirm = ein Klick.
+- Bei vorhandener Confidence-Vorbelegung sind die Dropdowns bereits gesetzt → der „One-Click" IST der `[ Importieren ]`-Button. Kein separater Accept-Button (das wäre ein zweiter Confirm). 🟢 ENTSCHIEDEN: kein doppelter Accept; Vorbelegung + ein Confirm = ein Klick. Im 🟢-Fall ist dieser Ein-Klick der gesamte Apply-Pfad (ADR-0006); ersetzt die entfallene §U3.4.
 
-#### U3.4 Auto-Apply (Skip-Panel-Flow, KONZEPT §12.4)
-Panel wird GAR NICHT gemountet, Phase 2 startet direkt, wenn ALLE gelten:
-1. Winning Category Rule existiert.
-2. `rule.autoConfirm == true`.
-3. Pin-Map auflösbar ohne UI (Sidecar existiert ODER Sym-Pin == FP-Pad).
-4. Keine Overwrite-Warnung (oder `defaultOverwritePolicy == overwrite`).
-5. Master-Toggle `alwaysShowOverridePanel == false`.
-6. `forcePanel != true` (Customize-Button setzt es; siehe §U1).
-
-Inline-Status zeigt dann den Auto-Pfad transparent (NIE stilles Handeln):
-```
-<status-span>:  ✨ Auto: Resistor_SMT → R_0603_1608Metric · importiere…
-```
-🟢 ENTSCHIEDEN: Auto-Apply zeigt IMMER, was es tut (Quelle Symbol → Footprint), bevor/während es schreibt. „Magie ohne Sichtbarkeit" verletzt das Vertrauensprinzip. Der Customize-Button (§U1) ist die jederzeit erreichbare Eskape-Luke zum vollen Panel.
+#### U3.4 (entfällt — ersetzt durch ADR-0006)
+Der frühere Skip-Panel/Auto-Apply-Pfad ist gestrichen. 🟢-Fall = Ein-Klick im stets sichtbaren Preview (§U3.3); kein Skip, kein `autoConfirm`, kein Master-Toggle, kein Countdown.
 
 ---
 
 ### U4. Multi-Dialog-Entscheidungsflüsse bei fehlenden Layern („was nun?")
 
-Greift, wenn EasyEDA für dieses Part **keinen** Symbol- bzw. Footprint-Layer liefert und auch keine Auto-Suggestion mit Confidence ≥ medium existiert. Diese Flüsse sind die EINZIGEN Vollbild-Modals im On-Page-Flow (Begründung §U0.2). Sie nutzen `mountCsModal` (`dialog.js:288`) — gleiche Shell wie die V2-Value-Param-Dialoge.
+Greift, wenn EasyEDA für dieses Part **keinen** Symbol- bzw. Footprint-Layer liefert und auch keine Confidence-Vorbelegung mit Confidence ≥ medium existiert. Diese Flüsse sind die EINZIGEN Vollbild-Modals im On-Page-Flow (Begründung §U0.2). Sie nutzen `mountCsModal` (`dialog.js:288`) — gleiche Shell wie die V2-Value-Param-Dialoge.
 
 #### U4.1 „Kein Footprint gefunden — was nun?"
 ```
@@ -1535,7 +1522,7 @@ Wenn LCSC-Specs da sind, aber WEDER Symbol NOCH Footprint NOCH 3D von EasyEDA: e
 **Flow-Reihenfolge bei beidseitig fehlend:** zuerst Symbol-Dialog (§U4.2), dann Footprint-Dialog (§U4.1), dann Panel mit den getroffenen Vorbelegungen — ODER direkt §U4.3 wenn die Engine „beide fehlen + Specs vorhanden" meldet. 🟢 ENTSCHIEDEN: §U4.3 bevorzugt, wenn beide fehlen (eine Entscheidung statt Dialog-Kaskade — genau die Kaskade, die das Override Panel laut KONZEPT §8.1 ablösen soll).
 
 #### U4.4 V2-Wiederverwendung (Value-Param)
-Die V2-Value-Param-Dialoge (`lcscValueParamDialogs.js`) bleiben als ORTHOGONALE Schicht erhalten: sie betreffen die `Value`-Property-Quelle, nicht den Symbol/Footprint-Layer. Sie laufen VOR dem Panel/Auto-Apply, wenn `needsValueParamFromPage` bzw. ein Rule-Mismatch (`isConfiguredValueParamPresentOnPage`) zutrifft. Outcomes: `default`/`configure`/`cancel` (bereits implementiert). 🟢 ENTSCHIEDEN: nicht neu bauen, nur in den V3-Flow einhängen (vor Panel-Render).
+Die V2-Value-Param-Dialoge (`lcscValueParamDialogs.js`) bleiben als ORTHOGONALE Schicht erhalten: sie betreffen die `Value`-Property-Quelle, nicht den Symbol/Footprint-Layer. Sie laufen VOR dem Import-Editor/Preview, wenn `needsValueParamFromPage` bzw. ein Rule-Mismatch (`isConfiguredValueParamPresentOnPage`) zutrifft. Outcomes: `default`/`configure`/`cancel` (bereits implementiert). 🟢 ENTSCHIEDEN: nicht neu bauen, nur in den V3-Flow einhängen (vor Panel-Render).
 
 ---
 
@@ -1598,7 +1585,7 @@ Single State-Machine pro Anchor-Card. `data-k2c-phase1-status`-Attribut trägt d
 | `noActiveLib` | Dot 🟢; Download disabled; Span „Keine aktive Bibliothek" + Link | `k2c.status.noActiveLib` |
 | `loading` (Phase 1) | Span „Metadaten werden geladen…"; Buttons disabled | `k2c.p1.loading` |
 | `suggesting` | Span „Vorschlag wird ermittelt…" (kurz, optional); | `k2c.suggest.computing` |
-| `panel-open` | Panel-`<tr>` sichtbar; Anchor-Buttons → Customize bleibt, Download disabled | — |
+| `panel-open` | Panel-`<tr>` sichtbar; Anchor-Buttons → Modifizieren bleibt, Download disabled | — |
 | `converting` | Span „Phase 2: <message> (NN%)" (`formatPhase2Progress`, `phase2Convert.js:43`); alle Buttons disabled | `k2c.p2.progress` |
 | `success` | Span grün „Fertig · <libPath>" (`formatPhase2Terminal`); Panel entfernt; Buttons re-enabled | `k2c.p2.done` |
 | `error` | Span rot „<user-message>" (§U7.3); Buttons re-enabled für Retry | `k2c.error.*` |
@@ -1607,16 +1594,15 @@ Single State-Machine pro Anchor-Card. `data-k2c-phase1-status`-Attribut trägt d
 #### U7.2 Erlaubte Transitions
 ```
 idle ─Download──▶ loading
-idle ─Customize─▶ loading(forcePanel)
+idle ─Modifizieren─▶ loading
 checking ─ping ok──▶ idle | noActiveLib
 checking ─ping fail─▶ offline
 offline ─ping ok───▶ idle            (host-status-tick, KONZEPT §16.3)
 loading ─P1 ok─────▶ suggesting
 loading ─P1 err────▶ error
 loading ─concurrent▶ busy
-suggesting ─autoApply(§U3.4)──▶ converting
 suggesting ─needPanel─────────▶ panel-open
-suggesting ─missing-layer─────▶ (Modal §U4) ─▶ panel-open | converting | idle(cancel)
+suggesting ─missing-layer─────▶ (Modal §U4) ─▶ panel-open | idle(cancel)
 panel-open ─Confirm──▶ converting
 panel-open ─Cancel/Esc▶ idle
 converting ─progress─▶ converting    (self-loop, ≥3 frames KONZEPT §9.4)
@@ -1660,7 +1646,7 @@ Plus Transport-/Vorbedingungs-Pseudo-Fehler (kommen aus `background.js`, nicht a
 | Key | DE |
 |---|---|
 | `k2c.btn.import` | In KiCad importieren |
-| `k2c.btn.customize` | Anpassen |
+| `k2c.btn.modify` | Modifizieren |
 | `k2c.panel.heading` | Quellen überschreiben |
 | `k2c.panel.symbol` | Symbol |
 | `k2c.panel.footprint` | Footprint |
@@ -1676,7 +1662,9 @@ Plus Transport-/Vorbedingungs-Pseudo-Fehler (kommen aus `background.js`, nicht a
 | `k2c.suggest.reason.package` | Paket {package} erkannt |
 | `k2c.suggest.reason.pincount` | {pins} Pins erkannt |
 | `k2c.suggest.manual` | ✎ manuell |
-| `k2c.suggest.autoLine` | ✨ Auto: {symbol} → {footprint} · importiere… |
+| `k2c.header.green` | Registriert: {ruleKey} — Ein-Klick |
+| `k2c.header.yellow` | Niedrige Confidence — prüfen oder EasyEDA behalten |
+| `k2c.header.white` | Neues Bauteil — nur EasyEDA ODER registrieren |
 | `k2c.pinpad.heading` | Pin ↔ Pad Zuordnung |
 | `k2c.pinpad.trivial` | {n} Pins ⟷ {m} Pads · automatisch 1:1 |
 | `k2c.pinpad.edit` | Zuordnung bearbeiten |
@@ -1721,7 +1709,7 @@ Plus Transport-/Vorbedingungs-Pseudo-Fehler (kommen aus `background.js`, nicht a
 ### U9. Implementierungs-Reihenfolge (für den Coding-Agent)
 1. Anchor-Card-Erweiterung (Host-Dot, Disabled-Matrix, geteilter Status) — `anchorCard.js` + `nativeHostStatusButton.js`.
 2. Panel-Sektionen einbauen (Modus-Badge, Style-Upgrade `applyDialogStyleSelect`, Overwrite, Labels-Preview) — `overridePanel.js`.
-3. Suggestion-Präsentation (Badges, Vorbelegung, Auto-Apply-Status) — neuer Renderer in `overridePanel.js`, Eingabevertrag §U3.1.
+3. Confidence-Präsentation (Badges, Vorbelegung, 🟢-Ein-Klick-Confirm) — neuer Renderer in `overridePanel.js`, Eingabevertrag §U3.1.
 4. Missing-Layer-Modals — neues Modul `missingLayerDialogs.js` auf `mountCsModal`.
 5. Pin↔Pad-Sub-Pane — `pinPadSubPanel.js`.
 6. Datasheet-Sub-Pane — `datasheetSubPanel.js` (wrappt `DatasheetPanel`).
@@ -1787,7 +1775,7 @@ type Rule = {
   footprintSource: LayerChoice;     // EasyEDA | Template-Footprint (3D folgt Footprint, ADR-0005)
   model3dSource:   "follow-footprint" | "easyeda";  // default follow-footprint (ADR-0005)
   // — Verhalten —
-  action: "auto-apply" | "ask";     // auto-apply ⇒ Skip-Panel-Flow (KONZEPT §12.4 autoConfirm:true)
+  // Kein action-Flag mehr — Ein-Klick aus Confidence (ADR-0006)
   // — Symbol-Darstellung (V2-Erbe) —
   pinDisplay: { hideNumbers: boolean; hideNames: boolean };
   valueParam?: string | null;       // LCSC-Spaltentitel → Symbol-Value (z.B. "Resistance")
@@ -1799,7 +1787,7 @@ type LayerChoice =
   | { source: "template", libPath: string, name: string };
 ```
 
-🟢 ENTSCHIEDEN (D-RULES-2): `action` ist ein **2-Wege-Segment** „Ask / Auto-apply" statt der KONZEPT-`autoConfirm`-Checkbox — klarer, weil es die zwei realen Outcomes benennt (Panel zeigen vs. direkt importieren). Mapping auf KONZEPT: `auto-apply ≡ autoConfirm:true`. (Die globale Bremse „Always show panel", §3, sticht jede `auto-apply`-Regel.)
+🟢 ENTSCHIEDEN (D-RULES-2) **(ÜBERHOLT durch ADR-0006):** Es gibt **kein** `action`-Segment „Ask / Auto-apply" mehr und **keine** Master-Bremse „Always show panel". Eine Rule trägt nur Quellen/Verknüpfung (symbolSource, footprintSource, labelMap, pin/pad-Map) + impliziten registriert-Status; ob ein Import Ein-Klick ist, leitet die **Confidence** ab (`computeConfidenceState`, §3.5 / ADR-0006), nicht ein Rule-Flag. Das Preview ist ohnehin immer sichtbar (kein Skip-Panel-Flow).
 
 🟢 ENTSCHIEDEN (D-RULES-3): **Accordion-Zeilen bleiben** (V2 `cat-item`, `popup.js:1073`) — eine zusammengeklappte Zeile zeigt Path-Breadcrumb + Summary-Chips; aufgeklappt der volle Editor. Begründung: skaliert auf viele Regeln, V2-Muster ist erprobt, kein Modal-Zwang. **Kein** separates „Edit"-Modal (KONZEPT §4.3.1 nennt „Edit", aber Inline-Accordion ist intuitiver und schon gebaut).
 
@@ -1810,16 +1798,16 @@ type LayerChoice =
 │  Deepest matching path wins.                          🔎 [filter…] │
 ├───────────────────────────────────────────────────────────────────┤
 │ ▾  Passives / Resistors / SMD                                  ✕  │
-│    🟩 Auto-apply   ⚙ R_Std   ⬡ R_0603   🏷 4 labels   pins:2     │
+│    🟢 registriert  ⚙ R_Std   ⬡ R_0603   🏷 4 labels   pins:2     │
 ├───────────────────────────────────────────────────────────────────┤
 │ ▾  Passives / Capacitors                                       ✕  │
-│    🟨 Ask          ⚙ EasyEDA  ⬡ EasyEDA  🏷 2 labels             │
+│    🟢 registriert  ⚙ EasyEDA  ⬡ EasyEDA  🏷 2 labels             │
 ├───────────────────────────────────────────────────────────────────┤
 │ ▾  ICs / Logic / 74-Series                                     ✕  │
-│    🟨 Ask          ⚙ EasyEDA  ⬡ EasyEDA   ⚠ pin≠pad (sidecar)   │
+│    🟢 registriert  ⚙ EasyEDA  ⬡ EasyEDA   ⚠ pin≠pad (sidecar)   │
 └───────────────────────────────────────────────────────────────────┘
 ```
-Chips (Summary, erweitert `updateCatSummary` `popup.js:1287`): `🟩 Auto-apply`/`🟨 Ask`, `⚙ {symbolSource}`, `⬡ {footprintSource}`, `🏷 {n} labels`, optional `pins:{n}`, `pkg:{form}`, Warn-Chip `⚠ pin≠pad` wenn Pin/Pad-Mismatch ohne Sidecar (KONZEPT §13).
+Chips (Summary, erweitert `updateCatSummary` `popup.js:1287`): `🟢 registriert` (Confidence-/registriert-Indikator, KEIN action-Label — die Regel ist registriert, der Ein-Klick leitet sich aus der Confidence ab, ADR-0006), `⚙ {symbolSource}`, `⬡ {footprintSource}`, `🏷 {n} labels`, optional `pins:{n}`, `pkg:{form}`, Warn-Chip `⚠ pin≠pad` wenn Pin/Pad-Mismatch ohne Sidecar (KONZEPT §13).
 
 **1b. Zeile aufgeklappt (Editor):**
 ```
@@ -1833,9 +1821,6 @@ Chips (Summary, erweitert `updateCatSummary` `popup.js:1287`): `🟩 Auto-apply`
 │                                                                    │
 │  Match also by … (optional)                                        │
 │   Pin count [ 2 ▾ ]   Package form [ 0603        ]                 │
-│                                                                    │
-│  When a part matches →                                             │
-│   ◉ Ask (show panel)     ◯ Auto-apply (import directly)            │
 │                                                                    │
 │  Symbol source     [ Template: R_Std (MyTemplates)        ▾ ]      │
 │  Footprint source  [ Template: R_0603 (MyTemplates)       ▾ ]      │
@@ -1863,7 +1848,7 @@ Chips (Summary, erweitert `updateCatSummary` `popup.js:1287`): `🟩 Auto-apply`
 
 🟢 ENTSCHIEDEN (D-RULES-6): **Metadata-Label-Mapping-UI** (Vision Punkt 6) = editierbare Tabelle `{lcscParam → symbolProp, visible}`. Vorbelegung „Suggest from this page": liest die zuletzt vom Content-Script gescrapten Page-Params (`lcscPageSnapshot`) und schlägt Mappings vor, wobei `symbolProp` aus `STANDARD_SYMBOL_PROPERTY_KEYS` (`parameters_kicad_symbol.py:121`: Manufacturer, Datasheet, Description, LCSC Part, JLC Part …) per Fuzzy-Match (`normalize_property_key_for_match`, `template_merger.py:27`) gezogen wird; unbekannte Keys landen als **hidden custom property** (genau wie `template_merger.py:261` `_make_hidden_property`). `visible`-Spalte steuert das `hide`-Flag im S-Expr. Beispiel-Ziel der Vision (R mit Value=50R, Tolerance=±1%, Package=0603) ist damit 1:1 abbildbar.
 
-🟢 ENTSCHIEDEN (D-RULES-7): **Migration & Defaults.** Beim ersten V3-Start werden V2-`categorySettings` (`background.js:118-121`) zu `rules[]` migriert: `{ "Passives/Resistors": {valueParam:"Resistance", hidePinNumbers:true, hidePinNames:true} }` → `Rule{ categoryPath:"Passives/Resistors", valueParam:"Resistance", pinDisplay:{hideNumbers:true,hideNames:true}, symbolSource:{source:"easyeda"}, footprintSource:{source:"easyeda"}, model3dSource:"follow-footprint", action:"ask", labelMap:[] }`. Ein Seed-Beispiel-Rule (Resistors) bleibt als „so sieht eine Regel aus"-Vorlage erhalten.
+🟢 ENTSCHIEDEN (D-RULES-7): **Migration & Defaults.** Beim ersten V3-Start werden V2-`categorySettings` (`background.js:118-121`) zu `rules[]` migriert: `{ "Passives/Resistors": {valueParam:"Resistance", hidePinNumbers:true, hidePinNames:true} }` → `Rule{ categoryPath:"Passives/Resistors", valueParam:"Resistance", pinDisplay:{hideNumbers:true,hideNames:true}, symbolSource:{source:"easyeda"}, footprintSource:{source:"easyeda"}, model3dSource:"follow-footprint", labelMap:[] }` (kein `action`-Feld mehr, ADR-0006). Ein Seed-Beispiel-Rule (Resistors) bleibt als „so sieht eine Regel aus"-Vorlage erhalten.
 
 **Validierung / Inline-Fehler (live, debounced wie V2 `popup.js:1117-1123`):**
 - Doppelter `categoryPath` → Inline-Banner „Regel für diesen Pfad existiert bereits". (KONZEPT §4.3.1 „überschreiben?" → 🟢 D-RULES-8: **kein** Overwrite-Prompt, stattdessen Live-Merge-Hinweis + Sprung zur existierenden Zeile; Doppelte werden wie in V2 dedupliziert, `popup.js:1318-1347`.)
@@ -1918,7 +1903,8 @@ Baut auf V2-Settings-Form (`popup.html:107-228`). Die V2-Sektion „Backend / AP
 │   Color theme   [ Light ] [ Dark ]                               │  ← popup.html:148-158
 │                                                                    │
 │  Import behaviour                                            (ⓘ)  │
-│   ☐ Always show Override Panel (disables auto-apply globally)     │  ← KONZEPT §4.3.3 master toggle
+│   Bei niedriger Confidence (🟡):                                  │  ← 🟡-Low-Confidence-Setting, see D-SET-2 (ADR-0006)
+│     ◉ EasyEDA behalten + Hinweis   ◯ Import-Editor öffnen        │
 │   Default overwrite policy   ◉ Ask  ◯ Overwrite  ◯ Skip          │  ← replaces 2 V2 switches, see D-SET-1
 │   ☐ Use project-relative 3D paths  ${KIPRJMOD}[ ../../library ]   │  ← popup.html:185-198
 │                                                                    │
@@ -1927,15 +1913,15 @@ Baut auf V2-Settings-Form (`popup.html:107-228`). Die V2-Sektion „Backend / AP
 └───────────────────────────────────────────────────────────────────┘
 ```
 
-🟢 ENTSCHIEDEN (D-SET-1): Die zwei V2-Overwrite-Switches („Overwrite footprints & symbols", „Overwrite 3D models", `popup.html:176-184`) werden zu **einer 3-Wege-Policy** `Ask | Overwrite | Skip` zusammengeführt (KONZEPT §4.3.3 „Default overwrite policy"). Begründung: vereinheitlicht mit dem Override-Panel-Overwrite-Verhalten (KONZEPT §12.4 Schritt 4) und reduziert kognitive Last. Migration: V2 `overwriteFootprints=true ⇒ "overwrite"`, sonst `"ask"`; 3D-Overwrite separat als Unter-Detail nur sichtbar bei Policy=Overwrite.
+🟢 ENTSCHIEDEN (D-SET-1): Die zwei V2-Overwrite-Switches („Overwrite footprints & symbols", „Overwrite 3D models", `popup.html:176-184`) werden zu **einer 3-Wege-Policy** `Ask | Overwrite | Skip` zusammengeführt (KONZEPT §4.3.3 „Default overwrite policy"). Begründung: vereinheitlicht mit dem Override-Panel-Overwrite-Verhalten (KONZEPT §12.4 Schritt 4 — **(ÜBERHOLT durch ADR-0006:** kein Skip-Panel-Flow mehr; Overwrite-Policy gilt im stets sichtbaren Import-Editor-Preview)) und reduziert kognitive Last. Migration: V2 `overwriteFootprints=true ⇒ "overwrite"`, sonst `"ask"`; 3D-Overwrite separat als Unter-Detail nur sichtbar bei Policy=Overwrite.
 
-🟢 ENTSCHIEDEN (D-SET-2): **„Always show Override Panel"** (Master-Bremse, KONZEPT §12.4-5) ist der wichtigste neue Settings-Toggle und steht ganz oben in „Import behaviour", default **OFF**. ON ⇒ jede `auto-apply`-Regel wird trotzdem als Panel gezeigt (kein Skip-Flow). Spiegelt sich im Content-Script.
+🟢 ENTSCHIEDEN (D-SET-2) **(ÜBERHOLT durch ADR-0006):** Das Toggle „Always show Override Panel" (Master-Bremse) **entfällt** — es gibt keinen Skip-Panel-/Auto-Apply-Flow mehr, das Preview ist immer sichtbar. **Ersatz:** ein **🟡-Low-Confidence-Setting** (Enum `keepEasyeda | openEditor`, Default `openEditor`) ganz oben in „Import behaviour": legt fest, was im 🟡-Fall (registrierte Rule aber unsichere/medium Confidence, ODER Heuristik-Match ohne Rule) passiert — EasyEDA behalten + unaufdringlicher Hinweis, oder den Import-Editor öffnen. Spiegelt sich im Content-Script (`computeConfidenceState`, §3.5).
 
 🟢 ENTSCHIEDEN (D-SET-3): **System-Theme-Option** (KONZEPT §4.3.3 nennt „system") wird **NICHT** in V1 aufgenommen — V2 hat nur Light/Dark (`popup.html:151-156`), und „system" addiert `prefers-color-scheme`-Logik ohne klaren Nutzen für ein Tool-Popup. Bleibt 2-Wege.
 
 🟢 ENTSCHIEDEN (D-SET-4): „Re-check"-Button triggert `prewarmNativeHost` (`background.js:1685`) und aktualisiert die Status-Zeile + Header-Dot. Ersetzt V2 „Test" (`popup.html:129`).
 
-Inputs/Outputs: `chrome.storage.local` (theme, overwritePolicy, alwaysShowPanel, projectRelative, projectRelativePath, debugLogs). Host-Status read-only aus Broadcast.
+Inputs/Outputs: `chrome.storage.local` (theme, overwritePolicy, lowConfidenceBehaviour `keepEasyeda|openEditor`, projectRelative, projectRelativePath, debugLogs). Host-Status read-only aus Broadcast.
 
 ---
 
@@ -2044,8 +2030,6 @@ Schritt ① ✔ wenn `nativeHostStatus.state==="online"`. Schritt ② ✔ wenn �
 | `tab.settings` | „Einstellungen" |
 | `rules.add` | „+ Regel hinzufügen" |
 | `rules.intro` | „Schlägt Symbol, Footprint & Labels automatisch vor — pro LCSC-Kategorie. Tiefster Treffer gewinnt." |
-| `rules.action.ask` | „Nachfragen (Panel zeigen)" |
-| `rules.action.auto` | „Automatisch übernehmen" |
 | `rules.symbolSource` | „Symbol-Quelle" |
 | `rules.footprintSource` | „Footprint-Quelle" |
 | `rules.follow3d` | „3D folgt Footprint" |
@@ -2062,7 +2046,8 @@ Schritt ① ✔ wenn `nativeHostStatus.state==="online"`. Schritt ② ✔ wenn �
 | `set.host.online` | „● Host: online · v{v}" |
 | `set.host.offline` | „● Host: offline" |
 | `set.host.recheck` | „Neu prüfen" |
-| `set.alwaysPanel` | „Override-Panel immer zeigen (deaktiviert Auto-Übernahme global)" |
+| `set.lowConfidence.keepEasyeda` | „Bei niedriger Confidence: EasyEDA behalten + Hinweis" |
+| `set.lowConfidence.openEditor` | „Bei niedriger Confidence: Import-Editor öffnen" |
 | `set.overwrite` | „Standard-Überschreib-Policy" |
 | `set.theme` | „Farbschema" |
 | `picker.title.folder` | „Ordner wählen" |
@@ -2079,7 +2064,7 @@ Schritt ① ✔ wenn `nativeHostStatus.state==="online"`. Schritt ② ✔ wenn �
 ### 8. Was bleibt / was wird verbessert / was entfällt (Zusammenfassung)
 
 KEEP: 3-Tab-Layout, Accordion-Regelzeilen, Library-Activate/Template-Switch/Asset-Badges, Picker-Grundgerüst (Breadcrumbs, Manual-Input, Pfeiltasten), Shared-Confirm-Overlay, Light/Dark.
-VERBESSERN: Category→Rules (Pin/Package-Match, Source-Dropdowns, action, Label-Mapping), Picker (Quick-Access, back/fwd/up, Filter, fs_check-Validierung, volle A11y), Settings (Host-Status statt WS-URL, Overwrite-Policy-3-Wege, Always-Show-Panel), Empty-States, Onboarding-Banner, Asset-Badges mit Icons.
+VERBESSERN: Category→Rules (Pin/Package-Match, Source-Dropdowns, Label-Mapping; kein action-Flag — Ein-Klick aus Confidence, ADR-0006), Picker (Quick-Access, back/fwd/up, Filter, fs_check-Validierung, volle A11y), Settings (Host-Status statt WS-URL, Overwrite-Policy-3-Wege, Low-Confidence-Verhalten (EasyEDA behalten vs Import-Editor, ADR-0006)), Empty-States, Onboarding-Banner, Asset-Badges mit Icons.
 ENTFÄLLT: WS-„Backend"-Sektion + „Test"-Button (`popup.html:111-133`), WS-Status-Dot im Header (`popup.html:20-23`), separate 2 Overwrite-Switches (→ Policy), „system"-Theme.
 VORAUSSETZUNG (nicht UI, aber blockierend): fs_roots/fs_list/fs_check als Native-Host-Verben (D-PICK-1).
 
@@ -2349,7 +2334,7 @@ Die Geld-Frage selbst eskaliere ich:
 | `chrome_extension/src/content/nativeHostStatusButton.js:27,44-50` | 4. State `not-installed`; Banner-Trigger statt nur disabled Button |
 | `chrome_extension/manifest.json:12` | V2-`http://localhost:8087/*`-host_permission entfernen |
 | neu: `chrome_extension/src/content/onboardingBanner.js` | Download-Helper-Banner (Wireframe §18.6) |
-| `docs/KONZEPT.md:1273-1338` | §18 ersetzen (gRPC/Variante-2/Token-Reste raus, ADR-0001 ist final) |
+| `docs/KONZEPT.md` §18 | ✅ erledigt — §18 spricht durchgängig Native Messaging (gRPC/Variante-2/Token-Reste raus, ADR-0001 ist final) |
 | `README.md:106-148` | „Install the backend"-Sektion auf Native-Messaging-Doppelklick-Flow umschreiben |
 
 ---
@@ -2364,8 +2349,8 @@ Die Geld-Frage selbst eskaliere ich:
   _Warum:_ Der Matcher ist bereits korrekt (longest key mit Slash-Boundary) und getestet. Wiederverwendung statt Neuschrieb minimiert Risiko und hält JS-Verhalten konsistent mit dem Python-Mirror.
 - 🟢 **AD-3** — Package-Form-Detection ist ein eigenes Modul packageForm.mjs + Python-Mirror package_form.py mit gepaartem Drift-Test (wie categoryPath). Imperial (0603) ist die kanonische Form; Metric (1608) wird als Alias mitgeführt.  
   _Warum:_ KiCad-Standard-Libraries und LCSC-DOM nutzen überwiegend Imperial. Eine Kanon-Form vermeidet Doppel-Rules; Metric-Alias erlaubt trotzdem Match gegen Metric-only-Footprint-Namen. Taxonomie als versionierte JSON-Datei, damit neue Packages ohne Code-Release ergänzbar sind.
-- 🟢 **AD-4** — Auto-Template-Match (Namens-/Pin-Count-Heuristik ohne explizite Rule) liefert NUR Panel-Vorschläge, löst niemals den Skip-Panel-Flow aus. Skip-Panel nur bei explizit vom User gesetzter Rule mit autoApply=auto.  
-  _Warum:_ Frei benannte User-Templates machen Namens-Heuristik fehleranfällig. Stilles Auto-Apply falscher Footprints in die Library ist gefährlich; Vorschläge mit Confidence-Badge sind sicher und trotzdem komfortabel.
+- 🟢 **AD-4 (ÜBERHOLT durch ADR-0006)** — Auto-Template-Match (Namens-/Pin-Count-Heuristik OHNE registrierte Rule) ergibt **nie 🟢 green** — höchstens 🟡 yellow (Confidence-Vorbelegung im Preview), gefolgt vom 🟡-Low-Confidence-Setting (EasyEDA behalten vs Import-Editor). Ein-Klick (🟢) verlangt eine **registrierte Rule** + hohe Confidence (`computeConfidenceState`, §3.5). Es gibt keinen Skip-Panel-/`autoApply=auto`-Flow mehr; das Preview ist immer sichtbar.  
+  _Warum:_ Frei benannte User-Templates machen Namens-Heuristik fehleranfällig. Stilles Auto-Apply falscher Footprints in die Library ist gefährlich; Confidence-vorbelegte Vorschläge mit immer sichtbarem Preview sind sicher und trotzdem komfortabel.
 - 🟢 **AD-5** — LabelMapping ist per-Rule-Überlagerung über die globale LCSC_PARAMS_MAP (background.js:8); Rule gewinnt punktuell. Default (kein LabelMapping) = heutiges Verhalten (valueParam->Value, mapParamKey-Rest als Properties via template_merger._build_value_map).  
   _Warum:_ Globale Tabelle deckt 90% ab (Power/Tolerance/Voltage/MPN); per-Rule-Overrides lösen Sonderfälle deklarativ ohne Code-Edit. Bestehender, funktionierender Metadaten-Merge bleibt unangetastet als Fallback.
 - 🟢 **AD-6** — Phase-1-Response wird additiv erweitert um package/packageForm, manufacturer, mpn, easyedaHas{symbol,footprint,model} und existsInActiveLib — alle aus dem CAD-Fetch, den Phase 1 ohnehin macht (phase1.py:127), plus dem DOM-Package-Hint.  
@@ -2376,8 +2361,8 @@ Die Geld-Frage selbst eskaliere ich:
   _Warum:_ Multi-Layer-3D-Override-UI wuerde die KISS-Heuristik brechen; die 6 3D-Pfade sind klar definiert. Reuse vorhandener sauberer Footprints vermeidet Duplikate und nutzt existierende Library-Counts (LibraryValidateResponse).
 - 🟢 **AD-9** — Stock-Library wird als normale Template-Library ausgeliefert (StdLib.kicad_sym + .pretty/ + .3dshapes/), vom Installer geschrieben und beim ersten Start automatisch als isTemplateLibrary registriert. Footprints referenzieren primaer ${KICAD9_3DMODEL_DIR} statt eigene STEP-Files.  
   _Warum:_ Override Panel, ListTemplates, Always-Re-Resolve und 3D-Carry-Over funktionieren dann unveraendert mit der Stock-Lib; kein neuer Storage-Mechanismus. System-3D-Variable spart Auslieferungsgroesse und nutzt hochwertige KiCad-Standardmodelle (KONZEPT §11.1 Fall 3).
-- 🟢 **AD-10** — Mitgelieferte Stock-Rules werden initial mit autoApply=suggest geseedet, nie mit auto. Ein Categories-Tab-Button bietet das Seeding optional an (kein Zwang).  
-  _Warum:_ User soll erste Imports sehen und bestaetigen; erst nach Vertrauen schaltet er einzelne Kategorien auf auto (One-Click). Matcht das KONZEPT-Zielbild progressiver Automatisierung ohne stille Ueberraschungen am Tag 1.
+- 🟢 **AD-10 (ÜBERHOLT durch ADR-0006)** — Mitgelieferte Stock-Rules tragen **kein** `autoApply`-Flag (suggest/auto entfallen) — sie sind schlicht registrierte Rules (Quellen + Verknüpfung). Ein-Klick ergibt sich aus der **Confidence** des jeweiligen Imports (§3.5), nicht aus einem pro-Regel gesetzten Modus. Ein Rules-Tab-Button bietet das Seeding optional an (kein Zwang).  
+  _Warum:_ Es gibt keinen 'auto'-Modus, den der User scharfschalten könnte. Das Preview ist immer sichtbar; sobald eine registrierte Rule + hohe Confidence vorliegt, ist der Import ein Klick (🟢). Progressive Automatisierung passiert über steigende Confidence, ohne stille Ueberraschungen am Tag 1.
 
 ### Template-System + Metadaten-als-Labels
 
@@ -2460,10 +2445,10 @@ Die Geld-Frage selbst eskaliere ich:
   _Warum:_ Modals stehlen Fokus und sind das, was das Override Panel laut KONZEPT §8.1 gerade ablösen soll. Nur die 'was nun?'-Entscheidungen rechtfertigen ein Modal.
 - 🟢 **d4** — Confidence ist ein 3-stufiges Enum (high/medium/low), kein Float-Prozentwert in der UI.  
   _Warum:_ Float-Prozente suggerieren Scheingenauigkeit und sind nicht handlungsleitend. Drei Stufen mappen sauber auf grün/amber/grau-Badges. Schwellen bleiben intern in der Suggestion-Engine.
-- 🟢 **d5** — Auto-Suggest belegt die Dropdowns vor; der 'One-Click-Accept' IST der Importieren-Button — kein separater Accept-Button.  
+- 🟢 **d5** — Confidence-Vorbelegung belegt die Dropdowns vor; der 'One-Click-Accept' IST der Importieren-Button — kein separater Accept-Button.  
   _Warum:_ Ein zweiter Accept-Button wäre ein doppelter Confirm. Vorbelegung + ein Confirm = ein Klick, exakt die User-Vision 'one-click import'.
-- 🟢 **d6** — Auto-Apply (Skip-Panel) zeigt IMMER inline, welches Symbol→Footprint es schreibt, bevor/während es schreibt.  
-  _Warum:_ Stilles automatisches Schreiben in die Bibliothek verletzt das Vertrauensprinzip. Der Customize-Button bleibt die jederzeitige Eskape-Luke zum vollen Panel (KONZEPT §12.5).
+- 🟢 **d6 (ÜBERHOLT durch ADR-0006)** — Es gibt keinen Auto-Apply-/Skip-Panel-Pfad mehr. Das Preview ist **immer sichtbar** und zeigt das resolvte Symbol→Footprint, bevor importiert wird; im 🟢-Fall ist der Import ein Klick (kein separates Confirm, kein Countdown).  
+  _Warum:_ Stilles automatisches Schreiben in die Bibliothek verletzt das Vertrauensprinzip. Der **[Modifizieren]**-Button bleibt die jederzeitige Eskape-Luke in den vollen Import-Editor (KONZEPT §12.5).
 - 🟢 **d7** — Modus-Badge (EasyEDA-Pipeline / Template-Assembly) ist read-only Informations-Cue, kein Steuerelement.  
   _Warum:_ Der Modus wird aus den beiden Dropdowns abgeleitet (KONZEPT §9). Ein steuerbares Badge wäre ein zweiter Weg, dasselbe einzustellen — Verwirrungsquelle.
 - 🟢 **d8** — Dropdowns werden mit applyDialogStyleSelect (dialog.js:40) gestylt statt rohem Browser-Default.  
@@ -2484,9 +2469,9 @@ Die Geld-Frage selbst eskaliere ich:
   _Warum:_ User dürfen nie einen rohen Code sehen. Jeder Fehler bekommt eine klare nächste Handlung (Retry / Panel öffnen / Pin↔Pad öffnen / Overwrite-Toggle).
 - 🟢 **d16** — Host-offline und host-not-installed bekommen unterschiedliche Texte/Handlungen, heuristisch unterschieden über chrome.runtime.lastError ('not found'/'Specified' → not-installed).  
   _Warum:_ 'Service neu starten' vs. 'Installer ausführen' sind verschiedene Handlungen; ein gemeinsamer Text würde den User in die falsche Richtung schicken.
-- 🟢 **d17** — Customize-Button hat exakt dieselben Vorbedingungen/Disabled-States wie Download (online + Active-Lib + nicht busy).  
-  _Warum:_ Vermeidet einen verwirrenden 'halb-aktiven' Zustand, in dem Customize klickbar wäre, Download aber nicht.
-- 🟢 **d18** — V2-Value-Param-Dialoge (lcscValueParamDialogs.js) bleiben als orthogonale Schicht vor dem Panel/Auto-Apply erhalten, werden nicht neu gebaut.  
+- 🟢 **d17** — Modifizieren-Button hat exakt dieselben Vorbedingungen/Disabled-States wie Download (online + Active-Lib + nicht busy).  
+  _Warum:_ Vermeidet einen verwirrenden 'halb-aktiven' Zustand, in dem Modifizieren klickbar wäre, Download aber nicht.
+- 🟢 **d18** — V2-Value-Param-Dialoge (lcscValueParamDialogs.js) bleiben als orthogonale Schicht vor dem Import-Editor erhalten, werden nicht neu gebaut.  
   _Warum:_ Sie betreffen die Value-Property-Quelle, nicht den Symbol/Footprint-Layer; sind fertig implementiert (default/configure/cancel) und müssen nur in den V3-Flow eingehängt werden.
 - 🟢 **d19** — Metadata-as-Labels erscheint im Panel als read-only Einzeiler-Vorschau (Value/Tolerance/Package/MPN/…), kein Inline-Editor in Slice 1.  
   _Warum:_ Die Property-Mapping-Konfiguration lebt in Settings/Category-Rule, nicht pro Import. Read-only Vorschau macht die User-Vision (Value=50R, Tolerance=±1% als Labels) transparent ohne Scope-Explosion.
@@ -2501,10 +2486,10 @@ Die Geld-Frage selbst eskaliere ich:
   _Warum:_ V2 nutzt Bootstrap-container ohne feste Breite und wird auf schmalen Setups gequetscht; 420 px ist die bequeme Lesebreite für File-Explorer-Modal und mehrspaltige Regelzeilen, bleibt unter Chrome-Action-Max (~800 px).
 - 🟢 **D-UI-2** — Header zeigt eine Status-Zeile mit Native-Host-Status (tri-state checking/online/offline); V2 WebSocket-Backend-Zeile entfernt.  
   _Warum:_ V3 nutzt Native Messaging (Ground Truth), keine WS-Verbindung mehr. Status kommt aus nativeHostStatus (background.js:1669) via v3NativeHostStatusUpdate-Broadcast.
-- 🟢 **D-RULES-1** — Erweitertes Rule-Datenmodell als additives Superset des KONZEPT §12.2 Rule (id, match.pinCount, match.packageForm, symbol/footprint/model3dSource, action, pinDisplay, valueParam, labelMap[]).  
+- 🟢 **D-RULES-1** — Erweitertes Rule-Datenmodell als additives Superset des KONZEPT §12.2 Rule (id, match.pinCount, match.packageForm, symbol/footprint/model3dSource, pinDisplay, valueParam, labelMap[]). **(Kein `action`-Feld — ADR-0006: Ein-Klick aus Confidence, nicht aus einem Rule-Flag.)**  
   _Warum:_ Vision Punkt 3/4/6 verlangt Matching nach Pin-Count+Package und Metadata-Label-Mapping, die V2-categorySettings (nur valueParam/hidePins) nicht kennt. Additiv hält Abwärtskompatibilität und Migration trivial.
-- 🟢 **D-RULES-2** — action als 2-Wege-Segment 'Ask / Auto-apply' statt KONZEPT-autoConfirm-Checkbox; auto-apply ≡ autoConfirm:true.  
-  _Warum:_ Benennt die zwei realen Outcomes (Panel zeigen vs. direkt importieren) klarer als eine Checkbox; mappt 1:1 auf den Skip-Panel-Flow (KONZEPT §12.4).
+- 🟢 **D-RULES-2 (ÜBERHOLT durch ADR-0006)** — Es gibt **kein** `action`-Segment 'Ask / Auto-apply' und **kein** `autoConfirm` mehr. Eine Rule trägt nur Quellen/Verknüpfung + impliziten registriert-Status; ob ein Import Ein-Klick ist, leitet `computeConfidenceState` (§3.5) aus der Confidence ab.  
+  _Warum:_ Das Preview ist ohnehin immer sichtbar (kein Skip-Panel-Flow); ein pro-Regel-Verhaltens-Toggle wäre überflüssig und gefährlich. Confidence entscheidet, nicht ein Flag.
 - 🟢 **D-RULES-3** — Inline-Accordion-Zeilen statt separatem Edit-Modal.  
   _Warum:_ V2-cat-item-Muster (popup.js:1073) ist erprobt, skaliert auf viele Regeln, zeigt collapsed Summary-Chips und expanded den vollen Editor ohne Modal-Zwang. Intuitiver als das in KONZEPT §4.3.1 angedeutete Edit-Modal.
 - 🟢 **D-RULES-4** — Symbol-/Footprint-Source-Dropdowns aus Template-Libraries via Native-Host listTemplates, optgroup pro Lib, EasyEDA als Default; fehlender gespeicherter Name → Warn-Icon, nicht-blockierend.  
@@ -2514,7 +2499,7 @@ Die Geld-Frage selbst eskaliere ich:
 - 🟢 **D-RULES-6** — Metadata-Label-Mapping als editierbare Tabelle {lcscParam→symbolProp, visible}; 'Suggest from this page' nutzt letzten Page-Snapshot + Fuzzy-Match gegen STANDARD_SYMBOL_PROPERTY_KEYS; unbekannte Keys als hidden custom property.  
   _Warum:_ Vision Punkt 6; template_merger.py:235-261 mappt bereits Datasheet/Manufacturer/Tolerance/Package/Power/Voltage Rating und legt unbekannte als hidden property an (_make_hidden_property). UI macht diese existierende Pipeline konfigurierbar.
 - 🟢 **D-RULES-7** — Migration V2 categorySettings → rules[] beim ersten V3-Load; Resistors-Seed-Rule als Vorlage behalten.  
-  _Warum:_ background.js:118-121 enthält den V2-Default; verlustfreie Migration (key→categoryPath, Pin-Flags→pinDisplay, Rest auf easyeda/ask-Defaults) verhindert Datenverlust und liefert dem User ein lebendes Beispiel.
+  _Warum:_ background.js:118-121 enthält den V2-Default; verlustfreie Migration (key→categoryPath, Pin-Flags→pinDisplay, Rest auf easyeda-Defaults; kein action-Feld, ADR-0006) verhindert Datenverlust und liefert dem User ein lebendes Beispiel.
 - 🟢 **D-RULES-8** — Bei doppeltem categoryPath kein Overwrite-Prompt, sondern Live-Merge-Hinweis + Sprung zur existierenden Zeile; Dedup wie V2.  
   _Warum:_ V2 dedupliziert bereits (popup.js:1318-1347); ein Prompt würde den flüssigen Inline-Save-Flow stören.
 - 🟢 **D-LIB-1** — Asset-Badges als Icon+Count (z.B. ⚙ Symbol (128)), Farbe grün=Einträge/grau=leer beibehalten.  
@@ -2525,8 +2510,8 @@ Die Geld-Frage selbst eskaliere ich:
   _Warum:_ Modal existiert (popup.html:253), Picker-Modi existieren (popup.js:1721); konsistente Pfadwahl über einen Komfort-Picker.
 - 🟢 **D-SET-1** — Zwei V2-Overwrite-Switches zu einer 3-Wege-Policy Ask|Overwrite|Skip zusammenführen; 3D-Overwrite als Unter-Detail bei Policy=Overwrite.  
   _Warum:_ KONZEPT §4.3.3 nennt 'Default overwrite policy'; vereinheitlicht mit Override-Panel-Logik (§12.4 Schritt 4) und senkt kognitive Last gegenüber zwei separaten Switches (popup.html:176-184).
-- 🟢 **D-SET-2** — 'Always show Override Panel' als prominentester neuer Settings-Toggle (default OFF) ganz oben in Import behaviour.  
-  _Warum:_ KONZEPT §12.4-5 Master-Bremse: ON deaktiviert global den Skip-Panel-Flow, überschreibt jede auto-apply-Regel. Wichtigster Sicherheits-Schalter der Auto-Suggestion-Vision.
+- 🟢 **D-SET-2 (ÜBERHOLT durch ADR-0006)** — Das Toggle 'Always show Override Panel' (Master-Bremse) **entfällt** — es gibt keinen Skip-Panel-/Auto-Apply-Flow mehr. **Ersatz:** ein 🟡-Low-Confidence-Setting (Enum keepEasyeda|openEditor, Default openEditor) ganz oben in Import behaviour.  
+  _Warum:_ Das Preview ist immer sichtbar; eine globale Bremse gegen einen nicht mehr existierenden Auto-Apply-Flow wäre sinnlos. Das neue Setting steuert nur das 🟡-Verhalten (EasyEDA behalten + Hinweis vs Import-Editor öffnen).
 - 🟢 **D-SET-3** — Kein 'system'-Theme in V1; nur Light/Dark wie V2.  
   _Warum:_ V2 hat nur Light/Dark (popup.html:151-156); 'system' (KONZEPT-Erwähnung) addiert prefers-color-scheme-Logik ohne klaren Nutzen für ein Tool-Popup.
 - 🟢 **D-SET-4** — 'Re-check'-Button triggert prewarmNativeHost und aktualisiert Status-Zeile + Header-Dot; ersetzt V2 'Test'.  
@@ -2603,8 +2588,8 @@ Die Geld-Frage selbst eskaliere ich:
   _Warum:_ Einziger 0.0.0.0-Bind war run_server.py:12. native_host nutzt stdin/stdout ohne Port → nach Löschung existiert kein Netzwerk-Bind.
 - 🟢 **CL-CI** — build-backend.yml PyInstaller-Entry von run_server.py auf native_host/host.py umstellen; fastapi+uvicorn aus requirements.txt entfernen; manifest.json localhost:8087-Permission/WS-description/version anpassen.  
   _Warum:_ Nach §3-Löschung sind run_server.py + fastapi/uvicorn nur noch von gelöschtem Code referenziert; localhost:8087 ist der obsolete WS-Port. Sonst bricht der Build / lügt grün.
-- 🟢 **CL-KONZEPT-DRIFT** — KONZEPT.md §5-Überschrift 'Lokaler Service (gRPC-Backend)' auf 'Native Host (Chrome Native Messaging)' korrigieren.  
-  _Warum:_ Direkter Widerspruch zur DECIDED-Transport-Entscheidung (Native Messaging, kein gRPC). Reiner Doc-Konsistenz-Fix.
+- 🟢 **CL-KONZEPT-DRIFT** ✅ **(Aktionspunkt erledigt)** — KONZEPT.md §5-Überschrift 'Lokaler Service (gRPC-Backend)' wurde auf 'Native Host (Chrome Native Messaging)' korrigiert.  
+  _Warum:_ Direkter Widerspruch zur DECIDED-Transport-Entscheidung (Native Messaging, kein gRPC) — per ADR-0001 final. Reiner Doc-Konsistenz-Fix, jetzt umgesetzt.
 - 🟢 **CL-IMG** — img/store_images/* (jpg+drawio+icon) behalten; Top-Level img/*.png (V2-UI-Screenshots) als entfernbar markieren, final aber erst im README-Rewrite entscheiden.  
   _Warum:_ Nur store_images werden vom README referenziert; die *.png-Screenshots nicht. Vorerst KEEP vermeidet README-Lücken bevor das V3-README steht.
 
@@ -2613,14 +2598,16 @@ Die Geld-Frage selbst eskaliere ich:
 
 ## 9. 🔴 Offene Fragen — BRAUCHT DICH (abhängigkeitsgeordnet)
 
+> ✅ Alle 🔴-Fragen sind in `docs/ENTSCHEIDUNGEN.md` (Runde 1+2) beantwortet.
+
 Diese kann kein Agent für dich entscheiden — echte Wert-/Kosten-/Präferenz-Fragen. Unabhängige zuerst, abhängige danach.
 
 ### Unabhängig
 
 - 🔴 **[Auto-Vorschlag-Intelligenz — Kategorie / Pin-Zahl / Bauform] UQ-1** — Welche Komponentenklassen und konkreten Footprints soll die mitgelieferte Stock-Library (StdLib) in v1 enthalten? Vorschlag: Resistor/Capacitor/Capacitor_Polarized/Inductor/Diode/LED als Symbole + R/C 0402-1206, SOT-23-3/-5, SOD-123 als Footprints. Reicht das, oder gibt es Pflicht-Packages (z.B. spezifische QFN/connector-Familien), die dein Workflow zwingend braucht?  
   _Warum du:_ Bestimmt Scope und Pflegeaufwand der Stock-Library. Falsche/fehlende Standard-Footprints untergraben die Auto-Selection sofort. Reine Produkt-/Scope-Entscheidung, nicht agent-resolvbar.
-- 🔴 **[Auto-Vorschlag-Intelligenz — Kategorie / Pin-Zahl / Bauform] UQ-3** — Wie aggressiv soll der Default sein, sobald die Stock-Library installiert ist: bleiben die Stock-Rules dauerhaft auf 'suggest' (User schaltet bewusst auf 'auto'), oder willst du nach z.B. 3 erfolgreichen bestätigten Imports derselben Kategorie eine automatische Beförderung auf 'auto' anbieten/aktivieren?  
-  _Warum du:_ Bestimmt, wie schnell der One-Click-Traum greift vs. wie viel Kontrolle der User behält. Reine Produkt-Präferenz (Komfort vs. Vorsicht), die deine Risikobereitschaft widerspiegelt.
+- 🔴 **[Auto-Vorschlag-Intelligenz — Kategorie / Pin-Zahl / Bauform] UQ-3** — Wie schnell soll die **Confidence** für eine registrierte Kategorie aufgebaut werden (ADR-0006: kein 'suggest/auto'-Modus mehr, sondern Confidence-Zustände 🟢/🟡/⚪)? Reicht eine registrierte Rule + erfüllte MVP-Faktoren sofort für 🟢 (Ein-Klick), oder willst du eine Bestätigungs-Schwelle (z.B. erst nach 3 erfolgreichen bestätigten Imports derselben Kategorie steigt die Confidence von 🟡 auf 🟢)?  
+  _Warum du:_ Bestimmt, wie schnell der One-Click-Traum (🟢) greift vs. wie viel Kontrolle der User über den Confidence-Aufbau behält. Reine Produkt-Präferenz (Komfort vs. Vorsicht), die deine Risikobereitschaft widerspiegelt.
 - 🔴 **[Auto-Vorschlag-Intelligenz — Kategorie / Pin-Zahl / Bauform] UQ-4** — Soll die Package-Taxonomie (packageTaxonomy.json) zusätzlich Verbindungs-/THT-Familien und herstellerspezifische Packages abdecken, oder bewusst auf die gängigen SMD-Chip- und SOT/SOIC/QFN-Familien beschränkt bleiben (alles andere fällt auf den Trim-Fallback zurück, kein Package-Form-Match)?  
   _Warum du:_ Definiert die Reichweite der Package-Form-getriebenen Footprint-Vorschläge. Breitere Taxonomie = mehr Pflege + mehr Fehlklassifikations-Risiko. Scope-Cut-Entscheidung.
 - 🔴 **[Template-System + Metadaten-als-Labels] tq-1** — Reset-Pin-Map-Button im Override Panel (KONZEPT §13.5 / §21.5): Soll es einen sichtbaren Button geben, der die Sidecar-JSON löscht und das Pin↔Pad-Mapping neu triggert, oder genügt manuelles Löschen der Datei?  
@@ -2633,11 +2620,11 @@ Diese kann kein Agent für dich entscheiden — echte Wert-/Kosten-/Präferenz-F
   _Warum du:_ Reiner Scope-Schnitt: ob der Aufwand für einen Datasheet-Fallback über Native Messaging (inkl. Frame-Chunking) gerechtfertigt ist, hängt von deiner Priorität für Offline-/no-host_permissions-Setups ab — eine Kosten/Nutzen-Abwägung.
 - 🔴 **[UI/UX — On-Page-Flow (LCSC-Seite)] q1** — Soll die UI von Anfang an zweisprachig (DE + EN) ausgeliefert werden, oder reicht DE-only für V3-Release und EN kommt später? Das COPY-DECK ist auf Keys ausgelegt, aber die EN-Spalte zu füllen + Sprachumschalter zu bauen ist zusätzlicher Aufwand.  
   _Warum du:_ Bestimmt, ob ein Locale-Switcher + vollständige EN-Übersetzung in V3-Scope ist. LCSC-Nutzer sind international, aber dein KONZEPT.md ist durchgängig deutsch.
-- 🔴 **[UI/UX — On-Page-Flow (LCSC-Seite)] q2** — Bei Auto-Apply (Skip-Panel-Flow): soll das Tool wirklich OHNE jede Bestätigung in die Bibliothek schreiben, sobald eine autoConfirm-Regel + High-Confidence vorliegt — oder möchtest du mindestens einen kurzen, abbrechbaren Countdown ('importiere in 3s … [Abbrechen]') als Sicherheitsnetz?  
-  _Warum du:_ Echtes Auto-Apply ist maximal bequem (deine Vision Punkt 3 'auto-apply vs ask'), aber schreibt unwiderruflich Dateien. Ein Countdown ist ein Kompromiss zwischen Bequemlichkeit und Kontrolle — das ist eine Präferenzentscheidung, keine technische.
+- 🔴 **[UI/UX — On-Page-Flow (LCSC-Seite)] q2 (ÜBERHOLT durch ADR-0006)** — Hinfällig: Es gibt keinen Auto-Apply-/Skip-Panel-Flow und keinen Countdown. Das Preview ist immer sichtbar; im 🟢-Fall ist der Import ein Klick (kein stilles Schreiben, kein abbrechbarer Countdown — 'wenn ich klicke, passiert es jetzt'). Entschieden in `docs/ENTSCHEIDUNGEN.md` (Runde 2).  
+  _Warum du: (ÜBERHOLT durch ADR-0006)_ Die ursprüngliche Abwägung Auto-Apply vs Countdown ist entfallen, weil das Modell auf 'immer sichtbares Preview + Ein-Klick aus Confidence' umgestellt wurde.
 - 🔴 **[UI/UX — On-Page-Flow (LCSC-Seite)] q4** — Sollen Symbol-, Footprint- und Library-PATH-Picker im Override-Panel/in den Missing-Layer-Modals als echter hierarchischer Datei-Explorer (Baum-Navigation, Breadcrumbs, Suche, Zurück/Vor — wie in deiner Vision Punkt 7) gebaut werden, oder reicht für V3 das aktuelle flache optgroup-Dropdown (Lib → Namen) und der Explorer kommt als Folge-Iteration?  
   _Warum du:_ Der volle Datei-Explorer ist erheblicher UI-Aufwand (Tree-Component, Breadcrumb-Nav, Suche) und überschneidet sich mit dem Popup-Tab Library. Ob das in V3-Scope gehört, ist eine Aufwand/Nutzen-Entscheidung, die nur du als Scope-Owner treffen kannst.
-- 🔴 **[UI/UX — Popup, Settings & Datei-Picker] Q-RULES-1** — Wie viel Mächtigkeit soll der Regel-Editor in V1 haben? Variante A (schlank): nur categoryPath + Symbol/Footprint-Source + Ask/Auto-apply. Variante B (voll, wie spezifiziert): zusätzlich Pin-Count-/Package-Form-Match + editierbares Metadata-Label-Mapping. B ist deutlich mehr Build-Aufwand.  
+- 🔴 **[UI/UX — Popup, Settings & Datei-Picker] Q-RULES-1** — Wie viel Mächtigkeit soll der Regel-Editor in V1 haben? Variante A (schlank): nur categoryPath + Symbol/Footprint-Source. Variante B (voll, wie spezifiziert): zusätzlich Pin-Count-/Package-Form-Match + editierbares Metadata-Label-Mapping. B ist deutlich mehr Build-Aufwand. (Kein Ask/Auto-apply-Segment in beiden Varianten — Ein-Klick aus Confidence, ADR-0006.)  
   _Warum du:_ Das ist eine Scope-Cut-Linie (Aufwand vs. Vision-Vollständigkeit). Die Vision (Punkt 3+6) verlangt B, aber B verdoppelt den Bau-Aufwand der Rules-UI und die Test-Matrix. Reine Wertentscheidung, die ich nicht für dich treffen darf.
 - 🔴 **[UI/UX — Popup, Settings & Datei-Picker] Q-PICK-1** — Akzeptierst du, dass der File-Explorer-Picker Zugriff auf das gesamte Dateisystem des Nutzers über die Native-Host-FS-RPCs gibt (Laufwerke, Home, beliebige Ordner)? Oder soll der Zugriff auf erlaubte Root-Verzeichnisse (z.B. nur Documents + explizit hinzugefügte Lib-Ordner) eingeschränkt werden?  
   _Warum du:_ Das ist eine Sicherheits-/Privacy-Policy-Entscheidung mit Vertrauens- und ggf. Store-Review-Implikationen. fs_list erlaubt heute beliebiges Verzeichnis-Listing (server.py:760). Single-user-localhost mindert das Risiko, aber die Reichweite des FS-Zugriffs ist deine Abwägung.
@@ -2658,8 +2645,8 @@ Diese kann kein Agent für dich entscheiden — echte Wert-/Kosten-/Präferenz-F
   _hängt ab von:_ `UQ-1` · _Warum du:_ Lizenz- und Aufwands-/Qualitätsabwägung mit rechtlicher Komponente (CC-BY-SA Attribution-Pflicht vs. AGPL-Projekt). Das ist eine Business-/Compliance-Entscheidung, die nur du treffen kannst.
 - 🔴 **[Template-System + Metadaten-als-Labels] tq-2** — Footprint-SVG-Render für die Pin↔Pad-Sub-UI (KONZEPT §13.3 / §21.4): separater RPC RenderFootprintSvg oder als Teil von ListTemplates ausliefern?  
   _hängt ab von:_ `tq-1` · _Warum du:_ Architektur-/Performance-Tradeoff mit Scope-Auswirkung: ListTemplates soll schnell und cachebar bleiben; SVG-Render nur bei Bedarf. Hängt davon ab, ob die Sub-UI überhaupt im V3-MVP-Scope ist (siehe Footprint-Template-Override).
-- 🔴 **[UI/UX — On-Page-Flow (LCSC-Seite)] q3** — Wie aggressiv soll das Tool bei NIEDRIGER Confidence vorgehen: Vorschlag trotzdem vorbelegen (User muss ggf. wegklicken) ODER Dropdown auf 'Keep EasyEDA' lassen und den Low-Confidence-Vorschlag nur als unaufdringlichen Hinweis zeigen?  
-  _hängt ab von:_ `q2` · _Warum du:_ Beeinflusst, wie oft der User einen falschen Vorschlag korrigieren muss vs. einen hilfreichen verpasst. Das ist eine UX-Geschmacksfrage (proaktiv vs. zurückhaltend), die von deiner Toleranz für 'falsche aber bequeme' Defaults abhängt.
+- 🔴 **[UI/UX — On-Page-Flow (LCSC-Seite)] q3** — Wie soll der **Default** des 🟡-Low-Confidence-Settings (ADR-0006, Enum keepEasyeda|openEditor) gesetzt sein: im 🟡-Fall den Import-Editor öffnen (proaktiv, Vorschlag vorbelegt — User muss ggf. wegklicken, Default `openEditor`) ODER EasyEDA behalten + den Low-Confidence-Vorschlag nur als unaufdringlichen Hinweis zeigen (`keepEasyeda`)?  
+  _Warum du:_ Beeinflusst, wie oft der User einen falschen Vorschlag korrigieren muss vs. einen hilfreichen verpasst. Das ist eine UX-Geschmacksfrage (proaktiv vs. zurückhaltend), die von deiner Toleranz für 'falsche aber bequeme' Defaults abhängt.
 - 🔴 **[UI/UX — Popup, Settings & Datei-Picker] Q-UI-1** — Soll die Popup-UI tatsächlich primär Deutsch sein, oder bevorzugst du Englisch als Standard (mit DE als Option)? Das betrifft alle Labels/Copy-Strings.  
   _hängt ab von:_ `D-COPY-1` · _Warum du:_ Sprachwahl ist eine Produkt-/Zielgruppen-Entscheidung, nicht agent-auflösbar. Mein Default ist DE (passend zu KONZEPT.md + deinem FH-Kontext), aber wenn die Extension international veröffentlicht werden soll, ändert das die ganze Copy-Deck-Strategie.
 - 🔴 **[Repo-Cleanup] UQ-EXT-MIGRATION-ORDER** — Soll der Cleanup-Commit bewusst nur den toten WS-Backend-Pfad (server.py/run_server.py/test_api_server.py) löschen, ABER die WS-abhängigen Extension-Dateien (extensionWsClient.js, categoryPath.js) stehen lassen, bis die Extension-Native-Messaging-Migration als separater Issue durch ist? Oder beides in einem großen Schritt?  
@@ -2677,7 +2664,7 @@ Diese kann kein Agent für dich entscheiden — echte Wert-/Kosten-/Präferenz-F
 - Auto-Template-Match-Scoring (Name-Token-Overlap) ist sprach-/benennungsabhängig; User-Templates mit kryptischen Namen ('R_std_v2') matchen nicht. Folge: viele 'No rule — keeping EasyEDA'-Fälle trotz vorhandener passender Templates. Mitigation: Setup-Wizard, der Stock-Rules seedet, statt sich auf Namens-Heuristik zu verlassen.
 - Footprint-Template-Override ist in phase2.py:139 noch HART ABGELEHNT (braucht Pin-Map-Sidecar #9 + 3D-follows-Footprint #6). Bis #6/#9 landen, kann die Auto-Selection footprintSource=template zwar VORSCHLAGEN und im Panel anzeigen, aber Phase 2 würde es zurückweisen. Reihenfolge-Abhängigkeit: Auto-Selection-Footprint-Pfad ist erst nach #6/#9 voll funktionsfähig (Symbol-Template-Pfad funktioniert schon heute).
 - existsInActiveLib + Footprint/3D-Reuse-Check braucht eine Basename-Liste der Active-Lib-Footprints und .3dshapes-Inhalte; LibraryValidateResponse liefert heute nur counts (models.py:140), keine Namen. Kleiner RPC-Zusatz nötig, sonst kann der 'Active library already has R_0603 + 3D — reuse?'-Pfad (AD-8) nicht implementiert werden.
-- mergeCategoryConfig (categoryPath.mjs:73) und dedupeCategorySettings müssen um alle neuen ComponentRule-Felder erweitert werden, sonst gehen Symbol-/Footprint-Source/autoApply/LabelMapping bei Dedup verloren. Der Python-Mirror (helpers.py) kennt diese Felder nicht — Drift-Test deckt nur normalize ab, nicht die Rule-Felder; Rule-Persistenz-Parität braucht eigene Tests.
+- mergeCategoryConfig (categoryPath.mjs:73) und dedupeCategorySettings müssen um alle neuen ComponentRule-Felder erweitert werden, sonst gehen Symbol-/Footprint-Source/LabelMapping bei Dedup verloren (das `autoApply`-Feld entfällt, ADR-0006). Der Python-Mirror (helpers.py) kennt diese Felder nicht — Drift-Test deckt nur normalize ab, nicht die Rule-Felder; Rule-Persistenz-Parität braucht eigene Tests.
 
 **Template-System + Metadaten-als-Labels:**
 - template_merger._replace_property_value (Zeile 75-83) arbeitet per Regex auf S-Expressions; Property-Werte mit eingebetteten Quotes werden zu ' escaped (OK), aber Backslashes/Klammern in Werten könnten Edge-Cases erzeugen — Golden-File-Corpus (S1-Strategie) muss solche Werte abdecken.
@@ -2702,7 +2689,7 @@ Diese kann kein Agent für dich entscheiden — echte Wert-/Kosten-/Präferenz-F
 
 **UI/UX — On-Page-Flow (LCSC-Seite):**
 - Die Suggestion-Engine (Matching von Kategorie+Pin-Count+Paket auf Templates) ist NICHT Teil dieses UI-Bereichs, aber die gesamte Auto-Suggest-Präsentation (§U3) hängt von ihrem Eingabevertrag §U3.1 ab. Liefert die Engine kein confidence/reason-Feld, fällt die Badge-Präsentation in sich zusammen — der Vertrag muss mit dem Engine-Owner abgestimmt werden.
-- KONZEPT.md referenziert an mehreren Stellen noch 'gRPC', während GROUND TRUTH Native Messaging vorschreibt. Dieser Spec liest alle RPC-Namen als Native-Host-RPCs; KONZEPT §5 sollte parallel aktualisiert werden, sonst entstehen widersprüchliche Quelldokumente.
+- ✅ **(Aktionspunkt erledigt)** Die früheren 'gRPC'-Referenzen sind bereinigt — der Transport ist per ADR-0001 final **Native Messaging**; die §5-Überschrift heißt jetzt „Native Host (Chrome Native Messaging)" und alle RPC-Namen sind Native-Host-RPCs. Keine widersprüchlichen Quelldokumente mehr.
 - Das Footprint-SVG für die Pin↔Pad-Sub-UI (§U5) braucht einen Backend-RPC (renderFootprintSvg ODER Teil von listTemplates) — KONZEPT §13.3 lässt offen, welcher. Ohne diesen RPC kann die Sub-UI das klickbare Footprint nicht rendern.
 - Die Disabled-Button-Matrix (§U1) setzt voraus, dass der Host-Status (online/offline/checking) und der Active-Library-Status zuverlässig und schnell (<500ms, KONZEPT §16) im Content-Script verfügbar sind. Verzögerte/flatternde Status-Ticks könnten Buttons unbeabsichtigt disablen und als 'kaputt' wahrgenommen werden.
 - fetchDatasheet als separate RPC (§U6, d10) existiert im Backend noch nicht (KONZEPT §15.2 markiert Variante A nur als Empfehlung). Die Datasheet-Sektion bleibt bis dahin ein Platzhalter.
@@ -2710,7 +2697,7 @@ Diese kann kein Agent für dich entscheiden — echte Wert-/Kosten-/Präferenz-F
 
 **UI/UX — Popup, Settings & Datei-Picker:**
 - R1 (blockierend für Picker): fs_roots/fs_list/fs_check existieren NUR im Legacy-WS-Server (server.py:719/760/808) und werden vom Picker über WS gerufen (popup.js:1762/1769, background.js:1589-1599). V3 droppt WS (Ground Truth). Ohne Portierung dieser drei Verben in den Native Host (D-PICK-1) ist der gesamte File-Explorer-Picker in V3 nicht funktionsfähig. Muss vor dem UI-Bau eingeplant werden.
-- R2: Das erweiterte Rule-Datenmodell (D-RULES-1) muss vom Content-Script-categoryRuleMatcher (KONZEPT §4.4/§12) UND vom Override-Panel UND von Phase 2 (labelMap → template_merger) konsumiert werden. Schema-Drift zwischen Popup-Persistenz und Konsumenten ist ein reales Risiko; ein gemeinsames Rule-Schema-Modul (analog shared/categoryPath.mjs) sollte erzwungen werden.
+- R2: Das erweiterte Rule-Datenmodell (D-RULES-1) muss vom Content-Script-categoryRuleMatcher (KONZEPT §4.4/§12) UND vom Override-Panel UND von Phase 2 (labelMap → template_merger) konsumiert werden. Schema-Drift zwischen Popup-Persistenz und Konsumenten ist ein reales Risiko; ein gemeinsames Rule-Schema-Modul (analog shared/categoryPath.mjs) sollte erzwungen werden. **Das gemeinsame Rule-Schema trägt KEIN `autoApply`/`autoConfirm`/`action`-Feld (ADR-0006)** — der Ein-Klick-Zustand wird zur Laufzeit über `computeConfidenceState` (§3.5) aus der Confidence abgeleitet, nicht persistiert.
 - R3: Metadata-Label-'Suggest from this page' (D-RULES-6) braucht den letzten lcscPageSnapshot im Popup-Kontext. Das Popup hat ihn nicht automatisch — es müsste den Snapshot über background.js vom zuletzt aktiven LCSC-Tab anfordern. Wenn kein LCSC-Tab offen ist, fällt der Suggest-Button auf manuelle Eingabe zurück (Empty-State nötig).
 - R4: 420px-Popup-Breite (D-UI-1) plus mehrspaltiger Label-Mapping-Tabelle (LCSC-Param | Symbol-Prop | show | ✕) wird eng. Lange LCSC-Parameternamen/Pfade brauchen Truncation+Tooltip; die Label-Tabelle ggf. als gestapelte Cards statt echter Tabelle bei <440px.
 - R5: fs_check-Schreibrecht-Prüfung (D-PICK-5) ist auf Windows mit os.access(W_OK) (server.py:815) nur eingeschränkt verlässlich (ACLs/Network-Drives). 'writable=true' garantiert nicht erfolgreichen Write; der echte Fehler muss beim Library-Create trotzdem sauber abgefangen werden.
@@ -2730,5 +2717,5 @@ Diese kann kein Agent für dich entscheiden — echte Wert-/Kosten-/Präferenz-F
 - build-backend.yml baut pyinstaller run_server.py (3x: Zeilen 84/89/95) — nach Löschung von run_server.py bricht der Release-Build, bis Entry auf native_host umgestellt ist UND native_host PyInstaller-fähig ist (laut README Issue #13 noch offen).
 - tests/test_extension_manifest.py validiert Manifest-Felder; das Anpassen von manifest.json (localhost:8087 raus, version, description) kann diesen Test rot färben, wenn nicht mit-angepasst.
 - Category-Path-Normalisierung ist mehrfach implementiert (shared/categoryPath.mjs, src/content/categoryNormalize.js, helpers.py-Mirror, + DUP categoryPath.js) — Löschen von categoryPath.js löst nur einen Teil; volle Konsolidierung (CONTEXT.md:100 'Pending consolidation, Candidate 8') bleibt offene Architektur-Schuld.
-- KONZEPT.md §5-TOC sagt 'gRPC-Backend' — Drift gegen DECIDED Native Messaging. Wenn nicht korrigiert, leitet das Master-Doc Implementierer in die falsche Transport-Richtung.
+- ✅ **(Aktionspunkt erledigt)** KONZEPT.md §5-Überschrift/-TOC sagte 'gRPC-Backend' — korrigiert auf „Native Host (Chrome Native Messaging)". Transport ist per ADR-0001 final Native Messaging; das Master-Doc leitet Implementierer nicht mehr in die falsche Richtung (siehe agentDecision CL-KONZEPT-DRIFT).
 - requirements.txt listet fastapi+uvicorn nur für den gelöschten WS-Pfad; werden sie nicht entfernt, bleibt unnötige Dependency-/Angriffsfläche im PyInstaller-Bundle.
