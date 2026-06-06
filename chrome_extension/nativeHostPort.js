@@ -41,19 +41,27 @@ function createWarmNativePort(options) {
   }
   const connectNative = opts.connectNative;
   const onError = typeof opts.onError === "function" ? opts.onError : () => {};
-  const now = typeof opts.now === "function" ? opts.now : () => Date.now();
   const setTimer = typeof opts.setTimeout === "function" ? opts.setTimeout : setTimeout;
   const clearTimer = typeof opts.clearTimeout === "function" ? opts.clearTimeout : clearTimeout;
 
   /** @type {object|null} The live ``chrome.runtime.Port`` (or test stub). */
   let port = null;
-  /** @type {Map<number, {resolve, reject, timer, onProgress}>} */
+  /** @type {Map<number, {resolve: (value: object) => void, timer: unknown, onProgress: ((frame: object) => void) | null}>} */
   const pending = new Map();
   let seq = 0;
   /** Total connect calls; tests assert this stays at 1 for warm reuse. */
   let connectCount = 0;
   /** Last disconnect error message — surfaced on the next reconnect. */
   let lastDisconnectError = null;
+
+  function drainPending(detail) {
+    const entries = Array.from(pending.values());
+    pending.clear();
+    for (const entry of entries) {
+      clearTimer(entry.timer);
+      entry.resolve({ ok: false, error: detail });
+    }
+  }
 
   function ensurePort() {
     if (port) return port;
@@ -105,10 +113,10 @@ function createWarmNativePort(options) {
   }
 
   function handleDisconnect() {
-    const deadPort = port;
+    // No port.disconnect() call needed — Chrome already tore it down.
     port = null;
-    // Capture the last-error message before draining pending so the next
-    // ``send()`` can surface it as a meaningful reject reason.
+    // Capture the last-error message before draining pending so callers see
+    // a meaningful reason instead of plain "disconnected".
     let detail = "disconnected";
     try {
       if (
@@ -124,21 +132,7 @@ function createWarmNativePort(options) {
       /* runtime not available in tests — fall back to plain "disconnected" */
     }
     lastDisconnectError = detail;
-    // Reject everything in-flight; callers retry by calling ``send()`` again.
-    const entries = Array.from(pending.entries());
-    pending.clear();
-    for (const [, entry] of entries) {
-      try {
-        clearTimer(entry.timer);
-      } catch (_) { /* ignore */ }
-      try {
-        entry.resolve({ ok: false, error: detail });
-      } catch (e) {
-        onError(e instanceof Error ? e : new Error(String(e)));
-      }
-    }
-    // No need to disconnect the dead port — Chrome already did.
-    void deadPort;
+    drainPending(detail);
   }
 
   function send(verb, params, callOpts) {
@@ -158,7 +152,6 @@ function createWarmNativePort(options) {
 
     seq = (seq + 1) >>> 0 || 1; // wrap-around stays positive (0 reserved)
     const id = seq;
-    void now;
 
     return new Promise((resolve) => {
       const timer = setTimer(() => {
@@ -197,15 +190,7 @@ function createWarmNativePort(options) {
         livePort.disconnect();
       } catch (_) { /* already gone */ }
     }
-    // Drain pending the same way as an unsolicited disconnect.
-    const entries = Array.from(pending.entries());
-    pending.clear();
-    for (const [, entry] of entries) {
-      try { clearTimer(entry.timer); } catch (_) { /* ignore */ }
-      try {
-        entry.resolve({ ok: false, error: "disconnected" });
-      } catch (_) { /* ignore */ }
-    }
+    drainPending("disconnected");
   }
 
   return {

@@ -166,6 +166,15 @@ so V3 code uses these names verbatim, not paraphrases.
   content script on LCSC page load. Opens the Native-Host port early so
   Python is hot by the time the user clicks. Backed by a 25-second
   `chrome.alarms` heartbeat against future Chrome lifecycle changes.
+- **Warm-Port** — the single persistent `chrome.runtime.connectNative`
+  port the service worker reuses for every RPC (ping, **Phase 1 Fetch**,
+  **Phase 2 Conversion**, **Override Panel** reads). Replaces the
+  pre-#26 connect-per-RPC model: because Chrome keeps a Native Host
+  alive as long as any extension port references it, the **Pre-Warm**
+  ping piggybacking on this port also holds the Python process warm
+  across the whole session. Concurrent in-flight RPCs share the port
+  via the Native-Messaging `id` field; the host's reader-thread +
+  worker model serves fast read-only verbs while a slow `convert` runs.
 - **3D Layer** — the implicit third override layer. **Follows the Footprint**:
   if the chosen Footprint is from a Template Library, the Template's
   `(model "...")` reference is the primary 3D source; if no reference

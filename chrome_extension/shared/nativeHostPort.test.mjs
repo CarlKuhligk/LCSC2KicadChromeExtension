@@ -114,7 +114,7 @@ describe("createWarmNativePort", () => {
       result: { categoryPath: "Passives/Resistors", pinCount: 2 },
     });
     await phase1;
-    expect(connectCountOK(warm, 1)).toBe(true);
+    expect(warm.connectCount()).toBe(1);
 
     // Phase 2 dispatched after the user clicks Convert. With the warm port
     // the Python process stays alive — no second connectNative call.
@@ -295,7 +295,3 @@ describe("createWarmNativePort", () => {
     expect(port.sent).toHaveLength(0);
   });
 });
-
-function connectCountOK(warm, expected) {
-  return warm.connectCount() === expected;
-}
