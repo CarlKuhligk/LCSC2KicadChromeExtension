@@ -131,15 +131,29 @@ so V3 code uses these names verbatim, not paraphrases.
   and **Phase 2**. Lets the user pick Symbol source, Footprint source,
   and (when needed) confirm/remap the **Pin↔Pad Map**. Replaces V2's
   Template Gallery, Category Dialog, Value-Param dialogs, and Pin↔Pad
-  Dialog as separate surfaces.
-- **Customize Button** — small always-visible secondary action next to
-  the V3 **Download** button. Forces the Override Panel to appear even
-  when a Category Rule would otherwise auto-resolve.
-- **Skip-Panel Flow** — when a matching Category Rule fully resolves
-  both Symbol and Footprint sources and no Pin↔Pad ambiguity exists,
-  the Override Panel is skipped and the click goes straight from
-  **Phase 1** to **Phase 2**. The default user experience for repeat
-  imports.
+  Dialog as separate surfaces. Also the **Import-Editor** (ADR-0006): the
+  one reusable surface for Register / Modify / low-confidence. Never fully
+  skipped — in the 🟢 state it renders as a one-click confirm-preview.
+- **Import-Editor** — conceptual name for the **Override Panel** in its
+  three call contexts (Register / Modify / low-confidence). The code name
+  stays `overridePanel.js`; "Import-Editor" is the role, not a second module.
+- **Modify Button** (de: „Modifizieren") — small always-visible secondary
+  action next to the V3 **Import** button. Opens the full **Import-Editor**
+  for the special case. Supersedes the former "Customize Button" / `forcePanel`
+  (ADR-0006): there is no panel to force open — the preview is always visible;
+  in the 🟢 state Modify swaps the one-click confirm-preview for the full editor.
+- **Confidence State** — `computeConfidenceState(rule, symbol, footprint, factors)`
+  → `green | yellow | white`, the driver of the apply UX (ADR-0006; supersedes
+  the former "Skip-Panel Flow"). 🟢 green = registered **Category Rule** + all
+  MVP factors (symbol-template resolvable + category recognised + metadata
+  labels mapped) + high confidence → one-click **Import** (+ **Modify**);
+  🟡 yellow = anything in between → user setting (keep-EasyEDA + hint vs open
+  Import-Editor); ⚪ white = no rule / no usable match → active **Register**
+  prompt. One-click is derived from confidence, never from a rule flag; there
+  is no zero-click write and no countdown.
+- **Register** (de: „Registrieren") — the learning act in the **Import-Editor**:
+  map Category ↔ Symbol ↔ metadata labels (footprint/3D in a later slice),
+  save a **Category Rule**, and raise confidence for future like parts.
 - **Anchor Card** — the LCSC product-page header table (the one
   containing "Hersteller", "Herst.-Teilenr.", "LCSC-Nr.") into which V3
   injects its **Download** + **Customize** controls as a new `<tr>`.
