@@ -125,14 +125,9 @@ export function matchComponentRule(phase1, state) {
     overwriteClear: true,
   };
 
-  const symbol = easyedaFallback(
-    "symbol",
-    resolved ? null : "no Category Rule registered",
-  );
-  const footprint = easyedaFallback(
-    "footprint",
-    resolved ? null : "no Category Rule registered",
-  );
+  const fallbackReason = resolved ? null : "no Category Rule registered";
+  const symbol = easyedaFallback("symbol", fallbackReason);
+  const footprint = easyedaFallback("footprint", fallbackReason);
 
   const aggregateConfidence = Math.min(symbol.confidence, footprint.confidence);
 
@@ -180,14 +175,13 @@ export function matchComponentRule(phase1, state) {
  * @param {object | null} rule
  * @param {object} _symbol  unused in the white slice; reserved for 🟢/🟡
  * @param {object} _footprint  unused in the white slice; reserved for 🟢/🟡
- * @param {object} [factors]
+ * @param {object} [_factors]  unused in the white slice; reserved for 🟢/🟡
  * @returns {"green" | "yellow" | "white"}
  */
-export function computeConfidenceState(rule, _symbol, _footprint, factors) {
+export function computeConfidenceState(rule, _symbol, _footprint, _factors) {
   if (!rule) return "white";
   // 🟢 + 🟡 branches arrive with Issues #29 and #31. Until then any
   // resolved rule lands in ``yellow`` so we never claim a 🟢 one-click
   // before the dependent guards exist.
-  void factors;
   return "yellow";
 }

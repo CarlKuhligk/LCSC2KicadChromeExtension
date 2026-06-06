@@ -67,14 +67,9 @@ function matchComponentRule(phase1, state) {
     overwriteClear: true,
   };
 
-  const symbol = _easyedaFallback(
-    "symbol",
-    resolved ? null : "no Category Rule registered",
-  );
-  const footprint = _easyedaFallback(
-    "footprint",
-    resolved ? null : "no Category Rule registered",
-  );
+  const fallbackReason = resolved ? null : "no Category Rule registered";
+  const symbol = _easyedaFallback("symbol", fallbackReason);
+  const footprint = _easyedaFallback("footprint", fallbackReason);
 
   const aggregateConfidence = Math.min(symbol.confidence, footprint.confidence);
 
@@ -103,8 +98,7 @@ function matchComponentRule(phase1, state) {
   };
 }
 
-function computeConfidenceState(rule, _symbol, _footprint, factors) {
+function computeConfidenceState(rule, _symbol, _footprint, _factors) {
   if (!rule) return "white";
-  void factors;
   return "yellow";
 }
