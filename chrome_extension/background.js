@@ -1,6 +1,7 @@
 "use strict";
 
 importScripts("categoryPath.js");
+importScripts("confidenceState.js");
 importScripts("shared/extensionDefaults.js");
 importScripts("extensionWsClient.js");
 
@@ -2641,16 +2642,44 @@ const RUNTIME_MESSAGE_HANDLERS = {
   /** Latest cached pre-warm status without forcing a fresh ping. */
   getNativeHostStatus: async () => ({ ...nativeHostStatus }),
   /**
-   * V3 **Phase 1 Fetch** (Issue #3). Content script calls this from the
-   * Anchor Card's Download click; SW relays to the Native Host's
-   * ``fetchMetadata`` RPC. Returns ``{ok, result|error}`` so the content
-   * script can render either Category Path / Pin Count / Datasheet URL or
-   * the failure inline in the anchor row.
+   * V3 **Phase 1 Fetch** (Issue #3) + Confidence-Pipeline (Issue #25).
+   * Content script calls this from the Anchor Card's Download click; SW
+   * relays to the Native Host's ``fetchMetadata`` RPC, then runs
+   * ``matchComponentRule`` against the user's registered Category Rules
+   * and folds the resulting ``MatchResult{state, confidence}`` into the
+   * Phase-1 response. The content script reads ``result.matchResult`` to
+   * decide which Override-Panel mode to render (Register-Prompt in ⚪
+   * white; 🟢/🟡 in later slices). The bare ``state``/``confidence`` are
+   * also lifted to the top level so the content script can branch without
+   * destructuring.
    */
-  v3FetchMetadata: async (message) => nativeHostFetchMetadata({
-    lcscId: message.lcscId,
-    pageHints: message.pageHints,
-  }),
+  v3FetchMetadata: async (message) => {
+    const resp = await nativeHostFetchMetadata({
+      lcscId: message.lcscId,
+      pageHints: message.pageHints,
+    });
+    if (!resp || resp.ok !== true || !resp.result) return resp;
+    let matchResult;
+    try {
+      matchResult = matchComponentRule(resp.result, {
+        categorySettings: state.categorySettings,
+      });
+    } catch (e) {
+      // Never let a bug in the matcher knock out Phase 1 itself — the
+      // panel can still fall back to a plain EasyEDA import.
+      console.warn("[v3] matchComponentRule threw", e);
+      matchResult = null;
+    }
+    return {
+      ok: true,
+      result: {
+        ...resp.result,
+        matchResult,
+        state: matchResult?.state ?? null,
+        confidence: matchResult?.confidence ?? null,
+      },
+    };
+  },
   /**
    * V3 **Phase 2 Conversion** default-path (Issue #4). Content script calls
    * this after Phase 1 succeeds; SW relays to the Native Host's ``convert``

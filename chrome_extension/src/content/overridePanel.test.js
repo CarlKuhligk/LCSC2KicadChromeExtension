@@ -1,13 +1,17 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import {
   buildOverridePanel,
+  buildRegisterPrompt,
   renderOverridePanel,
   selectionToOverrides,
   OVERRIDE_PANEL_ATTR,
+  OVERRIDE_PANEL_MODE_ATTR,
   OVERRIDE_SYMBOL_SELECT_ATTR,
   OVERRIDE_FOOTPRINT_SELECT_ATTR,
   OVERRIDE_CONFIRM_ATTR,
   OVERRIDE_CANCEL_ATTR,
+  OVERRIDE_EASYEDA_ONLY_ATTR,
+  OVERRIDE_REGISTER_ATTR,
   EASYEDA_OPTION_VALUE,
 } from "./overridePanel.js";
 import { buildAnchorCardRow, ANCHOR_ROW_ATTR } from "./anchorCard.js";
@@ -205,5 +209,107 @@ describe("renderOverridePanel", () => {
     const row = buildAnchorCardRow(document, { colSpan: 1 });
     // No parent — caller can't insert a sibling panel.
     expect(renderOverridePanel(row, { templateLibs: EMPTY_LIBS })).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  Issue #25 — ⚪ white state Register-Prompt (ADR-0006)                    */
+/* -------------------------------------------------------------------------- */
+
+describe("buildRegisterPrompt (white state)", () => {
+  it("renders a Register-Prompt panel with mode=white", () => {
+    const panel = buildRegisterPrompt(document, {});
+    expect(panel.getAttribute(OVERRIDE_PANEL_ATTR)).toBe("true");
+    expect(panel.getAttribute(OVERRIDE_PANEL_MODE_ATTR)).toBe("white");
+  });
+
+  it("shows the 'Neues Bauteil — nur EasyEDA ODER registrieren?' message", () => {
+    const panel = buildRegisterPrompt(document, {});
+    expect(panel.textContent).toContain("Neues Bauteil");
+    expect(panel.textContent).toContain("nur EasyEDA");
+    expect(panel.textContent).toContain("registrieren");
+  });
+
+  it("renders a 'nur EasyEDA' button and a 'registrieren' button", () => {
+    const panel = buildRegisterPrompt(document, {});
+    expect(panel.querySelector(`[${OVERRIDE_EASYEDA_ONLY_ATTR}]`)).toBeTruthy();
+    expect(panel.querySelector(`[${OVERRIDE_REGISTER_ATTR}]`)).toBeTruthy();
+  });
+
+  it("does NOT render the Symbol/Footprint selects in the white state", () => {
+    const panel = buildRegisterPrompt(document, {});
+    expect(panel.querySelector(`[${OVERRIDE_SYMBOL_SELECT_ATTR}]`)).toBeNull();
+    expect(panel.querySelector(`[${OVERRIDE_FOOTPRINT_SELECT_ATTR}]`)).toBeNull();
+  });
+});
+
+describe("renderOverridePanel — white state", () => {
+  it("renders the Register-Prompt when match.state === 'white'", () => {
+    const row = mountAnchorRow();
+    const panel = renderOverridePanel(row, {
+      match: { state: "white" },
+      templateLibs: EMPTY_LIBS,
+    });
+    expect(panel).toBeTruthy();
+    expect(panel.getAttribute(OVERRIDE_PANEL_MODE_ATTR)).toBe("white");
+    expect(panel.querySelector(`[${OVERRIDE_EASYEDA_ONLY_ATTR}]`)).toBeTruthy();
+    expect(panel.querySelector(`[${OVERRIDE_REGISTER_ATTR}]`)).toBeTruthy();
+  });
+
+  it("still renders the sources panel when no match is supplied (back-compat)", () => {
+    const row = mountAnchorRow();
+    const panel = renderOverridePanel(row, { templateLibs: EMPTY_LIBS });
+    expect(panel.getAttribute(OVERRIDE_PANEL_MODE_ATTR)).toBe("sources");
+    expect(panel.querySelector(`[${OVERRIDE_EASYEDA_ONLY_ATTR}]`)).toBeNull();
+  });
+
+  it("'nur EasyEDA' click fires onEasyedaOnly and removes the panel", () => {
+    const row = mountAnchorRow();
+    const fired = [];
+    const panel = renderOverridePanel(row, {
+      match: { state: "white" },
+      onEasyedaOnly: () => fired.push("easyeda"),
+    });
+    panel.querySelector(`[${OVERRIDE_EASYEDA_ONLY_ATTR}]`).click();
+    expect(fired).toEqual(["easyeda"]);
+    expect(row.parentNode.querySelector(`[${OVERRIDE_PANEL_ATTR}="true"]`)).toBeNull();
+  });
+
+  it("'nur EasyEDA' falls back to onConfirm({easyeda,easyeda}) when no onEasyedaOnly is provided — no regression", () => {
+    const row = mountAnchorRow();
+    const fired = [];
+    const panel = renderOverridePanel(row, {
+      match: { state: "white" },
+      onConfirm: (overrides) => fired.push(overrides),
+    });
+    panel.querySelector(`[${OVERRIDE_EASYEDA_ONLY_ATTR}]`).click();
+    expect(fired).toHaveLength(1);
+    // The existing EasyEDA Phase 2 path runs with both Layers set to EasyEDA.
+    expect(fired[0]).toEqual({
+      symbol: { source: "easyeda" },
+      footprint: { source: "easyeda" },
+    });
+  });
+
+  it("'registrieren' click fires onRegister and removes the panel", () => {
+    const row = mountAnchorRow();
+    const fired = [];
+    const panel = renderOverridePanel(row, {
+      match: { state: "white" },
+      onRegister: () => fired.push("register"),
+    });
+    panel.querySelector(`[${OVERRIDE_REGISTER_ATTR}]`).click();
+    expect(fired).toEqual(["register"]);
+    expect(row.parentNode.querySelector(`[${OVERRIDE_PANEL_ATTR}="true"]`)).toBeNull();
+  });
+
+  it("is idempotent in the white state too — a second render returns the existing prompt", () => {
+    const row = mountAnchorRow();
+    const first = renderOverridePanel(row, { match: { state: "white" } });
+    const second = renderOverridePanel(row, { match: { state: "white" } });
+    expect(second).toBe(first);
+    expect(
+      row.parentNode.querySelectorAll(`[${OVERRIDE_PANEL_ATTR}="true"]`).length,
+    ).toBe(1);
   });
 });

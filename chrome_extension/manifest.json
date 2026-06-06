@@ -50,7 +50,7 @@
         "pdf_viewer_page.mjs",
         "vendor/pdfjs/*",
         "src/content/*.js",
-        "shared/categoryPath.mjs"
+        "shared/*.mjs"
       ],
       "matches": [
         "https://www.lcsc.com/*",

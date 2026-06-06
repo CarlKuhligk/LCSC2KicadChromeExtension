@@ -27,10 +27,14 @@
 
 export const OVERRIDE_PANEL_ATTR = "data-k2c-override-panel";
 export const OVERRIDE_PANEL_ROW_ATTR = "data-k2c-override-panel-row";
+export const OVERRIDE_PANEL_MODE_ATTR = "data-k2c-override-panel-mode";
 export const OVERRIDE_SYMBOL_SELECT_ATTR = "data-k2c-override-symbol";
 export const OVERRIDE_FOOTPRINT_SELECT_ATTR = "data-k2c-override-footprint";
 export const OVERRIDE_CONFIRM_ATTR = "data-k2c-override-confirm";
 export const OVERRIDE_CANCEL_ATTR = "data-k2c-override-cancel";
+/** Register-Prompt buttons (⚪ white state, ADR-0006). */
+export const OVERRIDE_EASYEDA_ONLY_ATTR = "data-k2c-override-easyeda-only";
+export const OVERRIDE_REGISTER_ATTR = "data-k2c-override-register";
 
 export const EASYEDA_OPTION_VALUE = "easyeda";
 const TEMPLATE_VALUE_PREFIX = "template:";
@@ -67,6 +71,74 @@ function populateSelect(select, doc, templateLibs) {
 }
 
 /**
+ * Build the ⚪ **white-state Register-Prompt** (ADR-0006, Issue #25).
+ *
+ * Rendered when ``matchResult.state === "white"`` — i.e. no Category Rule
+ * matches the LCSC part's category. The prompt offers two actions:
+ *
+ *   1. **„nur EasyEDA"** — proceed with the default EasyEDA conversion,
+ *      no learning. Triggers the existing Phase 2 flow with EasyEDA on
+ *      both Layers (no regression vs the pre-Confidence behaviour).
+ *   2. **„Registrieren"** — open the Import-Editor for the learning act
+ *      (Issue #28). This slice wires the button; the Register UI lands
+ *      with that follow-up issue. ``onRegister`` is fired with no args.
+ *
+ * Both buttons remove the panel after firing their callback so a second
+ * click on Download re-opens a fresh prompt.
+ *
+ * @param {Document} doc
+ * @param {{ onEasyedaOnly?: () => void, onRegister?: () => void }} [opts]
+ */
+export function buildRegisterPrompt(doc, opts = {}) {
+  const panel = doc.createElement("div");
+  panel.setAttribute(OVERRIDE_PANEL_ATTR, "true");
+  panel.setAttribute(OVERRIDE_PANEL_MODE_ATTR, "white");
+  panel.style.cssText = [
+    "display:flex",
+    "flex-direction:column",
+    "gap:8px",
+    "padding:10px 12px",
+    "border:1px solid #cbd5e1",
+    "border-radius:6px",
+    "background:#f8fafc",
+    "margin-top:6px",
+    "font-size:12px",
+    "color:#1e293b",
+  ].join(";");
+
+  const heading = doc.createElement("div");
+  heading.textContent = "Neues Bauteil";
+  heading.style.cssText =
+    "font-weight:600;font-size:11px;letter-spacing:0.04em;text-transform:uppercase;color:#475569";
+  panel.appendChild(heading);
+
+  const body = doc.createElement("div");
+  body.textContent =
+    "Neues Bauteil — nur EasyEDA herunterladen ODER registrieren?";
+  body.style.cssText = "line-height:1.4";
+  panel.appendChild(body);
+
+  const actions = doc.createElement("div");
+  actions.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:4px";
+
+  const easyedaBtn = doc.createElement("button");
+  easyedaBtn.type = "button";
+  easyedaBtn.textContent = "nur EasyEDA";
+  easyedaBtn.setAttribute(OVERRIDE_EASYEDA_ONLY_ATTR, "true");
+  actions.appendChild(easyedaBtn);
+
+  const registerBtn = doc.createElement("button");
+  registerBtn.type = "button";
+  registerBtn.textContent = "registrieren";
+  registerBtn.setAttribute(OVERRIDE_REGISTER_ATTR, "true");
+  actions.appendChild(registerBtn);
+
+  panel.appendChild(actions);
+
+  return panel;
+}
+
+/**
  * Build the panel element. The caller decides where in the DOM to mount it
  * (the Anchor Card's anchored case mounts it as a sibling ``<tr>``, the
  * Float Fallback would mount it inside its own ``<div>``).
@@ -82,6 +154,7 @@ function populateSelect(select, doc, templateLibs) {
 export function buildOverridePanel(doc, opts = {}) {
   const panel = doc.createElement("div");
   panel.setAttribute(OVERRIDE_PANEL_ATTR, "true");
+  panel.setAttribute(OVERRIDE_PANEL_MODE_ATTR, "sources");
   panel.style.cssText = [
     "display:flex",
     "flex-direction:column",
@@ -204,11 +277,22 @@ function parseLayer(raw) {
  * The returned node is the panel ``<div>`` itself, not the wrapper row, so
  * tests and callers can query its inputs directly.
  *
+ * **Confidence dispatch (ADR-0006).** When ``opts.match.state === "white"``
+ * the panel renders the **Register-Prompt** with two buttons (⚪ ADR-0006):
+ * „nur EasyEDA" (proceed via the existing EasyEDA path) and „registrieren"
+ * (open the Import-Editor for the learning act — Issue #28 wires the body).
+ * Without a ``match`` argument, or for non-white states (🟢/🟡 — Issues #29
+ * / #31), the legacy Symbol/Footprint source picker renders unchanged.
+ *
  * @param {HTMLElement} anchorRow
  * @param {{
+ *   match?: { state?: "green" | "yellow" | "white" } | null,
  *   templateLibs?: Record<string, string[]>,
+ *   templateLibsFootprints?: Record<string, string[]>,
  *   onConfirm?: (overrides: object) => void,
  *   onCancel?: () => void,
+ *   onEasyedaOnly?: () => void,
+ *   onRegister?: () => void,
  *   doc?: Document,
  * }} opts
  * @returns {HTMLElement | null} the panel, or null when ``anchorRow`` is detached
@@ -221,7 +305,8 @@ export function renderOverridePanel(anchorRow, opts = {}) {
   const existing = anchorRow.parentNode.querySelector(`[${OVERRIDE_PANEL_ATTR}="true"]`);
   if (existing) return existing;
 
-  const panel = buildOverridePanel(doc, opts);
+  const isWhite = opts.match?.state === "white";
+  const panel = isWhite ? buildRegisterPrompt(doc, opts) : buildOverridePanel(doc, opts);
 
   // Wrap the panel in a <tr><td colspan>…</td></tr> when the anchor lives in
   // a table so it lines up with the existing Anchor Card row. Outside a
@@ -239,12 +324,49 @@ export function renderOverridePanel(anchorRow, opts = {}) {
 
   anchorRow.parentNode.insertBefore(mount, anchorRow.nextSibling);
 
+  const removePanel = () => mount.remove();
+
+  if (isWhite) {
+    const easyedaBtn = panel.querySelector(`[${OVERRIDE_EASYEDA_ONLY_ATTR}]`);
+    const registerBtn = panel.querySelector(`[${OVERRIDE_REGISTER_ATTR}]`);
+
+    easyedaBtn?.addEventListener("click", () => {
+      removePanel();
+      if (typeof opts.onEasyedaOnly === "function") {
+        try {
+          opts.onEasyedaOnly();
+        } catch (_e) {
+          /* swallow — caller's job to log */
+        }
+      } else if (typeof opts.onConfirm === "function") {
+        // Fall back to the legacy onConfirm hook with EasyEDA on both
+        // Layers so existing call sites (#3 Phase-1 chain, #4 default
+        // Phase-2 path) keep working without a code change.
+        try {
+          opts.onConfirm({
+            symbol: { source: "easyeda" },
+            footprint: { source: "easyeda" },
+          });
+        } catch (_e) { /* swallow */ }
+      }
+    });
+
+    registerBtn?.addEventListener("click", () => {
+      removePanel();
+      if (typeof opts.onRegister === "function") {
+        try {
+          opts.onRegister();
+        } catch (_e) { /* swallow */ }
+      }
+    });
+
+    return panel;
+  }
+
   const symSelect = panel.querySelector(`[${OVERRIDE_SYMBOL_SELECT_ATTR}]`);
   const fpSelect = panel.querySelector(`[${OVERRIDE_FOOTPRINT_SELECT_ATTR}]`);
   const confirmBtn = panel.querySelector(`[${OVERRIDE_CONFIRM_ATTR}]`);
   const cancelBtn = panel.querySelector(`[${OVERRIDE_CANCEL_ATTR}]`);
-
-  const removePanel = () => mount.remove();
 
   confirmBtn?.addEventListener("click", () => {
     const overrides = selectionToOverrides({

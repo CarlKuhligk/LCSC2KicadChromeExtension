@@ -19,6 +19,11 @@ Verbs handled:
   streams free-form ``progress`` frames on the same port until the terminal
   ``done`` (``ok=True``) or ``error`` arrives. ADR-0004 — no Job state, no
   queue. See ``native_host.phase2`` for the runner.
+- ``getRule`` — V3 **Category Rule** read (Issue #25). Resolves a Category
+  Path against the on-disk Rule store using deepest-prefix-match and
+  returns the (possibly ``None``) Rule. ``None`` is the signal that drives
+  ``computeConfidenceState`` → ``"white"`` → Register-Prompt in the
+  Override Panel. See ``native_host.rules`` for the store layout.
 
 Concurrent ``fetchMetadata`` / ``convert`` calls return ``busy`` per ADR-0004
 (no Job state, no queue). The single-flight guard lives here so both RPCs
@@ -48,6 +53,7 @@ if _REPO_ROOT not in sys.path:
 
 from native_host.phase1 import fetch_metadata  # noqa: E402  (after sys.path setup)
 from native_host.phase2 import run_phase2_conversion  # noqa: E402
+from native_host.rules import get_rule  # noqa: E402
 from native_host.templates import list_templates  # noqa: E402
 
 HOST_VERSION = "0.0.1"
@@ -199,6 +205,21 @@ def handle(
             return {"id": request_id, "ok": True, "result": result}
 
         return _run_with_busy_guard(request_id, run)
+
+    if verb == "getRule":
+        raw_params = request.get("params")
+        params = raw_params if isinstance(raw_params, dict) else {}
+        try:
+            rule = get_rule(params.get("categoryPath"))
+        except ValueError as exc:
+            return {"id": request_id, "ok": False, "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "id": request_id,
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        return {"id": request_id, "ok": True, "result": {"rule": rule}}
 
     if verb == "listTemplates":
         raw_params = request.get("params")
