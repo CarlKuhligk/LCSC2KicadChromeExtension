@@ -2,8 +2,8 @@
 V3 Native Host — Native-Messaging request/response loop on stdin/stdout.
 
 Speaks Chrome's Native Messaging protocol: each message is a little-endian
-uint32 length prefix followed by that many bytes of UTF-8 JSON. One response
-per request. Exits when stdin closes (Chrome disconnect).
+uint32 length prefix followed by that many bytes of UTF-8 JSON. Exits when
+stdin closes (Chrome disconnect).
 
 Verbs handled:
 
@@ -19,10 +19,17 @@ Verbs handled:
   streams free-form ``progress`` frames on the same port until the terminal
   ``done`` (``ok=True``) or ``error`` arrives. ADR-0004 — no Job state, no
   queue. See ``native_host.phase2`` for the runner.
+- ``listTemplates`` — read-only Template Library listing. Used by the
+  Override Panel; stays responsive even while a ``convert`` is running.
 
-Concurrent ``fetchMetadata`` / ``convert`` calls return ``busy`` per ADR-0004
-(no Job state, no queue). The single-flight guard lives here so both RPCs
-share one lock — a Phase 1 in-flight blocks Phase 2 and vice versa.
+Concurrency (Issue #26): the reader loop dispatches each request to a
+thread-pool worker so fast read-only verbs (``ping``, ``listTemplates``,
+future ``getRule`` / ``fsList``) are served during a 10-s ``convert``.
+The single-flight ``_busy_lock`` still serializes the slow verbs
+(``fetchMetadata`` + ``convert``) — ADR-0004: no Job state, no queue, a
+second slow RPC returns ``busy`` immediately. Stdout writes are protected
+by ``_write_lock`` so concurrent responders cannot interleave bytes mid-
+frame (the Native-Messaging protocol has no resynchronization marker).
 
 Run directly for dev: ``python native_host/host.py`` (Chrome invokes it via
 ``native_host/kicad-host.bat`` on Windows; see ``install.py`` for the
@@ -36,6 +43,7 @@ import os
 import struct
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 # When Chrome invokes host.py via the .bat shim, CWD is whatever Chrome chose
@@ -57,6 +65,19 @@ HOST_VERSION = "0.0.1"
 _busy_lock = threading.Lock()
 _busy = False
 
+# Issue #26: with a reader-thread + worker-pool design multiple responses
+# may be ready to ship at the same instant — a streaming ``convert``
+# progress frame plus a fresh ``listTemplates`` reply, for instance. The
+# Native-Messaging frame format has no resync marker, so interleaved bytes
+# would desync the SW reader. Serialize every stdout write through one
+# lock to keep frames atomic.
+_write_lock = threading.Lock()
+
+# Bound the worker pool. The thread count only caps concurrent in-flight
+# verbs (one ``convert`` plus a handful of fast read-only verbs); each
+# worker mostly sleeps inside the inner pipeline / filesystem call.
+_DEFAULT_MAX_WORKERS = 8
+
 
 def _read_message() -> dict[str, Any] | None:
     """Read one length-prefixed JSON frame from stdin. Returns None on EOF."""
@@ -73,11 +94,16 @@ def _read_message() -> dict[str, Any] | None:
 
 
 def _write_message(msg: dict[str, Any]) -> None:
-    """Write one length-prefixed JSON frame to stdout."""
+    """Write one length-prefixed JSON frame to stdout.
+
+    Thread-safe: holds ``_write_lock`` while emitting the length prefix and
+    payload so concurrent workers cannot interleave bytes (Issue #26).
+    """
     encoded = json.dumps(msg).encode("utf-8")
-    sys.stdout.buffer.write(struct.pack("<I", len(encoded)))
-    sys.stdout.buffer.write(encoded)
-    sys.stdout.buffer.flush()
+    with _write_lock:
+        sys.stdout.buffer.write(struct.pack("<I", len(encoded)))
+        sys.stdout.buffer.write(encoded)
+        sys.stdout.buffer.flush()
 
 
 def _try_acquire_busy() -> bool:
@@ -222,23 +248,79 @@ def handle(
     }
 
 
+def _dispatch_one(
+    request: dict[str, Any],
+    write_message: Callable[[dict[str, Any]], None],
+    *,
+    metadata_fetcher: Callable[..., dict[str, Any]] | None = None,
+    conversion_runner: Callable[..., dict[str, Any]] | None = None,
+) -> None:
+    """Run ``handle()`` for one request and write its terminal response.
+
+    Exception handling mirrors the pre-#26 ``main()`` loop: any uncaught
+    error becomes a structured ``{ok: False, error}`` envelope so the SW
+    side can render it without the port dying.
+    """
+    try:
+        response = handle(
+            request,
+            metadata_fetcher=metadata_fetcher,
+            conversion_runner=conversion_runner,
+            emit=write_message,
+        )
+    except Exception as exc:  # noqa: BLE001 — never let a worker kill the host
+        response = {
+            "id": request.get("id") if isinstance(request, dict) else None,
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    write_message(response)
+
+
+def serve(
+    *,
+    read_message: Callable[[], dict[str, Any] | None] | None = None,
+    write_message: Callable[[dict[str, Any]], None] | None = None,
+    max_workers: int = _DEFAULT_MAX_WORKERS,
+    metadata_fetcher: Callable[..., dict[str, Any]] | None = None,
+    conversion_runner: Callable[..., dict[str, Any]] | None = None,
+) -> int:
+    """Run the Native-Messaging request/response loop until EOF.
+
+    Issue #26 — reader-thread + worker pool. The caller thread reads frames
+    from ``read_message`` (defaults to stdin) and submits each request to a
+    ``ThreadPoolExecutor`` so a slow ``convert`` does NOT block follow-on
+    read-only verbs (``listTemplates``, future ``getRule`` / ``fsList``)
+    that the Override Panel fires while Phase 2 runs. The ``_busy_lock``
+    still serializes the two slow verbs themselves (ADR-0004 — second slow
+    RPC returns ``busy`` immediately, no queue).
+
+    Returns 0 once ``read_message`` reports EOF (``None``). The executor is
+    drained before return so in-flight responses still reach the writer.
+    """
+    reader = read_message or _read_message
+    writer = write_message or _write_message
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        while True:
+            request = reader()
+            if request is None:
+                return 0
+            executor.submit(
+                _dispatch_one,
+                request,
+                writer,
+                metadata_fetcher=metadata_fetcher,
+                conversion_runner=conversion_runner,
+            )
+    finally:
+        # ``wait=True`` so workers can publish their terminal frames before
+        # the host exits. Chrome will close the port if we shutdown early.
+        executor.shutdown(wait=True)
+
+
 def main() -> int:
-    while True:
-        request = _read_message()
-        if request is None:
-            return 0
-        try:
-            # ``emit`` ships progress frames on the same port mid-call so the
-            # ``convert`` RPC can stream Phase 2 progress (ADR-0004) before
-            # its terminal ``done``/``error`` arrives below.
-            response = handle(request, emit=_write_message)
-        except Exception as exc:
-            response = {
-                "id": request.get("id") if isinstance(request, dict) else None,
-                "ok": False,
-                "error": f"{type(exc).__name__}: {exc}",
-            }
-        _write_message(response)
+    return serve()
 
 
 if __name__ == "__main__":
