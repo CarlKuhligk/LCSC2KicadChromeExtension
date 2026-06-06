@@ -8,11 +8,11 @@ next issue, implement it, and ship it.
 
 Open issues labelled `afk` + `v3` (HITL issues are explicitly excluded):
 
-!`gh issue list --state open --label afk --label v3 --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'`
+!`gh issue list --repo theautomatist/KiCad-Parts-Importer --state open --label afk --label v3 --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'`
 
 Closed V3 issues (for blocker dependency checking):
 
-!`gh issue list --state closed --label v3 --json number,title --jq '[.[] | {number, title}]'`
+!`gh issue list --repo theautomatist/KiCad-Parts-Importer --state closed --label v3 --json number,title --jq '[.[] | {number, title}]'`
 
 ## V3 domain language and decisions
 
@@ -104,11 +104,12 @@ with `git checkout {{SOURCE_BRANCH}}` and commit there.
    - Include a body explaining WHY (the issue number is the WHAT)
    - Sign off with `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`
 8. **Open a PR**, do NOT auto-close the issue. The PR is the review gate:
-   - `gh pr create --title "<commit subject>" --body "<acceptance criteria checklist + summary + 'Closes #<N>'>"`
+   - `gh pr create --repo theautomatist/KiCad-Parts-Importer --base v3/rebuild --title "<commit subject>" --body "<acceptance criteria checklist + summary + 'Closes #<N>'>"`
+   - **Base is always `v3/rebuild`** (the V3 integration branch), NEVER `master`. Omitting `--base` makes GitHub default to `master`, which produces a PR diff containing the entire v3 drift instead of just this slice.
    - The PR body's `Closes #N` will auto-close the issue on merge — but
      not before the human reviewer signs off.
 9. **Leave a comment on the issue** linking the PR:
-   - `gh issue comment <N> --body "Implementation PR: #<PR-number>"`
+   - `gh issue comment <N> --repo theautomatist/KiCad-Parts-Importer --body "Implementation PR: #<PR-number>"`
 
 ## Acceptance-criteria reality check
 
