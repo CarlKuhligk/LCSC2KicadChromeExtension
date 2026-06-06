@@ -115,6 +115,10 @@ const DEFAULT_STATE = {
   projectRelative: false,
   projectRelativePath: "",
   libraryTotals: { symbols: 0, footprints: 0, models: 0 },
+  /** V3 Issue #24: user-added picker roots (Q-PICK-1). Persisted client-side
+   *  so the Native Host stays stateless; every picker RPC forwards the list
+   *  as ``extraRoots`` to widen the whitelist beyond Documents + KiCad paths. */
+  userAddedRoots: [],
   categorySettings: {
     // Prefix of typical LCSC resistor breadcrumbs (deepest-prefix match); adjust in popup if your tree differs.
     "Passives/Resistors": { hidePinNumbers: true, hidePinNames: true, valueParam: "Resistance" },
@@ -881,6 +885,113 @@ async function nativeHostListTemplates(libPath) {
   });
 }
 
+/**
+ * V3 Issue #24 — generic Native-Host RPC bridge for the FS picker verbs
+ * (`fsRoots`, `fsList`, `fsCheck`, `validateLibrary`). Mirrors the
+ * connect-postMessage-await-disconnect pattern in `nativeHostListTemplates`
+ * but stays generic so the four picker calls share one timeout/error path.
+ * Resolves `{ ok, result | error }` exactly like the Native Host responds.
+ *
+ * @param {string} verb
+ * @param {object} params
+ * @param {number} [timeoutMs=10000]
+ * @returns {Promise<{ok: true, result: any} | {ok: false, error: string}>}
+ */
+async function nativeHostFsRpc(verb, params, timeoutMs = 10000) {
+  let port;
+  try {
+    port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
+  } catch (e) {
+    return { ok: false, error: e?.message || "connectNative threw" };
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      try { port.disconnect(); } catch (_e) { /* already gone */ }
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish({ ok: false, error: "timeout" }), timeoutMs);
+    port.onMessage.addListener((msg) => {
+      clearTimeout(timer);
+      if (msg && msg.ok === true) {
+        finish({ ok: true, result: msg.result });
+      } else {
+        finish({ ok: false, error: (msg && msg.error) || "no result" });
+      }
+    });
+    port.onDisconnect.addListener(() => {
+      clearTimeout(timer);
+      const err = chrome.runtime.lastError;
+      finish({ ok: false, error: err?.message || "disconnected" });
+    });
+    try {
+      port.postMessage({ id: Date.now(), verb, params: params || {} });
+    } catch (e) {
+      finish({ ok: false, error: e?.message || "postMessage threw" });
+    }
+  });
+}
+
+/**
+ * Persisted user-added picker roots (Q-PICK-1). The extension owns the list
+ * so the Native Host stays stateless; every picker call forwards the array
+ * as `extraRoots` and the host enforces the whitelist against
+ * `defaults + extraRoots`.
+ */
+function getUserAddedRoots() {
+  return Array.isArray(state.userAddedRoots) ? state.userAddedRoots : [];
+}
+
+/** Picker root list. */
+async function nativeHostFsRoots() {
+  const response = await nativeHostFsRpc("fsRoots", { extraRoots: getUserAddedRoots() }, 10000);
+  if (!response.ok) {
+    throw new Error(response.error || "Failed to list roots.");
+  }
+  return response.result;
+}
+
+/** Directory listing — folders + ``.kicad_sym`` files (MVP flat picker). */
+async function nativeHostFsList(path) {
+  const response = await nativeHostFsRpc(
+    "fsList",
+    { path, extraRoots: getUserAddedRoots() },
+    10000,
+  );
+  if (!response.ok) {
+    throw new Error(response.error || "Failed to list directory.");
+  }
+  return response.result;
+}
+
+/** Existence + writability snapshot for an arbitrary picker path. */
+async function nativeHostFsCheck(path) {
+  const response = await nativeHostFsRpc(
+    "fsCheck",
+    { path, extraRoots: getUserAddedRoots() },
+    10000,
+  );
+  if (!response.ok) {
+    throw new Error(response.error || "Failed to check path.");
+  }
+  return response.result;
+}
+
+/** Library prefix validation (parent must be inside the whitelist). */
+async function nativeHostValidateLibrary(path) {
+  const response = await nativeHostFsRpc(
+    "validateLibrary",
+    { path, extraRoots: getUserAddedRoots() },
+    10000,
+  );
+  if (!response.ok) {
+    throw new Error(response.error || "Failed to validate library.");
+  }
+  return response.result;
+}
+
 async function refreshTemplateStatus() {
   const libPaths = getTemplateLibraryPaths();
   state.templateLibraryPath = libPaths.length ? libPaths[0] : null;
@@ -1577,25 +1688,40 @@ async function handleImportLibrary(payload = {}) {
   return stored;
 }
 
+/**
+ * V3 Issue #24: popup-side library-prefix validation now goes through the
+ * Native Host's `validateLibrary` RPC (Q-PICK-1). The legacy WebSocket-backed
+ * `validateLibraryOnServer` is still used by inventory bookkeeping until that
+ * subsystem is ported in a follow-up slice — keeping the two paths distinct
+ * so the picker stays usable today without dragging the whole inventory
+ * pipeline into this slice.
+ */
 async function handleValidateLibrary(payload = {}) {
   const rawPath = typeof payload.path === "string" ? payload.path : "";
   const prefix = normalizePath(rawPath);
   if (!prefix) {
     throw new Error("Please provide a path.");
   }
-  return validateLibraryOnServer(prefix);
+  return nativeHostValidateLibrary(prefix);
 }
 
+/**
+ * V3 Issue #24: the popup library picker now talks to the Native Host via
+ * Native Messaging (`fsRoots` / `fsList` / `fsCheck`), not the dropped V2
+ * WebSocket backend. ADR-0001 + Q-PICK-1: access stays whitelisted to
+ * Documents, KiCad standard paths, and any folder the user explicitly added.
+ */
 async function fetchRoots() {
-  return sendExtensionRpc("fs_roots", {}, 30000);
+  const { roots } = await nativeHostFsRoots();
+  return roots;
 }
 
 async function fetchDirectory(path) {
-  return sendExtensionRpc("fs_list", { path }, 30000);
+  return nativeHostFsList(path);
 }
 
 async function checkPath(path) {
-  return sendExtensionRpc("fs_check", { path }, 30000);
+  return nativeHostFsCheck(path);
 }
 
 // =============================================================================
@@ -1988,6 +2114,26 @@ const RUNTIME_MESSAGE_HANDLERS = {
     return snapshotState();
   },
   validateLibraryDirectory: async (message) => validateLibraryDirectory(message.path),
+  /**
+   * V3 Issue #24 (Q-PICK-1): add a user-explicit picker root. Persisted in
+   * `state.userAddedRoots` so the SW forwards it on every Native-Host FS
+   * call. The full add-folder UI lands in a follow-up; the handler exists
+   * now so tests can exercise the persisted-whitelist contract.
+   */
+  addUserRoot: async (message) => {
+    const raw = typeof message.path === "string" ? message.path.trim() : "";
+    if (!raw) {
+      throw new Error("Please provide a path.");
+    }
+    const normalized = normalizePath(raw);
+    const current = getUserAddedRoots();
+    if (!current.includes(normalized)) {
+      state.userAddedRoots = [...current, normalized];
+      await persistState(["userAddedRoots"]);
+      broadcastState();
+    }
+    return { roots: state.userAddedRoots };
+  },
   setSelectedLibrary: async (message) => {
     state.selectedLibraryPath = normalizePath(message.path || "");
     let requestedName = "";

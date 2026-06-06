@@ -46,6 +46,12 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+from native_host.fs import (  # noqa: E402
+    check_path,
+    list_directory,
+    list_roots,
+    validate_library,
+)
 from native_host.phase1 import fetch_metadata  # noqa: E402  (after sys.path setup)
 from native_host.phase2 import run_phase2_conversion  # noqa: E402
 from native_host.templates import list_templates  # noqa: E402
@@ -205,6 +211,34 @@ def handle(
         params = raw_params if isinstance(raw_params, dict) else {}
         try:
             result = list_templates(params.get("libPath"))
+        except ValueError as exc:
+            return {"id": request_id, "ok": False, "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "id": request_id,
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        return {"id": request_id, "ok": True, "result": result}
+
+    # V3 FS verbs (Issue #24) — popup library picker via Native Messaging.
+    # Allowed-roots whitelist (Q-PICK-1): defaults + extraRoots passed by the
+    # extension (it persists the user-added folders client-side and forwards
+    # them on every call). All four verbs share the same fast-path try/except
+    # so a path-outside-whitelist surfaces as a validation error, not a crash.
+    if verb in ("fsRoots", "fsList", "fsCheck", "validateLibrary"):
+        raw_params = request.get("params")
+        params = raw_params if isinstance(raw_params, dict) else {}
+        extra_roots = params.get("extraRoots")
+        try:
+            if verb == "fsRoots":
+                result = list_roots(extra_roots)
+            elif verb == "fsList":
+                result = list_directory(params.get("path"), extra_roots)
+            elif verb == "fsCheck":
+                result = check_path(params.get("path"), extra_roots)
+            else:
+                result = validate_library(params.get("path"), extra_roots)
         except ValueError as exc:
             return {"id": request_id, "ok": False, "error": str(exc)}
         except Exception as exc:  # noqa: BLE001
