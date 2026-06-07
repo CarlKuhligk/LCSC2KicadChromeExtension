@@ -3,6 +3,7 @@ import {
   buildOverridePanel,
   buildRegisterPrompt,
   buildRegisterImportEditor,
+  buildOneClickPanel,
   renderOverridePanel,
   renderRegisterImportEditor,
   collectRegisterEditorRule,
@@ -23,6 +24,9 @@ import {
   OVERRIDE_REGISTER_MAPPING_LCSC_ATTR,
   OVERRIDE_REGISTER_MAPPING_KICAD_ATTR,
   OVERRIDE_REGISTER_MAPPING_ADD_ATTR,
+  OVERRIDE_IMPORT_ATTR,
+  OVERRIDE_MODIFY_ATTR,
+  OVERRIDE_ONECLICK_PREVIEW_ATTR,
   EASYEDA_OPTION_VALUE,
 } from "./overridePanel.js";
 import { buildAnchorCardRow, ANCHOR_ROW_ATTR } from "./anchorCard.js";
@@ -534,5 +538,177 @@ describe("renderRegisterImportEditor", () => {
     editor.querySelector(`[${OVERRIDE_REGISTER_CANCEL_ATTR}]`).click();
     expect(cancelled).toEqual([true]);
     expect(row.parentNode.querySelector(`[${OVERRIDE_PANEL_ATTR}="true"]`)).toBeNull();
+  });
+
+  it("[Modifizieren] entry: prefills the Symbol dropdown with the matched rule's source", () => {
+    const row = mountAnchorRow();
+    const editor = renderRegisterImportEditor(row, {
+      templateLibs: ONE_LIB,
+      initialSymbolSource: {
+        source: "template",
+        libPath: "/home/user/templates/MyTemplates.kicad_sym",
+        name: "R0603",
+      },
+    });
+    const sym = editor.querySelector(`[${OVERRIDE_SYMBOL_SELECT_ATTR}]`);
+    expect(sym.value).toBe(
+      "template:/home/user/templates/MyTemplates.kicad_sym:R0603",
+    );
+  });
+
+  it("[Modifizieren] entry: prefills mapping rows with the matched rule's labelMapping", () => {
+    const row = mountAnchorRow();
+    const editor = renderRegisterImportEditor(row, {
+      templateLibs: ONE_LIB,
+      initialLabelMapping: { Resistance: "Value", Tolerance: "Tolerance" },
+    });
+    const rows = editor.querySelectorAll(
+      `[${OVERRIDE_REGISTER_MAPPING_ROW_ATTR}="true"]`,
+    );
+    expect(rows.length).toBe(2);
+    expect(
+      rows[0].querySelector(`[${OVERRIDE_REGISTER_MAPPING_LCSC_ATTR}]`).value,
+    ).toBe("Resistance");
+    expect(
+      rows[0].querySelector(`[${OVERRIDE_REGISTER_MAPPING_KICAD_ATTR}]`).value,
+    ).toBe("Value");
+    expect(
+      rows[1].querySelector(`[${OVERRIDE_REGISTER_MAPPING_LCSC_ATTR}]`).value,
+    ).toBe("Tolerance");
+  });
+
+  it("falls back to EasyEDA on prefill when the supplied template lib was unregistered", () => {
+    const row = mountAnchorRow();
+    const editor = renderRegisterImportEditor(row, {
+      templateLibs: EMPTY_LIBS,
+      initialSymbolSource: {
+        source: "template",
+        libPath: "/dropped/Other.kicad_sym",
+        name: "Foo",
+      },
+    });
+    const sym = editor.querySelector(`[${OVERRIDE_SYMBOL_SELECT_ATTR}]`);
+    expect(sym.value).toBe(EASYEDA_OPTION_VALUE);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  Issue #29 — 🟢 green state One-Click panel (ADR-0006)                     */
+/* -------------------------------------------------------------------------- */
+
+const GREEN_RULE = {
+  symbolSource: {
+    source: "template",
+    libPath: "/home/user/templates/MyTemplates.kicad_sym",
+    name: "R0603",
+  },
+  labelMapping: { Resistance: "Value", Tolerance: "Tolerance" },
+};
+
+describe("buildOneClickPanel (green state)", () => {
+  it("renders a panel with mode=green", () => {
+    const panel = buildOneClickPanel(document, {
+      ruleKey: "Passives/Resistors",
+      symbolSource: GREEN_RULE.symbolSource,
+      labelMapping: GREEN_RULE.labelMapping,
+    });
+    expect(panel.getAttribute(OVERRIDE_PANEL_ATTR)).toBe("true");
+    expect(panel.getAttribute(OVERRIDE_PANEL_MODE_ATTR)).toBe("green");
+  });
+
+  it("renders an [Import] button AND a [Modifizieren] button", () => {
+    const panel = buildOneClickPanel(document, {});
+    expect(panel.querySelector(`[${OVERRIDE_IMPORT_ATTR}]`)).toBeTruthy();
+    expect(panel.querySelector(`[${OVERRIDE_MODIFY_ATTR}]`)).toBeTruthy();
+  });
+
+  it("renders a preview block (the resolved result is shown BEFORE the click — ADR-0006)", () => {
+    const panel = buildOneClickPanel(document, {
+      ruleKey: "Passives/Resistors",
+      symbolSource: GREEN_RULE.symbolSource,
+      labelMapping: GREEN_RULE.labelMapping,
+    });
+    const preview = panel.querySelector(`[${OVERRIDE_ONECLICK_PREVIEW_ATTR}]`);
+    expect(preview).toBeTruthy();
+    expect(preview.textContent).toContain("R0603");
+    expect(preview.textContent).toContain("Resistance");
+    expect(preview.textContent).toContain("Value");
+  });
+
+  it("does NOT render a Confirm button — the [Import] click IS the confirm (ADR-0006 §U3.3)", () => {
+    const panel = buildOneClickPanel(document, {});
+    expect(panel.querySelector(`[${OVERRIDE_CONFIRM_ATTR}]`)).toBeNull();
+    expect(panel.querySelector(`[${OVERRIDE_CANCEL_ATTR}]`)).toBeNull();
+  });
+
+  it("shows the registered Category Path in the heading so the user can tell what was matched", () => {
+    const panel = buildOneClickPanel(document, { ruleKey: "Passives/Resistors" });
+    expect(panel.textContent).toContain("Passives/Resistors");
+    expect(panel.textContent).toContain("Ein-Klick");
+  });
+});
+
+describe("renderOverridePanel — green state", () => {
+  it("renders the One-Click panel when match.state === 'green'", () => {
+    const row = mountAnchorRow();
+    const panel = renderOverridePanel(row, {
+      match: {
+        state: "green",
+        ruleKey: "Passives/Resistors",
+        rule: GREEN_RULE,
+      },
+    });
+    expect(panel).toBeTruthy();
+    expect(panel.getAttribute(OVERRIDE_PANEL_MODE_ATTR)).toBe("green");
+    expect(panel.querySelector(`[${OVERRIDE_IMPORT_ATTR}]`)).toBeTruthy();
+    expect(panel.querySelector(`[${OVERRIDE_MODIFY_ATTR}]`)).toBeTruthy();
+  });
+
+  it("[Import] click fires onImport with NO args and removes the panel — one-click, no countdown", () => {
+    const row = mountAnchorRow();
+    const fired = [];
+    const panel = renderOverridePanel(row, {
+      match: { state: "green", ruleKey: "Passives/Resistors", rule: GREEN_RULE },
+      onImport: () => fired.push("import"),
+    });
+    panel.querySelector(`[${OVERRIDE_IMPORT_ATTR}]`).click();
+    expect(fired).toEqual(["import"]);
+    expect(row.parentNode.querySelector(`[${OVERRIDE_PANEL_ATTR}="true"]`)).toBeNull();
+  });
+
+  it("[Modifizieren] click fires onModify so the caller can open the Import-Editor", () => {
+    const row = mountAnchorRow();
+    const fired = [];
+    const panel = renderOverridePanel(row, {
+      match: { state: "green", ruleKey: "Passives/Resistors", rule: GREEN_RULE },
+      onModify: () => fired.push("modify"),
+    });
+    panel.querySelector(`[${OVERRIDE_MODIFY_ATTR}]`).click();
+    expect(fired).toEqual(["modify"]);
+    expect(row.parentNode.querySelector(`[${OVERRIDE_PANEL_ATTR}="true"]`)).toBeNull();
+  });
+
+  it("is idempotent in the green state — a second render returns the existing one-click panel", () => {
+    const row = mountAnchorRow();
+    const first = renderOverridePanel(row, {
+      match: { state: "green", ruleKey: "Passives/Resistors", rule: GREEN_RULE },
+    });
+    const second = renderOverridePanel(row, {
+      match: { state: "green", ruleKey: "Passives/Resistors", rule: GREEN_RULE },
+    });
+    expect(second).toBe(first);
+    expect(
+      row.parentNode.querySelectorAll(`[${OVERRIDE_PANEL_ATTR}="true"]`).length,
+    ).toBe(1);
+  });
+
+  it("non-green states still get the legacy sources panel (back-compat)", () => {
+    const row = mountAnchorRow();
+    const panel = renderOverridePanel(row, {
+      match: { state: "yellow", ruleKey: "Passives/Resistors", rule: GREEN_RULE },
+      templateLibs: EMPTY_LIBS,
+    });
+    expect(panel.getAttribute(OVERRIDE_PANEL_MODE_ATTR)).toBe("sources");
+    expect(panel.querySelector(`[${OVERRIDE_IMPORT_ATTR}]`)).toBeNull();
   });
 });

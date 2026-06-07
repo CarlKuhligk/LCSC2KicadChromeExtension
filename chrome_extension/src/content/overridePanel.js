@@ -43,6 +43,10 @@ export const OVERRIDE_REGISTER_MAPPING_ROW_ATTR = "data-k2c-register-mapping-row
 export const OVERRIDE_REGISTER_MAPPING_LCSC_ATTR = "data-k2c-register-mapping-lcsc";
 export const OVERRIDE_REGISTER_MAPPING_KICAD_ATTR = "data-k2c-register-mapping-kicad";
 export const OVERRIDE_REGISTER_MAPPING_ADD_ATTR = "data-k2c-register-mapping-add";
+/** 🟢 One-Click panel controls (Issue #29). */
+export const OVERRIDE_IMPORT_ATTR = "data-k2c-override-import";
+export const OVERRIDE_MODIFY_ATTR = "data-k2c-override-modify";
+export const OVERRIDE_ONECLICK_PREVIEW_ATTR = "data-k2c-override-oneclick-preview";
 
 export const EASYEDA_OPTION_VALUE = "easyeda";
 const TEMPLATE_VALUE_PREFIX = "template:";
@@ -146,6 +150,130 @@ export function buildRegisterPrompt(doc, opts = {}) {
   return panel;
 }
 
+function describeSymbolSource(symbolSource) {
+  if (!symbolSource || symbolSource.source === "easyeda") {
+    return "EasyEDA (default)";
+  }
+  if (symbolSource.source === "template") {
+    const lib = libBasename(symbolSource.libPath);
+    return symbolSource.name ? `${symbolSource.name} (${lib})` : lib;
+  }
+  return "—";
+}
+
+/**
+ * Build the 🟢 **green-state One-Click Confirm-Preview** (ADR-0006,
+ * Issue #29). Rendered when ``matchResult.state === "green"`` — a
+ * registered Category Rule resolves the Symbol-Template against the
+ * installed Template Library, the LCSC Category is recognised, the
+ * Rule's ``labelMapping`` is non-empty and the aggregate confidence is
+ * high. Two actions:
+ *
+ *   1. **[Import]** — start Phase 2 with the Rule's ``symbolSource`` and
+ *      ``labelMapping`` baked in. No separate confirm, no countdown
+ *      (ADR-0006 §3, ``§U3.3``): the preview IS the confirm.
+ *   2. **[Modifizieren]** — open the Import-Editor (same component the
+ *      Register flow uses) with the Rule's current values prefilled, so
+ *      the special case is one edit and a save away.
+ *
+ * @param {Document} doc
+ * @param {{
+ *   ruleKey?: string | null,
+ *   symbolSource?: object | null,
+ *   labelMapping?: Record<string, string> | null,
+ *   onImport?: () => void,
+ *   onModify?: () => void,
+ * }} [opts]
+ */
+export function buildOneClickPanel(doc, opts = {}) {
+  const panel = doc.createElement("div");
+  panel.setAttribute(OVERRIDE_PANEL_ATTR, "true");
+  panel.setAttribute(OVERRIDE_PANEL_MODE_ATTR, "green");
+  panel.style.cssText = [
+    "display:flex",
+    "flex-direction:column",
+    "gap:8px",
+    "padding:10px 12px",
+    "border:1px solid #bbf7d0",
+    "border-radius:6px",
+    "background:#f0fdf4",
+    "margin-top:6px",
+    "font-size:12px",
+    "color:#14532d",
+  ].join(";");
+
+  const heading = doc.createElement("div");
+  const ruleKey = typeof opts.ruleKey === "string" && opts.ruleKey ? opts.ruleKey : "";
+  heading.textContent = ruleKey
+    ? `Registriert: "${ruleKey}" — Ein-Klick`
+    : "Registriert — Ein-Klick";
+  heading.style.cssText =
+    "font-weight:600;font-size:11px;letter-spacing:0.04em;text-transform:uppercase;color:#166534";
+  panel.appendChild(heading);
+
+  // Preview — Symbol Source + Label-Mapping summary so the user can see
+  // what will be applied before clicking [Import] (ADR-0006: "the
+  // resolved result is shown before the click").
+  const preview = doc.createElement("div");
+  preview.setAttribute(OVERRIDE_ONECLICK_PREVIEW_ATTR, "true");
+  preview.style.cssText = "display:flex;flex-direction:column;gap:4px";
+
+  const symbolLine = doc.createElement("div");
+  symbolLine.style.cssText = "display:flex;gap:6px;align-items:baseline";
+  const symLabel = doc.createElement("span");
+  symLabel.textContent = "Symbol:";
+  symLabel.style.cssText = "color:#166534;font-weight:500;min-width:64px";
+  const symValue = doc.createElement("span");
+  symValue.textContent = describeSymbolSource(opts.symbolSource);
+  symValue.style.cssText = "color:#14532d";
+  symbolLine.appendChild(symLabel);
+  symbolLine.appendChild(symValue);
+  preview.appendChild(symbolLine);
+
+  const mapping = opts.labelMapping && typeof opts.labelMapping === "object"
+    ? opts.labelMapping
+    : {};
+  const mappingEntries = Object.entries(mapping);
+  if (mappingEntries.length) {
+    const mappingLine = doc.createElement("div");
+    mappingLine.style.cssText = "display:flex;gap:6px;align-items:baseline";
+    const mapLabel = doc.createElement("span");
+    mapLabel.textContent = "Mapping:";
+    mapLabel.style.cssText = "color:#166534;font-weight:500;min-width:64px";
+    const mapValue = doc.createElement("span");
+    mapValue.textContent = mappingEntries
+      .map(([k, v]) => `${k} → ${v}`)
+      .join(", ");
+    mapValue.style.cssText = "color:#14532d;word-break:break-word";
+    mappingLine.appendChild(mapLabel);
+    mappingLine.appendChild(mapValue);
+    preview.appendChild(mappingLine);
+  }
+
+  panel.appendChild(preview);
+
+  const actions = doc.createElement("div");
+  actions.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:4px";
+
+  // [Modifizieren] sits to the LEFT of [Import] so the visual cursor
+  // ends on the primary action (one-click ergonomics).
+  const modifyBtn = doc.createElement("button");
+  modifyBtn.type = "button";
+  modifyBtn.textContent = "Modifizieren";
+  modifyBtn.setAttribute(OVERRIDE_MODIFY_ATTR, "true");
+  actions.appendChild(modifyBtn);
+
+  const importBtn = doc.createElement("button");
+  importBtn.type = "button";
+  importBtn.textContent = "Import";
+  importBtn.setAttribute(OVERRIDE_IMPORT_ATTR, "true");
+  actions.appendChild(importBtn);
+
+  panel.appendChild(actions);
+
+  return panel;
+}
+
 /**
  * Build a single LCSC-label ↔ KiCad-property row inside the Register
  * Import-Editor's mapping table. Two text inputs side-by-side; the LCSC
@@ -215,11 +343,19 @@ function collectMapping(panel) {
  * Footprint/3D stay on the EasyEDA default in the Symbol-MVP — those
  * controls land with the footprint follow-up slice.
  *
+ * **Prefill (Issue #29 Modify path).** When ``initialSymbolSource`` /
+ * ``initialLabelMapping`` are supplied the editor opens with those
+ * values selected — the 🟢 ``[Modifizieren]`` button reuses this same
+ * component (ADR-0006: "A single, reusable Import-Editor serves all
+ * three call sites — register / modify / low-confidence").
+ *
  * @param {Document} doc
  * @param {{
  *   templateLibs?: Record<string, string[]>,
  *   pageParams?: Record<string, string>,
  *   categoryPath?: string | null,
+ *   initialSymbolSource?: object | null,
+ *   initialLabelMapping?: Record<string, string> | null,
  *   onSave?: (rule: { categoryPath: string, rule: object }) => void,
  *   onCancel?: () => void,
  * }} [opts]
@@ -289,8 +425,18 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   const mappingHost = doc.createElement("div");
   mappingHost.style.cssText = "display:flex;flex-direction:column;gap:4px";
   panel.appendChild(mappingHost);
-  // Start with one empty row — the user can `+ Zeile` to add more.
-  mappingHost.appendChild(buildMappingRow(doc, datalistId));
+  const initialMapping =
+    opts.initialLabelMapping && typeof opts.initialLabelMapping === "object"
+      ? Object.entries(opts.initialLabelMapping)
+      : [];
+  if (initialMapping.length) {
+    for (const [lcsc, kicad] of initialMapping) {
+      mappingHost.appendChild(buildMappingRow(doc, datalistId, { lcsc, kicad }));
+    }
+  } else {
+    // Start with one empty row — the user can `+ Zeile` to add more.
+    mappingHost.appendChild(buildMappingRow(doc, datalistId));
+  }
 
   const addRowBtn = doc.createElement("button");
   addRowBtn.type = "button";
@@ -319,7 +465,21 @@ export function buildRegisterImportEditor(doc, opts = {}) {
 
   panel.appendChild(actions);
 
-  symSelect.value = EASYEDA_OPTION_VALUE;
+  // Prefill the Symbol Source dropdown when the caller supplied one (🟢
+  // [Modifizieren] path). Fall back to the EasyEDA default for the
+  // fresh-register flow, and also when the supplied Template Library was
+  // unregistered between the Rule's save time and now — the candidate
+  // won't appear in the populated <option>s, and `renderOverridePanel`
+  // won't have routed to 🟢 in that case anyway.
+  const initialSym = opts.initialSymbolSource;
+  const candidate =
+    initialSym?.source === "template" && initialSym.libPath && initialSym.name
+      ? encodeTemplateValue(initialSym.libPath, initialSym.name)
+      : EASYEDA_OPTION_VALUE;
+  const hasOption = Array.from(symSelect.options).some(
+    (o) => o.value === candidate,
+  );
+  symSelect.value = hasOption ? candidate : EASYEDA_OPTION_VALUE;
 
   return panel;
 }
@@ -485,22 +645,32 @@ function parseLayer(raw) {
  * The returned node is the panel ``<div>`` itself, not the wrapper row, so
  * tests and callers can query its inputs directly.
  *
- * **Confidence dispatch (ADR-0006).** When ``opts.match.state === "white"``
- * the panel renders the **Register-Prompt** with two buttons (⚪ ADR-0006):
- * „nur EasyEDA" (proceed via the existing EasyEDA path) and „registrieren"
- * (open the Import-Editor for the learning act — Issue #28 wires the body).
- * Without a ``match`` argument, or for non-white states (🟢/🟡 — Issues #29
- * / #31), the legacy Symbol/Footprint source picker renders unchanged.
+ * **Confidence dispatch (ADR-0006).**
+ *
+ *   - ⚪ ``match.state === "white"`` → **Register-Prompt** with „nur
+ *     EasyEDA" / „registrieren".
+ *   - 🟢 ``match.state === "green"`` → **One-Click panel** with
+ *     **[Import]** (fires ``onImport``) + **[Modifizieren]** (fires
+ *     ``onModify``). No separate confirm, no countdown — the preview IS
+ *     the confirm (ADR-0006 §U3.3).
+ *   - 🟡 / no match → legacy Symbol/Footprint source picker (until #31
+ *     wires the user-setting branch).
  *
  * @param {HTMLElement} anchorRow
  * @param {{
- *   match?: { state?: "green" | "yellow" | "white" } | null,
+ *   match?: {
+ *     state?: "green" | "yellow" | "white",
+ *     ruleKey?: string | null,
+ *     rule?: object | null,
+ *   } | null,
  *   templateLibs?: Record<string, string[]>,
  *   templateLibsFootprints?: Record<string, string[]>,
  *   onConfirm?: (overrides: object) => void,
  *   onCancel?: () => void,
  *   onEasyedaOnly?: () => void,
  *   onRegister?: () => void,
+ *   onImport?: () => void,
+ *   onModify?: () => void,
  *   doc?: Document,
  * }} opts
  * @returns {HTMLElement | null} the panel, or null when ``anchorRow`` is detached
@@ -513,8 +683,21 @@ export function renderOverridePanel(anchorRow, opts = {}) {
   const existing = anchorRow.parentNode.querySelector(`[${OVERRIDE_PANEL_ATTR}="true"]`);
   if (existing) return existing;
 
-  const isWhite = opts.match?.state === "white";
-  const panel = isWhite ? buildRegisterPrompt(doc, opts) : buildOverridePanel(doc, opts);
+  const matchState = opts.match?.state;
+  const isWhite = matchState === "white";
+  const isGreen = matchState === "green";
+  let panel;
+  if (isWhite) {
+    panel = buildRegisterPrompt(doc, opts);
+  } else if (isGreen) {
+    panel = buildOneClickPanel(doc, {
+      ruleKey: opts.match?.ruleKey ?? null,
+      symbolSource: opts.match?.rule?.symbolSource ?? null,
+      labelMapping: opts.match?.rule?.labelMapping ?? null,
+    });
+  } else {
+    panel = buildOverridePanel(doc, opts);
+  }
 
   // Wrap the panel in a <tr><td colspan>…</td></tr> when the anchor lives in
   // a table so it lines up with the existing Anchor Card row. Outside a
@@ -571,6 +754,31 @@ export function renderOverridePanel(anchorRow, opts = {}) {
     return panel;
   }
 
+  if (isGreen) {
+    const importBtn = panel.querySelector(`[${OVERRIDE_IMPORT_ATTR}]`);
+    const modifyBtn = panel.querySelector(`[${OVERRIDE_MODIFY_ATTR}]`);
+
+    importBtn?.addEventListener("click", () => {
+      removePanel();
+      if (typeof opts.onImport === "function") {
+        try {
+          opts.onImport();
+        } catch (_e) { /* swallow — caller logs */ }
+      }
+    });
+
+    modifyBtn?.addEventListener("click", () => {
+      removePanel();
+      if (typeof opts.onModify === "function") {
+        try {
+          opts.onModify();
+        } catch (_e) { /* swallow */ }
+      }
+    });
+
+    return panel;
+  }
+
   const symSelect = panel.querySelector(`[${OVERRIDE_SYMBOL_SELECT_ATTR}]`);
   const fpSelect = panel.querySelector(`[${OVERRIDE_FOOTPRINT_SELECT_ATTR}]`);
   const confirmBtn = panel.querySelector(`[${OVERRIDE_CONFIRM_ATTR}]`);
@@ -617,6 +825,8 @@ export function renderOverridePanel(anchorRow, opts = {}) {
  *   templateLibs?: Record<string, string[]>,
  *   pageParams?: Record<string, string>,
  *   categoryPath?: string | null,
+ *   initialSymbolSource?: object | null,
+ *   initialLabelMapping?: Record<string, string> | null,
  *   onSave?: (payload: { categoryPath: string, rule: object }) => void,
  *   onCancel?: () => void,
  *   doc?: Document,

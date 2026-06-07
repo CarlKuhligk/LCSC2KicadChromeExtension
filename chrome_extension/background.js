@@ -2799,6 +2799,7 @@ const RUNTIME_MESSAGE_HANDLERS = {
     try {
       matchResult = matchComponentRule(resp.result, {
         categorySettings: state.categorySettings,
+        templateSymbolsByLib: state.templateSymbolsByLib,
       });
     } catch (e) {
       // Never let a bug in the matcher knock out Phase 1 itself — the

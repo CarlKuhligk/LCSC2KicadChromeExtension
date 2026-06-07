@@ -4764,7 +4764,10 @@ function attachButton(lcscId) {
         // persist the Rule via the SW's ``v3SetRule`` relay and continue
         // straight into Phase 2 with the freshly-saved Symbol Source +
         // labelMapping baked in (so the demoable end-to-end works).
-        const openRegisterEditor = () => {
+        // Issue #29 — 🟢 ``[Modifizieren]`` reuses the same editor with
+        // the matched Rule prefilled (ADR-0006: one reusable editor for
+        // register / modify / low-confidence).
+        const openRegisterEditor = (initial = {}) => {
           let pageParams = {};
           try {
             const snap = extractPageData(document) || {};
@@ -4778,6 +4781,8 @@ function attachButton(lcscId) {
             templateLibs,
             pageParams,
             categoryPath: phase1Result?.categoryPath || null,
+            initialSymbolSource: initial.initialSymbolSource || null,
+            initialLabelMapping: initial.initialLabelMapping || null,
             onSave: async ({ categoryPath, rule }) => {
               try {
                 const resp = await contentRpc(
@@ -4821,12 +4826,60 @@ function attachButton(lcscId) {
             onCancel: () => dbg("[register] cancelled"),
           });
         };
+        // 🟢 Issue #29 — Ein-Klick-Import: lift the LCSC page snapshot
+        // once for the One-Click branch so [Import] can ride along with
+        // the same labelMapping → pageParams projection the Register
+        // flow uses (Issue #28). [Modifizieren] reuses the editor with
+        // the matched Rule's values prefilled.
+        const runRulePhase2 = async () => {
+          let pageParams = {};
+          try {
+            const snap = extractPageData(document) || {};
+            if (snap.params && typeof snap.params === "object") {
+              pageParams = snap.params;
+            }
+          } catch (e) {
+            dbg("[phase2 green] snapshot failed", e);
+          }
+          const rule = match?.rule || {};
+          await runPhase2Convert(anchorRow, lcscId, {
+            rpc: async (id, libraryPath, ov) => {
+              const resp = await contentRpc(
+                "v3Convert",
+                {
+                  lcscId: id,
+                  libraryPath,
+                  overrides: ov,
+                  labelMapping: rule.labelMapping || {},
+                  pageParams,
+                },
+                k2cRpc(2, 200),
+              );
+              if (resp?.ok && resp.data) return resp.data;
+              return { ok: false, error: resp?.error || "unknown error" };
+            },
+            overrides: {
+              symbol: rule.symbolSource || { source: "easyeda" },
+              footprint: { source: "easyeda" },
+            },
+            log: (...args) => dbg("[phase2 green]", ...args),
+          });
+        };
+        const openModifyEditor = () => {
+          const rule = match?.rule || {};
+          openRegisterEditor({
+            initialSymbolSource: rule.symbolSource || null,
+            initialLabelMapping: rule.labelMapping || null,
+          });
+        };
         renderOverridePanel(anchorRow, {
           match,
           templateLibs,
           templateLibsFootprints,
           onEasyedaOnly: runEasyedaPhase2,
           onRegister: openRegisterEditor,
+          onImport: runRulePhase2,
+          onModify: openModifyEditor,
           onConfirm: async (overrides) => {
             await runPhase2Convert(anchorRow, lcscId, {
               rpc: async (id, libraryPath, ov) => {

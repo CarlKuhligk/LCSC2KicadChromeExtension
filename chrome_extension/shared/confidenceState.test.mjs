@@ -7,12 +7,22 @@ import {
   matchComponentRule,
   computeConfidenceState,
   EASYEDA_FALLBACK_CONFIDENCE,
+  GREEN_CONFIDENCE_THRESHOLD,
 } from "./confidenceState.mjs";
 
 /**
- * Issue #25 — Confidence-Pipeline + Register-Prompt (white state).
- * Only the ⚪ ``white`` path is wired here. 🟢 (#29) and 🟡 (#31) land later.
+ * Confidence-Pipeline tests. Issue #25 wired the ⚪ ``white`` path;
+ * Issue #29 lights up the 🟢 ``green`` path (registered Rule + MVP
+ * factors + high confidence). 🟡 (#31) lands later.
  */
+
+const FACTORS_GREEN_READY = Object.freeze({
+  ruleResolved: true,
+  categoryResolved: true,
+  symbolTemplateResolvable: true,
+  labelsMapped: true,
+  confidence: 0.95,
+});
 
 /* -------------------------------------------------------------------------- */
 /*  computeConfidenceState                                                    */
@@ -27,19 +37,41 @@ describe("computeConfidenceState", () => {
     expect(computeConfidenceState(undefined, {}, {}, {})).toBe("white");
   });
 
-  it("does not return 'green' yet — the 🟢 branch lands with Issue #29", () => {
-    const result = computeConfidenceState(
-      { categoryPath: "Passives/Resistors" },
-      { confidence: 1 },
-      { confidence: 1 },
-      { ruleResolved: true, confidence: 1 },
-    );
-    // White is reserved for "no rule"; one-click (green) needs MVP factors
-    // that this slice does not yet populate. Until #29 lands, any resolved
-    // rule sits in yellow so we never silently grant one-click.
-    expect(result).not.toBe("green");
-    expect(result).not.toBe("white");
-    expect(result).toBe("yellow");
+  it("returns 'green' when rule + MVP factors are satisfied and confidence is high", () => {
+    expect(
+      computeConfidenceState({ x: 1 }, {}, {}, FACTORS_GREEN_READY),
+    ).toBe("green");
+  });
+
+  it("returns 'yellow' when symbolTemplateResolvable is false (rule still gates)", () => {
+    expect(
+      computeConfidenceState(
+        { x: 1 }, {}, {},
+        { ...FACTORS_GREEN_READY, symbolTemplateResolvable: false },
+      ),
+    ).toBe("yellow");
+  });
+
+  it("returns 'yellow' when labelMapping is empty (no MVP label-mapped factor)", () => {
+    expect(
+      computeConfidenceState(
+        { x: 1 }, {}, {},
+        { ...FACTORS_GREEN_READY, labelsMapped: false },
+      ),
+    ).toBe("yellow");
+  });
+
+  it("returns 'yellow' when confidence is below the green threshold", () => {
+    expect(
+      computeConfidenceState(
+        { x: 1 }, {}, {},
+        { ...FACTORS_GREEN_READY, confidence: GREEN_CONFIDENCE_THRESHOLD - 0.01 },
+      ),
+    ).toBe("yellow");
+  });
+
+  it("returns 'yellow' when factors are missing entirely (no green claim from a bare rule)", () => {
+    expect(computeConfidenceState({ x: 1 }, {}, {}, {})).toBe("yellow");
   });
 });
 
@@ -104,9 +136,9 @@ describe("matchComponentRule (white-state slice)", () => {
     );
     expect(result.ruleKey).toBe("Passives/Resistors");
     expect(result.rule).toBe(rule);
-    // Until #29 wires the 🟢 branch, a resolved rule still does not yield
-    // green — only that we stop being ⚪ white.
-    expect(result.state).not.toBe("white");
+    // No ``symbolSource`` / ``labelMapping`` on this legacy-shape rule →
+    // ``computeConfidenceState`` parks it in 🟡, not ⚪, not 🟢.
+    expect(result.state).toBe("yellow");
   });
 
   it("picks the deepest prefix when multiple rules could match", () => {
@@ -162,6 +194,111 @@ describe("matchComponentRule (white-state slice)", () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*  matchComponentRule — 🟢 green-state slice (Issue #29)                      */
+/* -------------------------------------------------------------------------- */
+
+describe("matchComponentRule (green-state slice)", () => {
+  const TEMPLATE_LIB_PATH = "/home/user/templates/StdLib.kicad_sym";
+  const greenRule = {
+    symbolSource: {
+      source: "template",
+      libPath: TEMPLATE_LIB_PATH,
+      name: "Resistor_Std",
+    },
+    labelMapping: { Resistance: "Value", Tolerance: "Tolerance" },
+  };
+  const greenState = {
+    categorySettings: { "Passives/Resistors": greenRule },
+    templateSymbolsByLib: { [TEMPLATE_LIB_PATH]: ["Resistor_Std", "Capacitor_Std"] },
+  };
+
+  it("returns state='green' when rule + template lib + labelMapping line up", () => {
+    const result = matchComponentRule(
+      { categoryPath: "Passives/Resistors/SMD" },
+      greenState,
+    );
+    expect(result.state).toBe("green");
+    expect(result.ruleKey).toBe("Passives/Resistors");
+    expect(result.rule).toBe(greenRule);
+  });
+
+  it("surfaces the rule's symbolSource as the Symbol Suggestion (preview source)", () => {
+    const result = matchComponentRule(
+      { categoryPath: "Passives/Resistors/SMD" },
+      greenState,
+    );
+    expect(result.symbol.source).toBe("rule");
+    expect(result.symbol.choice).toEqual(greenRule.symbolSource);
+    expect(result.symbol.confidence).toBeGreaterThanOrEqual(
+      GREEN_CONFIDENCE_THRESHOLD,
+    );
+  });
+
+  it("guards.templatesResolvable is true on the green path", () => {
+    const result = matchComponentRule(
+      { categoryPath: "Passives/Resistors/SMD" },
+      greenState,
+    );
+    expect(result.guards.templatesResolvable).toBe(true);
+  });
+
+  it("MVP (Symbol-first): footprint stays on EasyEDA and does NOT block 🟢", () => {
+    const result = matchComponentRule(
+      { categoryPath: "Passives/Resistors/SMD" },
+      greenState,
+    );
+    expect(result.state).toBe("green");
+    expect(result.footprint.choice).toEqual({ source: "easyeda" });
+    expect(result.footprint.source).toBe("easyeda-fallback");
+  });
+
+  it("falls back to 🟡 when the Template Library was unregistered between save and now", () => {
+    const result = matchComponentRule(
+      { categoryPath: "Passives/Resistors/SMD" },
+      {
+        categorySettings: greenState.categorySettings,
+        templateSymbolsByLib: {},
+      },
+    );
+    expect(result.state).toBe("yellow");
+    expect(result.guards.templatesResolvable).toBe(false);
+    // Symbol falls back to EasyEDA so the Override Panel can still render
+    // a sensible default (no broken template reference reaches Phase 2).
+    expect(result.symbol.choice).toEqual({ source: "easyeda" });
+  });
+
+  it("falls back to 🟡 when the Rule's labelMapping is missing or empty", () => {
+    const result = matchComponentRule(
+      { categoryPath: "Passives/Resistors" },
+      {
+        categorySettings: {
+          "Passives/Resistors": { ...greenRule, labelMapping: {} },
+        },
+        templateSymbolsByLib: greenState.templateSymbolsByLib,
+      },
+    );
+    expect(result.state).toBe("yellow");
+  });
+
+  it("falls back to 🟡 when the symbolSource is EasyEDA (no template to resolve)", () => {
+    const result = matchComponentRule(
+      { categoryPath: "Passives/Resistors" },
+      {
+        categorySettings: {
+          "Passives/Resistors": {
+            ...greenRule,
+            symbolSource: { source: "easyeda" },
+          },
+        },
+        templateSymbolsByLib: greenState.templateSymbolsByLib,
+      },
+    );
+    expect(result.state).toBe("yellow");
+    expect(result.guards.templatesResolvable).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*  Classic-script parity                                                     */
 /*                                                                            */
 /*  The MV3 service worker loads chrome_extension/confidenceState.js as a    */
@@ -182,10 +319,15 @@ describe("classic-script confidenceState.js parity", () => {
   );
   const factory = new Function(
     `${categoryClassicSrc}\n${classicSrc}\n` +
-      "return { matchComponentRule, computeConfidenceState, EASYEDA_FALLBACK_CONFIDENCE };",
+      "return { matchComponentRule, computeConfidenceState, EASYEDA_FALLBACK_CONFIDENCE, GREEN_CONFIDENCE_THRESHOLD };",
   );
   const classic = factory();
 
+  const GREEN_LIB = "/home/user/templates/StdLib.kicad_sym";
+  const greenRule = {
+    symbolSource: { source: "template", libPath: GREEN_LIB, name: "Resistor_Std" },
+    labelMapping: { Resistance: "Value" },
+  };
   const cases = [
     [{ categoryPath: "Passives/Resistors" }, { categorySettings: {} }],
     [{ categoryPath: "Passives/Resistors" }, { categorySettings: null }],
@@ -203,19 +345,43 @@ describe("classic-script confidenceState.js parity", () => {
       { categoryPath: "Passives/Resistor" },
       { categorySettings: { "Passives/Resistors": { hidePinNumbers: true } } },
     ],
+    // 🟢 green-state corpus — verifies the classic shim mirrors the new
+    // template-resolution / labelMapping factors.
+    [
+      { categoryPath: "Passives/Resistors/SMD" },
+      {
+        categorySettings: { "Passives/Resistors": greenRule },
+        templateSymbolsByLib: { [GREEN_LIB]: ["Resistor_Std"] },
+      },
+    ],
+    // 🟡 fallback: same rule but the template lib was unregistered.
+    [
+      { categoryPath: "Passives/Resistors/SMD" },
+      {
+        categorySettings: { "Passives/Resistors": greenRule },
+        templateSymbolsByLib: {},
+      },
+    ],
   ];
 
   it("EASYEDA_FALLBACK_CONFIDENCE matches the ESM", () => {
     expect(classic.EASYEDA_FALLBACK_CONFIDENCE).toBe(EASYEDA_FALLBACK_CONFIDENCE);
   });
 
-  it("computeConfidenceState matches the ESM for null/non-null rule", () => {
+  it("GREEN_CONFIDENCE_THRESHOLD matches the ESM", () => {
+    expect(classic.GREEN_CONFIDENCE_THRESHOLD).toBe(GREEN_CONFIDENCE_THRESHOLD);
+  });
+
+  it("computeConfidenceState matches the ESM for null / yellow / green factor sets", () => {
     expect(classic.computeConfidenceState(null, {}, {}, {})).toBe(
       computeConfidenceState(null, {}, {}, {}),
     );
     expect(
       classic.computeConfidenceState({ x: 1 }, {}, {}, { ruleResolved: true }),
     ).toBe(computeConfidenceState({ x: 1 }, {}, {}, { ruleResolved: true }));
+    expect(
+      classic.computeConfidenceState({ x: 1 }, {}, {}, FACTORS_GREEN_READY),
+    ).toBe(computeConfidenceState({ x: 1 }, {}, {}, FACTORS_GREEN_READY));
   });
 
   it("matchComponentRule matches the ESM across the corpus", () => {
