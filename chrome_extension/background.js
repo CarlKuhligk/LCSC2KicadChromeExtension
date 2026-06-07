@@ -1974,9 +1974,9 @@ async function nativeHostConvert(payload) {
 
 /**
  * V3 **Register** RPC bridge (Issue #28). Persists the user-authored
- * Category Rule via the Native Host's ``setRule`` verb. Read-only verb in
- * SW-terms — does not contend with the host's ``_busy_lock`` (it's not
- * ``convert``/``fetchMetadata``) so it overlaps an in-flight Phase 2.
+ * Category Rule via the Native Host's ``setRule`` verb. Fast verb in
+ * host-terms — does not contend with the host's ``_busy_lock`` (only
+ * ``convert``/``fetchMetadata`` do) so it overlaps an in-flight Phase 2.
  *
  * @param {{ categoryPath: string, rule: object }} payload
  * @returns {Promise<{ok: true, result: object} | {ok: false, error: string}>}

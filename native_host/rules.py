@@ -132,38 +132,41 @@ _ALLOWED_RULE_FIELDS: frozenset[str] = frozenset(
 )
 """ADR-0006 ComponentRule fields persisted by the Register slice.
 
-Anything outside this set is dropped silently — including the V2-era
-``autoApply`` / ``autoConfirm`` / ``action`` triplet ADR-0006 removed.
-The companion JS shape lives in ``chrome_extension/src/content/overridePanel.js``
+Anything outside this set raises ``ValueError`` in ``_normalize_rule`` —
+including the V2-era ``autoApply`` / ``autoConfirm`` / ``action`` triplet
+ADR-0006 removed — so legacy clients cannot smuggle them back in. The
+companion JS shape lives in ``chrome_extension/src/content/overridePanel.js``
 (``buildRegisterImportEditor``); both sides keep the same field list so
 the RPC round-trip is lossless.
 """
 
 
-def _normalize_symbol_source(raw: Any) -> dict[str, Any]:
-    """Coerce ``symbolSource`` into the shape Phase 2 expects.
+def _normalize_source_layer(raw: Any, *, field: str) -> dict[str, Any]:
+    """Coerce a source-layer entry (``symbolSource`` / ``footprintSource``) into
+    the shape Phase 2 expects.
 
     Accepts the same two shapes the **Override Panel** emits:
     ``{"source": "easyeda"}`` (no template) or
     ``{"source": "template", "libPath": str, "name": str}``. Anything else
     raises ``ValueError`` so the RPC envelope carries the explanation back
-    to the user instead of silently writing a half-baked rule.
+    to the user instead of silently writing a half-baked rule. ``field`` is
+    inlined into the message so the user sees which layer was wrong.
     """
     if not isinstance(raw, dict):
-        raise ValueError("rule.symbolSource must be an object")
+        raise ValueError(f"rule.{field} must be an object")
     source = raw.get("source")
     if source == "easyeda":
         return {"source": "easyeda"}
     if source != "template":
         raise ValueError(
-            f"rule.symbolSource.source must be 'easyeda' or 'template' (got {source!r})"
+            f"rule.{field}.source must be 'easyeda' or 'template' (got {source!r})"
         )
     lib_path = raw.get("libPath")
     name = raw.get("name")
     if not isinstance(lib_path, str) or not lib_path.strip():
-        raise ValueError("rule.symbolSource.libPath is required for template source")
+        raise ValueError(f"rule.{field}.libPath is required for template source")
     if not isinstance(name, str) or not name.strip():
-        raise ValueError("rule.symbolSource.name is required for template source")
+        raise ValueError(f"rule.{field}.name is required for template source")
     return {"source": "template", "libPath": lib_path.strip(), "name": name.strip()}
 
 
@@ -211,14 +214,18 @@ def _normalize_rule(rule: Any, category_path: str) -> dict[str, Any]:
         raise ValueError("rule.symbolSource is required")
     body: dict[str, Any] = {
         "categoryPath": category_path,
-        "symbolSource": _normalize_symbol_source(rule.get("symbolSource")),
+        "symbolSource": _normalize_source_layer(
+            rule.get("symbolSource"), field="symbolSource"
+        ),
         "labelMapping": _normalize_label_mapping(rule.get("labelMapping")),
     }
     if "footprintSource" in rule and rule["footprintSource"] is not None:
         # Reserved slot for the footprint follow-up slice. Validate with the
         # same grammar as symbolSource so a Register save today does not
         # produce a rule the future footprint slice has to migrate.
-        body["footprintSource"] = _normalize_symbol_source(rule["footprintSource"])
+        body["footprintSource"] = _normalize_source_layer(
+            rule["footprintSource"], field="footprintSource"
+        )
     return body
 
 

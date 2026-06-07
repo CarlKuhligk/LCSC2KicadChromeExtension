@@ -284,10 +284,26 @@ def test_set_rule_rejects_legacy_autoapply_field(tmp_path: Path) -> None:
 
 def test_set_rule_rejects_malformed_template_symbol_source(tmp_path: Path) -> None:
     store = tmp_path / "rules.json"
-    with pytest.raises(ValueError, match="libPath"):
+    with pytest.raises(ValueError, match="symbolSource.libPath"):
         set_rule(
             "Passives",
             {"symbolSource": {"source": "template", "name": "X"}},
+            store_path=store,
+        )
+
+
+def test_set_rule_rejects_malformed_template_footprint_source(tmp_path: Path) -> None:
+    """Footprint-layer error messages must name ``footprintSource`` — not
+    ``symbolSource`` — so the user sees which layer they need to fix.
+    """
+    store = tmp_path / "rules.json"
+    with pytest.raises(ValueError, match="footprintSource.libPath"):
+        set_rule(
+            "Passives",
+            {
+                "symbolSource": {"source": "easyeda"},
+                "footprintSource": {"source": "template", "name": "X"},
+            },
             store_path=store,
         )
 
