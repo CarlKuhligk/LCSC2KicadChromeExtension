@@ -13,7 +13,8 @@
  * ``.mjs`` tests cover the canonical implementation).
  *
  * Globals defined: ``matchComponentRule``, ``computeConfidenceState``,
- * ``EASYEDA_FALLBACK_CONFIDENCE``, ``GREEN_CONFIDENCE_THRESHOLD``.
+ * ``autoTemplateMatch``, ``EASYEDA_FALLBACK_CONFIDENCE``,
+ * ``GREEN_CONFIDENCE_THRESHOLD``, ``AUTO_MATCH_MIN_SCORE``.
  *
  * Depends on the ``normalizeCategoryPath`` global already loaded by
  * ``categoryPath.js`` (background.js orders ``importScripts`` accordingly).
@@ -24,6 +25,9 @@ const EASYEDA_FALLBACK_CONFIDENCE = 0.5;
 
 /** 🟢 threshold from KONZEPT.md §3.6 — high ≥ 0.85. */
 const GREEN_CONFIDENCE_THRESHOLD = 0.85;
+
+/** 🟡 floor for Auto-Template-Match suggestions (KONZEPT.md §3.4, Issue #31). */
+const AUTO_MATCH_MIN_SCORE = 0.6;
 
 /** Confidence assigned when a Rule's Symbol-Template is resolvable in the registered libs. */
 const _RULE_TEMPLATE_CONFIDENCE = 0.95;
@@ -55,6 +59,137 @@ function _hasLabelMappingEntries(labelMapping) {
   return Object.keys(labelMapping).length > 0;
 }
 
+const _TOKEN_SPLIT_RE = /[^a-z0-9]+/i;
+
+function _normalizedTokens(value) {
+  if (typeof value !== "string" || !value) return [];
+  return value
+    .toLowerCase()
+    .split(_TOKEN_SPLIT_RE)
+    .filter((t) => t.length > 0);
+}
+
+function _categoryLeafTokens(categoryPath) {
+  if (!categoryPath || typeof categoryPath !== "string") return [];
+  const leaf = categoryPath.split("/").filter(Boolean).pop() || "";
+  return _normalizedTokens(leaf);
+}
+
+function _templatePinCountFor(libPath, name, templatePinCounts) {
+  if (!templatePinCounts || typeof templatePinCounts !== "object") return null;
+  const byName = templatePinCounts[libPath];
+  if (!byName || typeof byName !== "object") return null;
+  const value = byName[name];
+  return Number.isFinite(value) ? Number(value) : null;
+}
+
+function _includesToken(haystackTokens, needle) {
+  if (!needle) return false;
+  return haystackTokens.includes(needle.toLowerCase());
+}
+
+function _includesAllTokens(haystackTokens, needle) {
+  if (!needle || typeof needle !== "string") return false;
+  const needleTokens = _normalizedTokens(needle);
+  if (!needleTokens.length) return false;
+  return needleTokens.every((t) => haystackTokens.includes(t));
+}
+
+function _scoreSymbolCandidate(name, libPath, phase1, templatePinCounts) {
+  const tokens = _normalizedTokens(name);
+  let score = 0;
+  const reasons = [];
+
+  const leafTokens = _categoryLeafTokens(phase1?.categoryPath);
+  if (leafTokens.length && tokens.some((t) => leafTokens.includes(t))) {
+    score += 0.5;
+    reasons.push("category leaf token");
+  }
+
+  const templatePinCount = _templatePinCountFor(libPath, name, templatePinCounts);
+  const easyedaPinCount = Number(phase1?.pinCount);
+  if (
+    Number.isFinite(templatePinCount)
+    && Number.isFinite(easyedaPinCount)
+    && templatePinCount > 0
+    && easyedaPinCount > 0
+    && templatePinCount === easyedaPinCount
+  ) {
+    score += 0.3;
+    reasons.push(`pin-count ${easyedaPinCount}`);
+  }
+
+  const family = phase1?.packageForm?.family;
+  if (typeof family === "string" && family && _includesToken(tokens, family)) {
+    score += 0.2;
+    reasons.push(`family "${family}"`);
+  }
+
+  return { score, reasons };
+}
+
+function _scoreFootprintCandidate(name, phase1) {
+  const tokens = _normalizedTokens(name);
+  const packageForm = phase1?.packageForm || {};
+  let score = 0;
+  const reasons = [];
+
+  const canonical = typeof packageForm.canonical === "string" ? packageForm.canonical : "";
+  if (canonical && _includesAllTokens(tokens, canonical)) {
+    score += 0.7;
+    reasons.push(`package "${canonical}"`);
+  }
+
+  const family = typeof packageForm.family === "string" ? packageForm.family : "";
+  if (family && family !== canonical && _includesAllTokens(tokens, family)) {
+    score += 0.2;
+    reasons.push(`family "${family}"`);
+  }
+
+  const pinSuffix = packageForm.pinSuffix;
+  if (Number.isFinite(pinSuffix) && pinSuffix > 0) {
+    if (tokens.includes(String(pinSuffix))) {
+      score += 0.1;
+      reasons.push(`pin-suffix ${pinSuffix}`);
+    }
+  }
+
+  return { score, reasons };
+}
+
+function autoTemplateMatch(layer, phase1, libsByLayer, opts) {
+  if (layer !== "symbol" && layer !== "footprint") return null;
+  if (!libsByLayer || typeof libsByLayer !== "object") return null;
+
+  const templatePinCounts =
+    opts && typeof opts.templatePinCounts === "object" ? opts.templatePinCounts : null;
+
+  let best = null;
+  for (const libPath of Object.keys(libsByLayer)) {
+    const names = libsByLayer[libPath];
+    if (!Array.isArray(names)) continue;
+    for (const name of names) {
+      if (typeof name !== "string" || !name) continue;
+      const scored =
+        layer === "symbol"
+          ? _scoreSymbolCandidate(name, libPath, phase1, templatePinCounts)
+          : _scoreFootprintCandidate(name, phase1);
+      if (scored.score < AUTO_MATCH_MIN_SCORE) continue;
+      if (best == null || scored.score > best.score) {
+        best = { libPath, name, ...scored };
+      }
+    }
+  }
+  if (best == null) return null;
+  return {
+    layer,
+    choice: { source: "template", libPath: best.libPath, name: best.name },
+    confidence: Math.min(1, best.score),
+    reasons: best.reasons,
+    source: "auto-template-match",
+  };
+}
+
 function _resolveDeepestPrefixRule(categoryPath, categorySettings) {
   if (!categoryPath || !categorySettings || typeof categorySettings !== "object") {
     return null;
@@ -80,6 +215,8 @@ function matchComponentRule(phase1, state) {
   const categoryPath = normalizeCategoryPath(phase1?.categoryPath);
   const categorySettings = state?.categorySettings || null;
   const templateSymbolsByLib = state?.templateSymbolsByLib || null;
+  const templateFootprintsByLib = state?.templateFootprintsByLib || null;
+  const templatePinCounts = state?.templatePinCounts || null;
 
   const resolved = _resolveDeepestPrefixRule(categoryPath, categorySettings);
   const rule = resolved?.rule || null;
@@ -90,13 +227,8 @@ function matchComponentRule(phase1, state) {
   );
   const labelsMapped = _hasLabelMappingEntries(rule?.labelMapping);
 
-  const guards = {
-    pinCountOk: true,
-    packageFormOk: true,
-    templatesResolvable: symbolTemplateResolvable,
-    pinPadResolvable: true,
-    overwriteClear: true,
-  };
+  const phase1Normalized = { ...(phase1 || {}), categoryPath };
+  const autoMatchOpts = { templatePinCounts };
 
   let symbol;
   let footprint;
@@ -113,10 +245,30 @@ function matchComponentRule(phase1, state) {
       "footprint follow-up slice — EasyEDA default",
     );
   } else {
+    const symbolAuto = autoTemplateMatch(
+      "symbol",
+      phase1Normalized,
+      templateSymbolsByLib,
+      autoMatchOpts,
+    );
+    const footprintAuto = autoTemplateMatch(
+      "footprint",
+      phase1Normalized,
+      templateFootprintsByLib,
+      autoMatchOpts,
+    );
     const fallbackReason = resolved ? null : "no Category Rule registered";
-    symbol = _easyedaFallback("symbol", fallbackReason);
-    footprint = _easyedaFallback("footprint", fallbackReason);
+    symbol = symbolAuto || _easyedaFallback("symbol", fallbackReason);
+    footprint = footprintAuto || _easyedaFallback("footprint", fallbackReason);
   }
+
+  const guards = {
+    pinCountOk: true,
+    packageFormOk: true,
+    templatesResolvable: symbolTemplateResolvable,
+    pinPadResolvable: true,
+    overwriteClear: true,
+  };
 
   const aggregateConfidence = symbol.confidence;
 
@@ -128,6 +280,9 @@ function matchComponentRule(phase1, state) {
     labelsMapped,
     footprintResolved: footprint.source !== "easyeda-fallback",
     confidence: aggregateConfidence,
+    heuristicMatch:
+      symbol.source === "auto-template-match"
+      || footprint.source === "auto-template-match",
   };
 
   const stateName = computeConfidenceState(rule, symbol, footprint, factors);
@@ -144,8 +299,10 @@ function matchComponentRule(phase1, state) {
 }
 
 function computeConfidenceState(rule, _symbol, _footprint, factors) {
-  if (!rule) return "white";
   const f = factors || {};
+  if (!rule) {
+    return f.heuristicMatch === true ? "yellow" : "white";
+  }
   const greenReady =
     f.ruleResolved === true
     && f.categoryResolved === true

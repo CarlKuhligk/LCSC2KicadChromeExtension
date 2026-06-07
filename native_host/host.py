@@ -32,6 +32,11 @@ Verbs handled:
   cannot smuggle them back in.
 - ``listTemplates`` — read-only Template Library listing. Used by the
   Override Panel; stays responsive even while a ``convert`` is running.
+- ``templatePinCheck`` — V3 Confidence-Pipeline 🟡 driver (Issue #31).
+  Returns ``{easyedaPinCount, templatePinCount, match}`` for a single
+  ``(lcscId, templateName, templateLibPath)`` tuple. Drives the
+  Auto-Template-Match heuristic's pin-count score; the SW caches the
+  result per ``(libPath, templateName)`` so re-imports skip the RPC.
 
 Concurrency (Issue #26): the reader loop dispatches each request to a
 thread-pool worker so fast read-only verbs (``ping``, ``listTemplates``,
@@ -74,7 +79,7 @@ from native_host.fs import (  # noqa: E402
 from native_host.phase1 import fetch_metadata  # noqa: E402  (after sys.path setup)
 from native_host.phase2 import run_phase2_conversion  # noqa: E402
 from native_host.rules import get_rule, set_rule  # noqa: E402
-from native_host.templates import list_templates  # noqa: E402
+from native_host.templates import list_templates, template_pin_check  # noqa: E402
 
 HOST_VERSION = "0.0.1"
 
@@ -273,6 +278,21 @@ def handle(
                 "error": f"{type(exc).__name__}: {exc}",
             }
         return {"id": request_id, "ok": True, "result": {"rule": written}}
+
+    if verb == "templatePinCheck":
+        raw_params = request.get("params")
+        params = raw_params if isinstance(raw_params, dict) else {}
+        try:
+            result = template_pin_check(params)
+        except ValueError as exc:
+            return {"id": request_id, "ok": False, "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "id": request_id,
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        return {"id": request_id, "ok": True, "result": result}
 
     if verb == "listTemplates":
         raw_params = request.get("params")

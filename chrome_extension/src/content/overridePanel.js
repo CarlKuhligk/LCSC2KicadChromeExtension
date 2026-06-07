@@ -47,6 +47,10 @@ export const OVERRIDE_REGISTER_MAPPING_ADD_ATTR = "data-k2c-register-mapping-add
 export const OVERRIDE_IMPORT_ATTR = "data-k2c-override-import";
 export const OVERRIDE_MODIFY_ATTR = "data-k2c-override-modify";
 export const OVERRIDE_ONECLICK_PREVIEW_ATTR = "data-k2c-override-oneclick-preview";
+/** 🟡 Low-Confidence panel controls (Issue #31). */
+export const OVERRIDE_YELLOW_KEEP_EASYEDA_ATTR = "data-k2c-yellow-keep-easyeda";
+export const OVERRIDE_YELLOW_OPEN_EDITOR_ATTR = "data-k2c-yellow-open-editor";
+export const OVERRIDE_YELLOW_HINT_ATTR = "data-k2c-yellow-hint";
 
 export const EASYEDA_OPTION_VALUE = "easyeda";
 const TEMPLATE_VALUE_PREFIX = "template:";
@@ -268,6 +272,105 @@ export function buildOneClickPanel(doc, opts = {}) {
   importBtn.textContent = "Import";
   importBtn.setAttribute(OVERRIDE_IMPORT_ATTR, "true");
   actions.appendChild(importBtn);
+
+  panel.appendChild(actions);
+
+  return panel;
+}
+
+/**
+ * Build the 🟡 **Low-Confidence panel** (ADR-0006 §3.5, Issue #31). Rendered
+ * when ``matchResult.state === "yellow"`` AND the user's
+ * ``lowConfidenceBehaviour`` setting is ``"keepEasyeda"`` — the
+ * keepEasyeda branch shows the heuristic suggestion as an unobtrusive
+ * hint while defaulting the Confirm button to EasyEDA on both Layers.
+ *
+ * Two actions:
+ *   1. **[EasyEDA übernehmen]** (primary, prefilled) — fires
+ *      ``onEasyedaOnly`` with the EasyEDA fallback overrides baked in.
+ *   2. **[Editor öffnen]** — escape hatch; fires ``onModify`` so the
+ *      caller can swap this panel for the Import-Editor (the same one
+ *      Register / 🟢 Modify use).
+ *
+ * ``buildYellowPanel`` only constructs the DOM; ``renderOverridePanel``
+ * wires the buttons to the supplied callbacks. The ``"openEditor"``
+ * branch of the setting bypasses this builder entirely and renders the
+ * Import-Editor directly — see ``renderOverridePanel``.
+ *
+ * @param {Document} doc
+ * @param {{
+ *   ruleKey?: string | null,
+ *   match?: object | null,
+ *   onEasyedaOnly?: () => void,
+ *   onModify?: () => void,
+ * }} [opts]
+ */
+export function buildYellowPanel(doc, opts = {}) {
+  const panel = doc.createElement("div");
+  panel.setAttribute(OVERRIDE_PANEL_ATTR, "true");
+  panel.setAttribute(OVERRIDE_PANEL_MODE_ATTR, "yellow");
+  panel.style.cssText = [
+    "display:flex",
+    "flex-direction:column",
+    "gap:8px",
+    "padding:10px 12px",
+    "border:1px solid #fde68a",
+    "border-radius:6px",
+    "background:#fefce8",
+    "margin-top:6px",
+    "font-size:12px",
+    "color:#713f12",
+  ].join(";");
+
+  const heading = doc.createElement("div");
+  heading.textContent = "Niedrige Confidence — prüfen oder EasyEDA behalten";
+  heading.style.cssText =
+    "font-weight:600;font-size:11px;letter-spacing:0.04em;text-transform:uppercase;color:#92400e";
+  panel.appendChild(heading);
+
+  // Unobtrusive hint about the heuristic candidate the matcher picked.
+  // KONZEPT.md §3.5 / §21 calls this „dezenter Hinweis" — one line, no
+  // ceremony, the user keeps EasyEDA unless they actively click the
+  // editor escape hatch.
+  const match = opts.match || null;
+  const symbolSrc = match?.symbol;
+  const footprintSrc = match?.footprint;
+  const hintLines = [];
+  if (symbolSrc?.source === "auto-template-match") {
+    hintLines.push(
+      `Vorschlag Symbol: ${describeSymbolSource(symbolSrc.choice)}`,
+    );
+  }
+  if (footprintSrc?.source === "auto-template-match") {
+    hintLines.push(
+      `Vorschlag Footprint: ${describeSymbolSource(footprintSrc.choice)}`,
+    );
+  }
+  if (!hintLines.length && match?.ruleKey) {
+    hintLines.push(`Regel „${match.ruleKey}" — Confidence niedrig`);
+  }
+  if (hintLines.length) {
+    const hint = doc.createElement("div");
+    hint.setAttribute(OVERRIDE_YELLOW_HINT_ATTR, "true");
+    hint.style.cssText = "line-height:1.4;color:#78350f";
+    hint.textContent = hintLines.join(" · ");
+    panel.appendChild(hint);
+  }
+
+  const actions = doc.createElement("div");
+  actions.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:4px";
+
+  const openEditorBtn = doc.createElement("button");
+  openEditorBtn.type = "button";
+  openEditorBtn.textContent = "Editor öffnen";
+  openEditorBtn.setAttribute(OVERRIDE_YELLOW_OPEN_EDITOR_ATTR, "true");
+  actions.appendChild(openEditorBtn);
+
+  const keepEasyedaBtn = doc.createElement("button");
+  keepEasyedaBtn.type = "button";
+  keepEasyedaBtn.textContent = "EasyEDA übernehmen";
+  keepEasyedaBtn.setAttribute(OVERRIDE_YELLOW_KEEP_EASYEDA_ATTR, "true");
+  actions.appendChild(keepEasyedaBtn);
 
   panel.appendChild(actions);
 
@@ -653,8 +756,16 @@ function parseLayer(raw) {
  *     **[Import]** (fires ``onImport``) + **[Modifizieren]** (fires
  *     ``onModify``). No separate confirm, no countdown — the preview IS
  *     the confirm (ADR-0006 §U3.3).
- *   - 🟡 / no match → legacy Symbol/Footprint source picker (until #31
- *     wires the user-setting branch).
+ *   - 🟡 ``match.state === "yellow"`` (Issue #31) → user-setting branch:
+ *       - ``opts.lowConfidenceBehaviour === "openEditor"`` (Default):
+ *         opens the Import-Editor immediately via ``onModify``. Same
+ *         editor as 🟢 Modify / ⚪ Register (ADR-0006: one editor for
+ *         register / modify / low-confidence).
+ *       - ``opts.lowConfidenceBehaviour === "keepEasyeda"``: renders the
+ *         **Low-Confidence panel** with a single-line Vorschlag hint,
+ *         an ``[EasyEDA übernehmen]`` button (fires ``onEasyedaOnly``)
+ *         and an ``[Editor öffnen]`` escape hatch (fires ``onModify``).
+ *   - No match / unknown state → legacy Symbol/Footprint source picker.
  *
  * @param {HTMLElement} anchorRow
  * @param {{
@@ -663,6 +774,7 @@ function parseLayer(raw) {
  *     ruleKey?: string | null,
  *     rule?: object | null,
  *   } | null,
+ *   lowConfidenceBehaviour?: "openEditor" | "keepEasyeda",
  *   templateLibs?: Record<string, string[]>,
  *   templateLibsFootprints?: Record<string, string[]>,
  *   onConfirm?: (overrides: object) => void,
@@ -686,6 +798,26 @@ export function renderOverridePanel(anchorRow, opts = {}) {
   const matchState = opts.match?.state;
   const isWhite = matchState === "white";
   const isGreen = matchState === "green";
+  const isYellow = matchState === "yellow";
+  const lowConfidenceBehaviour =
+    opts.lowConfidenceBehaviour === "keepEasyeda" ? "keepEasyeda" : "openEditor";
+
+  // 🟡 + ``openEditor`` (Default) bypasses the panel and goes straight
+  // into the Import-Editor. The host's ``onModify`` callback is the
+  // canonical entry point (same one 🟢 [Modifizieren] uses); the caller
+  // is expected to ``renderRegisterImportEditor`` with the matched
+  // Rule's values prefilled.
+  if (isYellow && lowConfidenceBehaviour === "openEditor") {
+    if (typeof opts.onModify === "function") {
+      try {
+        opts.onModify();
+      } catch (_e) {
+        /* swallow — caller logs */
+      }
+    }
+    return null;
+  }
+
   let panel;
   if (isWhite) {
     panel = buildRegisterPrompt(doc, opts);
@@ -694,6 +826,12 @@ export function renderOverridePanel(anchorRow, opts = {}) {
       ruleKey: opts.match?.ruleKey ?? null,
       symbolSource: opts.match?.rule?.symbolSource ?? null,
       labelMapping: opts.match?.rule?.labelMapping ?? null,
+    });
+  } else if (isYellow) {
+    // ``keepEasyeda`` branch — Hinweis + EasyEDA default + editor escape.
+    panel = buildYellowPanel(doc, {
+      ruleKey: opts.match?.ruleKey ?? null,
+      match: opts.match || null,
     });
   } else {
     panel = buildOverridePanel(doc, opts);
@@ -768,6 +906,42 @@ export function renderOverridePanel(anchorRow, opts = {}) {
     });
 
     modifyBtn?.addEventListener("click", () => {
+      removePanel();
+      if (typeof opts.onModify === "function") {
+        try {
+          opts.onModify();
+        } catch (_e) { /* swallow */ }
+      }
+    });
+
+    return panel;
+  }
+
+  if (isYellow) {
+    // Issue #31 — 🟡 keepEasyeda branch. The openEditor branch returned
+    // early above before any panel was constructed.
+    const keepBtn = panel.querySelector(`[${OVERRIDE_YELLOW_KEEP_EASYEDA_ATTR}]`);
+    const openBtn = panel.querySelector(`[${OVERRIDE_YELLOW_OPEN_EDITOR_ATTR}]`);
+
+    keepBtn?.addEventListener("click", () => {
+      removePanel();
+      if (typeof opts.onEasyedaOnly === "function") {
+        try {
+          opts.onEasyedaOnly();
+        } catch (_e) { /* swallow */ }
+      } else if (typeof opts.onConfirm === "function") {
+        // Fallback to onConfirm with EasyEDA on both Layers — same
+        // contract the ⚪ Register-Prompt uses for "nur EasyEDA".
+        try {
+          opts.onConfirm({
+            symbol: { source: "easyeda" },
+            footprint: { source: "easyeda" },
+          });
+        } catch (_e) { /* swallow */ }
+      }
+    });
+
+    openBtn?.addEventListener("click", () => {
       removePanel();
       if (typeof opts.onModify === "function") {
         try {

@@ -19,6 +19,7 @@ branch via ``host.handle``.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -158,3 +159,153 @@ def test_host_list_templates_returns_validation_error_for_empty_path() -> None:
     assert response["id"] == "abc"
     assert response["ok"] is False
     assert "libPath" in response["error"]
+
+
+# ---------------------------------------------------------------------------
+# template_pin_check — V3 Confidence-Pipeline 🟡 driver (Issue #31)
+# ---------------------------------------------------------------------------
+
+
+_TWO_PIN_CAD = {
+    "lcsc": {"number": "C22548"},
+    "dataStr": {
+        "shape": [
+            "P~show~...~M -7.5 0 h 5.08~#000000~~0~0~Pin1~gge1~0~^^",
+            "P~show~...~M 7.5 0 h -5.08~#000000~~0~0~Pin2~gge2~0~^^",
+            "R~-7.5~-2.5~~~15~5~#000000~1~0~none~gge3~0",
+        ],
+    },
+}
+
+
+def _stub_cad(payload: dict[str, Any]):
+    def _inner(_lcsc_id: str) -> dict[str, Any]:
+        return payload
+    return _inner
+
+
+def test_template_pin_check_matching_counts(tmp_path: Path) -> None:
+    sym = _write_lib(tmp_path)
+    result = templates.template_pin_check(
+        {
+            "lcscId": "C22548",
+            "templateName": "Resistor_SMT_0603",
+            "templateLibPath": str(sym),
+        },
+        cad_fetcher=_stub_cad(_TWO_PIN_CAD),
+    )
+    # The Resistor_SMT_0603 sample symbol has 1 pin; EasyEDA C22548 stub has 2.
+    assert result["easyedaPinCount"] == 2
+    assert result["templatePinCount"] == 1
+    assert result["match"] is False
+
+
+def test_template_pin_check_match_flag_true_when_counts_align(tmp_path: Path) -> None:
+    # A 2-pin template + 2-pin EasyEDA payload → ``match=True``.
+    sym = tmp_path / "TwoPinLib.kicad_sym"
+    sym.write_text(
+        "(kicad_symbol_lib\n"
+        "  (symbol \"Resistor_Std\"\n"
+        "    (pin passive line (at -2.54 0 0) (length 1.27))\n"
+        "    (pin passive line (at 2.54 0 0) (length 1.27))\n"
+        "  )\n"
+        ")\n",
+        encoding="utf-8",
+    )
+    result = templates.template_pin_check(
+        {
+            "lcscId": "C22548",
+            "templateName": "Resistor_Std",
+            "templateLibPath": str(sym),
+        },
+        cad_fetcher=_stub_cad(_TWO_PIN_CAD),
+    )
+    assert result["templatePinCount"] == 2
+    assert result["easyedaPinCount"] == 2
+    assert result["match"] is True
+
+
+def test_template_pin_check_handles_missing_template(tmp_path: Path) -> None:
+    sym = _write_lib(tmp_path)
+    result = templates.template_pin_check(
+        {
+            "lcscId": "C22548",
+            "templateName": "DoesNotExist",
+            "templateLibPath": str(sym),
+        },
+        cad_fetcher=_stub_cad(_TWO_PIN_CAD),
+    )
+    assert result["templatePinCount"] == 0
+    # match is False whenever either side is zero — protects callers from
+    # treating a 0/0 coincidence as a confidence boost.
+    assert result["match"] is False
+
+
+def test_template_pin_check_handles_empty_cad(tmp_path: Path) -> None:
+    sym = _write_lib(tmp_path)
+    result = templates.template_pin_check(
+        {
+            "lcscId": "C22548",
+            "templateName": "Resistor_SMT_0603",
+            "templateLibPath": str(sym),
+        },
+        cad_fetcher=_stub_cad({}),
+    )
+    assert result["easyedaPinCount"] == 0
+    assert result["match"] is False
+
+
+@pytest.mark.parametrize(
+    "payload, message_substr",
+    [
+        ({"templateName": "X", "templateLibPath": "x"}, "lcscId"),
+        ({"lcscId": "bad"}, "lcscId"),
+        ({"lcscId": "C22548", "templateLibPath": "x"}, "templateName"),
+        ({"lcscId": "C22548", "templateName": "X"}, "templateLibPath"),
+    ],
+)
+def test_template_pin_check_validation_errors(payload, message_substr) -> None:
+    with pytest.raises(ValueError, match=message_substr):
+        templates.template_pin_check(payload, cad_fetcher=_stub_cad({}))
+
+
+def test_host_dispatches_template_pin_check_verb(tmp_path: Path, monkeypatch) -> None:
+    sym = _write_lib(tmp_path)
+
+    # Patch the EasyedaApi fetcher so the dispatcher path doesn't hit the real
+    # network. We rely on the fetcher fallback inside ``template_pin_check`` —
+    # the host doesn't accept a ``cad_fetcher`` injection in production paths.
+    from easyeda2kicad.easyeda import easyeda_api
+
+    monkeypatch.setattr(
+        easyeda_api.EasyedaApi,
+        "get_cad_data_of_component",
+        lambda _self, _lcsc: _TWO_PIN_CAD,
+    )
+
+    response = host.handle({
+        "id": 7,
+        "verb": "templatePinCheck",
+        "params": {
+            "lcscId": "C22548",
+            "templateName": "Resistor_SMT_0603",
+            "templateLibPath": str(sym),
+        },
+    })
+
+    assert response["id"] == 7
+    assert response["ok"] is True
+    assert response["result"]["easyedaPinCount"] == 2
+    assert response["result"]["templatePinCount"] == 1
+    assert response["result"]["match"] is False
+
+
+def test_host_template_pin_check_returns_validation_error() -> None:
+    response = host.handle({
+        "id": "v",
+        "verb": "templatePinCheck",
+        "params": {"templateName": "X", "templateLibPath": "y"},
+    })
+    assert response["id"] == "v"
+    assert response["ok"] is False
+    assert "lcscId" in response["error"]

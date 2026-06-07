@@ -116,6 +116,18 @@ const DEFAULT_STATE = {
   debugLogs: false,
   projectRelative: false,
   projectRelativePath: "",
+  /**
+   * V3 Issue #31 — 🟡 Low-Confidence Setting (ADR-0006, KONZEPT.md §3.5).
+   * Controls what the Override Panel does when ``matchResult.state ===
+   * "yellow"`` (Heuristik-Match ohne registrierte Rule, oder registrierte
+   * Rule mit einem fehlenden MVP-Faktor):
+   *   - ``"openEditor"`` (default): proactively opens the Import-Editor
+   *     with the heuristic suggestion pre-filled. User edits or saves
+   *     and runs Phase 2.
+   *   - ``"keepEasyeda"``: surfaces a small Hinweis-Panel with an
+   *     EasyEDA-default Confirm + an "Editor öffnen" escape hatch.
+   */
+  lowConfidenceBehaviour: "openEditor",
   libraryTotals: { symbols: 0, footprints: 0, models: 0 },
   /** V3 Issue #24: user-added picker roots (Q-PICK-1). Persisted client-side
    *  so the Native Host stays stateless; every picker RPC forwards the list
@@ -189,6 +201,17 @@ function normalizeBoolean(value, fallback = false) {
     }
   }
   return fallback;
+}
+
+/**
+ * V3 Issue #31 — clamp the persisted ``lowConfidenceBehaviour`` to the two
+ * supported enum values so a stale ``chrome.storage`` value (or a typo from
+ * a future hand-edited settings.json) cannot put the panel into an unknown
+ * branch. Anything outside the enum falls back to ``"openEditor"`` (the
+ * Default specified in ADR-0006 §3.5 / KONZEPT.md §21).
+ */
+function normalizeLowConfidenceBehaviour(value) {
+  return value === "keepEasyeda" ? "keepEasyeda" : "openEditor";
 }
 
 function normalizeProjectRelativePath(value) {
@@ -602,6 +625,7 @@ async function init() {
       debugLogs: normalizeBoolean(stored.debugLogs),
       projectRelative: normalizeBoolean(stored.projectRelative),
       projectRelativePath: normalizeProjectRelativePath(stored.projectRelativePath),
+      lowConfidenceBehaviour: normalizeLowConfidenceBehaviour(stored.lowConfidenceBehaviour),
       libraryTotals: stored.libraryTotals || { symbols: 0, footprints: 0, models: 0 },
       categorySettings:
         stored.categorySettings && typeof stored.categorySettings === "object"
@@ -865,6 +889,34 @@ async function nativeHostListTemplates(libPath) {
     };
   }
   return { symbols: [], footprints: [], error: envelope?.error || "no result" };
+}
+
+/**
+ * V3 Issue #31 — drive the Native Host's ``templatePinCheck`` verb so the
+ * content-script can feed cached ``{libPath: {name: count}}`` entries into
+ * ``autoTemplateMatch``'s symbol scorer. Same Warm-Port routing as
+ * ``nativeHostListTemplates``; long timeout because the resolver may need
+ * a cold EasyEDA-API fetch on its first call for an LCSC id.
+ */
+async function nativeHostTemplatePinCheck(payload) {
+  let envelope;
+  try {
+    envelope = await getWarmNativePort().send(
+      "templatePinCheck",
+      {
+        lcscId: payload?.lcscId,
+        templateName: payload?.templateName,
+        templateLibPath: payload?.templateLibPath,
+      },
+      { timeoutMs: 15000 },
+    );
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+  if (envelope && envelope.ok === true && envelope.result && typeof envelope.result === "object") {
+    return { ok: true, result: envelope.result };
+  }
+  return { ok: false, error: envelope?.error || "no result" };
 }
 
 /**
@@ -1267,6 +1319,7 @@ function snapshotState() {
     debugLogs: state.debugLogs,
     projectRelative: state.projectRelative,
     projectRelativePath: state.projectRelativePath,
+    lowConfidenceBehaviour: state.lowConfidenceBehaviour,
     categorySettings: { ...state.categorySettings },
     templateSymbols: (state.templateSymbols || []).slice(),
     templateSymbolsByLib: state.templateSymbolsByLib ? { ...state.templateSymbolsByLib } : {},
@@ -2066,6 +2119,9 @@ const RUNTIME_MESSAGE_HANDLERS = {
     if (typeof message.projectRelativePath === "string") {
       state.projectRelativePath = normalizeProjectRelativePath(message.projectRelativePath);
     }
+    if (typeof message.lowConfidenceBehaviour === "string") {
+      state.lowConfidenceBehaviour = normalizeLowConfidenceBehaviour(message.lowConfidenceBehaviour);
+    }
     if (message.categorySettings && typeof message.categorySettings === "object") {
       state.categorySettings = dedupeCategorySettings({ ...message.categorySettings });
     }
@@ -2076,6 +2132,7 @@ const RUNTIME_MESSAGE_HANDLERS = {
       "debugLogs",
       "projectRelative",
       "projectRelativePath",
+      "lowConfidenceBehaviour",
       "categorySettings",
     ]);
     if (
@@ -2357,6 +2414,9 @@ const RUNTIME_MESSAGE_HANDLERS = {
       templateSymbolsByLib: state.templateSymbolsByLib ? { ...state.templateSymbolsByLib } : {},
       templateFootprintsByLib: state.templateFootprintsByLib ? { ...state.templateFootprintsByLib } : {},
       templateSymbols: (state.templateSymbols || []).slice(),
+      // Issue #31 — content-script's Override Panel reads this to pick the
+      // 🟡 keepEasyeda vs openEditor branch without a second roundtrip.
+      lowConfidenceBehaviour: state.lowConfidenceBehaviour,
     };
   },
   templatesPinCheck: async (message) => {
@@ -2840,6 +2900,18 @@ const RUNTIME_MESSAGE_HANDLERS = {
   v3SetRule: async (message) => nativeHostSetRule({
     categoryPath: message.categoryPath,
     rule: message.rule,
+  }),
+  /**
+   * V3 **TemplatePinCheck** (Issue #31). Content-side relay to the Native
+   * Host verb. Returns ``{ok, result|error}`` with
+   * ``result = { easyedaPinCount, templatePinCount, match }``.
+   * Used by the Auto-Template-Match heuristic to score Symbol candidates
+   * by pin-count; cached client-side per ``(libPath, templateName)``.
+   */
+  v3TemplatePinCheck: async (message) => nativeHostTemplatePinCheck({
+    lcscId: message.lcscId,
+    templateName: message.templateName,
+    templateLibPath: message.templateLibPath,
   }),
 };
 

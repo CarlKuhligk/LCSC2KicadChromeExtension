@@ -66,6 +66,13 @@ export const EASYEDA_FALLBACK_CONFIDENCE = 0.5;
  */
 export const GREEN_CONFIDENCE_THRESHOLD = 0.85;
 
+/**
+ * 🟡 threshold from KONZEPT.md §3.4. Auto-Template-Match scoring needs to clear
+ * this floor before the heuristic suggestion is surfaced; below it the layer
+ * stays on the EasyEDA fallback.
+ */
+export const AUTO_MATCH_MIN_SCORE = 0.6;
+
 /** Confidence assigned when a Rule's Symbol-Template is resolvable in the registered libs. */
 const RULE_TEMPLATE_CONFIDENCE = 0.95;
 
@@ -101,6 +108,186 @@ function isSymbolTemplateResolvable(symbolSource, templateSymbolsByLib) {
 function hasLabelMappingEntries(labelMapping) {
   if (!labelMapping || typeof labelMapping !== "object") return false;
   return Object.keys(labelMapping).length > 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Auto-Template-Match heuristic (KONZEPT.md §3.4, Issue #31)                 */
+/* -------------------------------------------------------------------------- */
+
+const _TOKEN_SPLIT_RE = /[^a-z0-9]+/i;
+
+function _normalizedTokens(value) {
+  if (typeof value !== "string" || !value) return [];
+  return value
+    .toLowerCase()
+    .split(_TOKEN_SPLIT_RE)
+    .filter((t) => t.length > 0);
+}
+
+function _categoryLeafTokens(categoryPath) {
+  if (!categoryPath || typeof categoryPath !== "string") return [];
+  const leaf = categoryPath.split("/").filter(Boolean).pop() || "";
+  return _normalizedTokens(leaf);
+}
+
+function _templatePinCountFor(libPath, name, templatePinCounts) {
+  if (!templatePinCounts || typeof templatePinCounts !== "object") return null;
+  const byName = templatePinCounts[libPath];
+  if (!byName || typeof byName !== "object") return null;
+  const value = byName[name];
+  return Number.isFinite(value) ? Number(value) : null;
+}
+
+function _includesToken(haystackTokens, needle) {
+  if (!needle) return false;
+  return haystackTokens.includes(needle.toLowerCase());
+}
+
+/**
+ * Returns true when every token of ``needle`` (multi-token strings like
+ * ``"SOT-23-3"`` → ``["sot","23","3"]``) appears in ``haystackTokens``.
+ * Single-token needles fall through to ``_includesToken`` semantics. Used
+ * so a Footprint named ``SOT-23-3.kicad_mod`` matches a canonical of the
+ * same shape — the bare ``_includesToken`` would never hit because the
+ * hyphenated needle never round-trips as a single haystack entry.
+ */
+function _includesAllTokens(haystackTokens, needle) {
+  if (!needle || typeof needle !== "string") return false;
+  const needleTokens = _normalizedTokens(needle);
+  if (!needleTokens.length) return false;
+  return needleTokens.every((t) => haystackTokens.includes(t));
+}
+
+/**
+ * Score a single Symbol-Template candidate against the LCSC Category leaf +
+ * pin-count + family hints (KONZEPT.md §3.4 SYMBOL block):
+ *
+ *   +0.5  name-token appears in the Category leaf
+ *         (e.g. ``Resistor_Std`` vs ``…/Resistors``)
+ *   +0.3  ``templatePinCounts[lib][name] === phase1.pinCount``
+ *         (cached TemplatePinCheck RPC result — caller-supplied)
+ *   +0.2  packageForm.family appears in the name (uncommon for Symbols)
+ *
+ * The threshold ``AUTO_MATCH_MIN_SCORE`` (0.6) is checked by the caller; this
+ * helper just adds up the contributions.
+ */
+function _scoreSymbolCandidate(name, libPath, phase1, templatePinCounts) {
+  const tokens = _normalizedTokens(name);
+  let score = 0;
+  const reasons = [];
+
+  const leafTokens = _categoryLeafTokens(phase1?.categoryPath);
+  if (leafTokens.length && tokens.some((t) => leafTokens.includes(t))) {
+    score += 0.5;
+    reasons.push("category leaf token");
+  }
+
+  const templatePinCount = _templatePinCountFor(libPath, name, templatePinCounts);
+  const easyedaPinCount = Number(phase1?.pinCount);
+  if (
+    Number.isFinite(templatePinCount)
+    && Number.isFinite(easyedaPinCount)
+    && templatePinCount > 0
+    && easyedaPinCount > 0
+    && templatePinCount === easyedaPinCount
+  ) {
+    score += 0.3;
+    reasons.push(`pin-count ${easyedaPinCount}`);
+  }
+
+  const family = phase1?.packageForm?.family;
+  if (typeof family === "string" && family && _includesToken(tokens, family)) {
+    score += 0.2;
+    reasons.push(`family "${family}"`);
+  }
+
+  return { score, reasons };
+}
+
+/**
+ * Score a single Footprint-Template candidate against the detected
+ * Package-Form (KONZEPT.md §3.4 FOOTPRINT block):
+ *
+ *   +0.7  ``packageForm.canonical`` appears as a token in the FP name
+ *         (e.g. ``R_0603_1608Metric`` vs ``0603``)
+ *   +0.2  ``packageForm.family`` matches a name token
+ *   +0.1  ``packageForm.pinSuffix`` matches a numeric token
+ */
+function _scoreFootprintCandidate(name, phase1) {
+  const tokens = _normalizedTokens(name);
+  const packageForm = phase1?.packageForm || {};
+  let score = 0;
+  const reasons = [];
+
+  const canonical = typeof packageForm.canonical === "string" ? packageForm.canonical : "";
+  if (canonical && _includesAllTokens(tokens, canonical)) {
+    score += 0.7;
+    reasons.push(`package "${canonical}"`);
+  }
+
+  const family = typeof packageForm.family === "string" ? packageForm.family : "";
+  if (family && family !== canonical && _includesAllTokens(tokens, family)) {
+    score += 0.2;
+    reasons.push(`family "${family}"`);
+  }
+
+  const pinSuffix = packageForm.pinSuffix;
+  if (Number.isFinite(pinSuffix) && pinSuffix > 0) {
+    if (tokens.includes(String(pinSuffix))) {
+      score += 0.1;
+      reasons.push(`pin-suffix ${pinSuffix}`);
+    }
+  }
+
+  return { score, reasons };
+}
+
+/**
+ * Auto-Template-Match heuristic — picks the best Template-Library candidate
+ * for a Layer when no Category Rule supplies one (KONZEPT.md §3.4). Never
+ * raises a result to 🟢: even at confidence 1.0 the heuristic is capped at
+ * 🟡 by ``computeConfidenceState`` (ADR-0006 AD-4).
+ *
+ * @param {"symbol" | "footprint"} layer
+ * @param {object} phase1                  Phase 1 Fetch result
+ * @param {object | null | undefined} libsByLayer  ``{libPath: string[]}`` map
+ * @param {{ templatePinCounts?: object | null }} [opts]
+ *        ``templatePinCounts[libPath][name]`` is the cached
+ *        TemplatePinCheck-RPC result. Optional; the Symbol scorer just
+ *        forgoes the +0.3 contribution when it's missing.
+ * @returns {LayerSuggestion | null}
+ */
+export function autoTemplateMatch(layer, phase1, libsByLayer, opts = {}) {
+  if (layer !== "symbol" && layer !== "footprint") return null;
+  if (!libsByLayer || typeof libsByLayer !== "object") return null;
+
+  const templatePinCounts =
+    opts && typeof opts.templatePinCounts === "object" ? opts.templatePinCounts : null;
+
+  let best = null;
+  for (const libPath of Object.keys(libsByLayer)) {
+    const names = libsByLayer[libPath];
+    if (!Array.isArray(names)) continue;
+    for (const name of names) {
+      if (typeof name !== "string" || !name) continue;
+      const scored =
+        layer === "symbol"
+          ? _scoreSymbolCandidate(name, libPath, phase1, templatePinCounts)
+          : _scoreFootprintCandidate(name, phase1);
+      if (scored.score < AUTO_MATCH_MIN_SCORE) continue;
+      if (best == null || scored.score > best.score) {
+        best = { libPath, name, ...scored };
+      }
+    }
+  }
+  if (best == null) return null;
+  return {
+    layer,
+    choice: { source: "template", libPath: best.libPath, name: best.name },
+    confidence: Math.min(1, best.score),
+    reasons: best.reasons,
+    source: "auto-template-match",
+  };
 }
 
 /**
@@ -156,6 +343,8 @@ export function matchComponentRule(phase1, state) {
   const categoryPath = normalizeCategoryPath(phase1?.categoryPath);
   const categorySettings = state?.categorySettings || null;
   const templateSymbolsByLib = state?.templateSymbolsByLib || null;
+  const templateFootprintsByLib = state?.templateFootprintsByLib || null;
+  const templatePinCounts = state?.templatePinCounts || null;
 
   const resolved = resolveDeepestPrefixRule(categoryPath, categorySettings);
   const rule = resolved?.rule || null;
@@ -166,13 +355,8 @@ export function matchComponentRule(phase1, state) {
   );
   const labelsMapped = hasLabelMappingEntries(rule?.labelMapping);
 
-  const guards = {
-    pinCountOk: true,
-    packageFormOk: true,
-    templatesResolvable: symbolTemplateResolvable,
-    pinPadResolvable: true,
-    overwriteClear: true,
-  };
+  const phase1Normalized = { ...(phase1 || {}), categoryPath };
+  const autoMatchOpts = { templatePinCounts };
 
   let symbol;
   let footprint;
@@ -194,10 +378,34 @@ export function matchComponentRule(phase1, state) {
       "footprint follow-up slice — EasyEDA default",
     );
   } else {
+    // ⚪/🟡 path: no Rule (or the Rule's symbol template went missing) —
+    // try the Auto-Template-Match heuristic so the Panel can preview a
+    // sensible candidate. Heuristic-only suggestions are capped at 🟡 by
+    // ``computeConfidenceState`` (ADR-0006 AD-4).
+    const symbolAuto = autoTemplateMatch(
+      "symbol",
+      phase1Normalized,
+      templateSymbolsByLib,
+      autoMatchOpts,
+    );
+    const footprintAuto = autoTemplateMatch(
+      "footprint",
+      phase1Normalized,
+      templateFootprintsByLib,
+      autoMatchOpts,
+    );
     const fallbackReason = resolved ? null : "no Category Rule registered";
-    symbol = easyedaFallback("symbol", fallbackReason);
-    footprint = easyedaFallback("footprint", fallbackReason);
+    symbol = symbolAuto || easyedaFallback("symbol", fallbackReason);
+    footprint = footprintAuto || easyedaFallback("footprint", fallbackReason);
   }
+
+  const guards = {
+    pinCountOk: true,
+    packageFormOk: true,
+    templatesResolvable: symbolTemplateResolvable,
+    pinPadResolvable: true,
+    overwriteClear: true,
+  };
 
   // MVP (Symbol-first): green decides on the Symbol Layer alone; the
   // Footprint Layer's EasyEDA fallback must NOT drag the aggregate
@@ -214,6 +422,9 @@ export function matchComponentRule(phase1, state) {
     labelsMapped,
     footprintResolved: footprint.source !== "easyeda-fallback",
     confidence: aggregateConfidence,
+    heuristicMatch:
+      symbol.source === "auto-template-match"
+      || footprint.source === "auto-template-match",
   };
 
   const stateName = computeConfidenceState(rule, symbol, footprint, factors);
@@ -255,8 +466,15 @@ export function matchComponentRule(phase1, state) {
  * @returns {"green" | "yellow" | "white"}
  */
 export function computeConfidenceState(rule, _symbol, _footprint, factors) {
-  if (!rule) return "white";
   const f = factors || {};
+  if (!rule) {
+    // ⚪/🟡 split for the rule-less branch (Issue #31, ADR-0006 AD-4):
+    // a Heuristik-Match (Auto-Template-Match suggestion that cleared the
+    // ``AUTO_MATCH_MIN_SCORE`` floor) raises the state to 🟡 so the user
+    // sees a Low-Confidence preview instead of the bare Register-Prompt.
+    // Without any heuristic hit we stay ⚪ white → Register-Prompt.
+    return f.heuristicMatch === true ? "yellow" : "white";
+  }
   const greenReady =
     f.ruleResolved === true
     && f.categoryResolved === true
@@ -265,8 +483,9 @@ export function computeConfidenceState(rule, _symbol, _footprint, factors) {
     && typeof f.confidence === "number"
     && f.confidence >= GREEN_CONFIDENCE_THRESHOLD;
   if (greenReady) return "green";
-  // 🟡 placeholder — #31 splits this band into the keepEasyeda vs
-  // openEditor user-setting. Until then any resolved rule that misses an
-  // MVP factor lands here so we never silently grant a 🟢 one-click.
+  // 🟡 — registered Rule but at least one MVP factor is missing or the
+  // aggregate confidence is below ``GREEN_CONFIDENCE_THRESHOLD``. The
+  // panel branches further on the user's ``lowConfidenceBehaviour``
+  // setting (keep EasyEDA vs open Import-Editor).
   return "yellow";
 }
