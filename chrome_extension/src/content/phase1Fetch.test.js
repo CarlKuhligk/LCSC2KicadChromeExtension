@@ -102,6 +102,9 @@ describe("wirePhase1Download", () => {
     expect(seen.calls[0].hints).toEqual({
       categoryPath: "Passives/Resistors",
       datasheetUrl: "https://datasheet.example/C22548.pdf",
+      // Issue #31 — package hint feeds the Native Host's package_form
+      // detector + the JS-side Auto-Template-Match footprint scorer.
+      package: null,
     });
   });
 
@@ -212,6 +215,7 @@ describe("wirePhase1Download", () => {
     expect(seen.hints).toEqual({
       categoryPath: "Passives/Resistors/Chip Resistor - Surface Mount",
       datasheetUrl: "https://datasheet.example/C22548.pdf",
+      package: "0603",
     });
   });
 

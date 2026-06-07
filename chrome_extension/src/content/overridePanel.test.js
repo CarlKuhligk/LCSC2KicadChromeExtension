@@ -27,6 +27,10 @@ import {
   OVERRIDE_IMPORT_ATTR,
   OVERRIDE_MODIFY_ATTR,
   OVERRIDE_ONECLICK_PREVIEW_ATTR,
+  OVERRIDE_YELLOW_KEEP_EASYEDA_ATTR,
+  OVERRIDE_YELLOW_OPEN_EDITOR_ATTR,
+  OVERRIDE_YELLOW_HINT_ATTR,
+  buildYellowPanel,
   EASYEDA_OPTION_VALUE,
 } from "./overridePanel.js";
 import { buildAnchorCardRow, ANCHOR_ROW_ATTR } from "./anchorCard.js";
@@ -702,13 +706,143 @@ describe("renderOverridePanel — green state", () => {
     ).toBe(1);
   });
 
-  it("non-green states still get the legacy sources panel (back-compat)", () => {
+  it("yellow + keepEasyeda renders the Low-Confidence panel (Issue #31)", () => {
     const row = mountAnchorRow();
     const panel = renderOverridePanel(row, {
       match: { state: "yellow", ruleKey: "Passives/Resistors", rule: GREEN_RULE },
+      lowConfidenceBehaviour: "keepEasyeda",
+      templateLibs: EMPTY_LIBS,
+    });
+    expect(panel.getAttribute(OVERRIDE_PANEL_MODE_ATTR)).toBe("yellow");
+    expect(panel.querySelector(`[${OVERRIDE_YELLOW_KEEP_EASYEDA_ATTR}]`)).toBeTruthy();
+    expect(panel.querySelector(`[${OVERRIDE_YELLOW_OPEN_EDITOR_ATTR}]`)).toBeTruthy();
+    expect(panel.querySelector(`[${OVERRIDE_IMPORT_ATTR}]`)).toBeNull();
+  });
+
+  it("an unrecognised state falls through to the legacy sources panel (back-compat)", () => {
+    const row = mountAnchorRow();
+    const panel = renderOverridePanel(row, {
+      match: { state: "unknown", ruleKey: "Passives/Resistors", rule: GREEN_RULE },
       templateLibs: EMPTY_LIBS,
     });
     expect(panel.getAttribute(OVERRIDE_PANEL_MODE_ATTR)).toBe("sources");
-    expect(panel.querySelector(`[${OVERRIDE_IMPORT_ATTR}]`)).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  🟡 Low-Confidence panel — Issue #31, ADR-0006 §3.5                         */
+/* -------------------------------------------------------------------------- */
+
+describe("buildYellowPanel", () => {
+  it("renders a Vorschlag-hint when the matcher surfaced an auto-template-match symbol", () => {
+    const panel = buildYellowPanel(document, {
+      match: {
+        symbol: {
+          source: "auto-template-match",
+          choice: { source: "template", libPath: "/x/Lib.kicad_sym", name: "Resistor_Std" },
+        },
+        footprint: { source: "easyeda-fallback" },
+      },
+    });
+    const hint = panel.querySelector(`[${OVERRIDE_YELLOW_HINT_ATTR}]`);
+    expect(hint?.textContent).toMatch(/Symbol/);
+    expect(hint?.textContent).toMatch(/Resistor_Std/);
+  });
+
+  it("renders both keep-EasyEDA and open-editor buttons", () => {
+    const panel = buildYellowPanel(document, {});
+    expect(panel.querySelector(`[${OVERRIDE_YELLOW_KEEP_EASYEDA_ATTR}]`)).toBeTruthy();
+    expect(panel.querySelector(`[${OVERRIDE_YELLOW_OPEN_EDITOR_ATTR}]`)).toBeTruthy();
+  });
+
+  it("marks the panel mode 'yellow'", () => {
+    const panel = buildYellowPanel(document, {});
+    expect(panel.getAttribute(OVERRIDE_PANEL_MODE_ATTR)).toBe("yellow");
+  });
+});
+
+describe("renderOverridePanel — 🟡 yellow dispatch (Issue #31)", () => {
+  it("opens the editor immediately when state=yellow + default (openEditor)", () => {
+    const row = mountAnchorRow();
+    let modifyCalled = false;
+    const panel = renderOverridePanel(row, {
+      match: { state: "yellow", ruleKey: "Passives/Resistors", rule: { symbolSource: {} } },
+      onModify: () => { modifyCalled = true; },
+    });
+    // openEditor branch returns null without mounting a panel — caller
+    // is expected to render the Import-Editor in its onModify callback.
+    expect(panel).toBeNull();
+    expect(modifyCalled).toBe(true);
+    expect(
+      row.parentNode.querySelector(`[${OVERRIDE_PANEL_ATTR}="true"]`),
+    ).toBeNull();
+  });
+
+  it("opens the editor when lowConfidenceBehaviour is missing entirely (Default)", () => {
+    const row = mountAnchorRow();
+    let modifyCalled = false;
+    renderOverridePanel(row, {
+      match: { state: "yellow", rule: {} },
+      onModify: () => { modifyCalled = true; },
+    });
+    expect(modifyCalled).toBe(true);
+  });
+
+  it("mounts the keepEasyeda panel when lowConfidenceBehaviour='keepEasyeda'", () => {
+    const row = mountAnchorRow();
+    let modifyCalled = false;
+    const panel = renderOverridePanel(row, {
+      match: { state: "yellow", rule: {} },
+      lowConfidenceBehaviour: "keepEasyeda",
+      onModify: () => { modifyCalled = true; },
+    });
+    expect(modifyCalled).toBe(false);
+    expect(panel?.getAttribute(OVERRIDE_PANEL_MODE_ATTR)).toBe("yellow");
+  });
+
+  it("[EasyEDA übernehmen] fires onEasyedaOnly and removes the panel", () => {
+    const row = mountAnchorRow();
+    let easyedaOnlyCalls = 0;
+    const panel = renderOverridePanel(row, {
+      match: { state: "yellow", rule: {} },
+      lowConfidenceBehaviour: "keepEasyeda",
+      onEasyedaOnly: () => { easyedaOnlyCalls += 1; },
+    });
+    const keepBtn = panel.querySelector(`[${OVERRIDE_YELLOW_KEEP_EASYEDA_ATTR}]`);
+    keepBtn.click();
+    expect(easyedaOnlyCalls).toBe(1);
+    expect(
+      row.parentNode.querySelector(`[${OVERRIDE_PANEL_ATTR}="true"]`),
+    ).toBeNull();
+  });
+
+  it("[EasyEDA übernehmen] falls back to onConfirm with EasyEDA on both Layers", () => {
+    const row = mountAnchorRow();
+    let confirmedOverrides = null;
+    const panel = renderOverridePanel(row, {
+      match: { state: "yellow", rule: {} },
+      lowConfidenceBehaviour: "keepEasyeda",
+      onConfirm: (overrides) => { confirmedOverrides = overrides; },
+    });
+    panel.querySelector(`[${OVERRIDE_YELLOW_KEEP_EASYEDA_ATTR}]`).click();
+    expect(confirmedOverrides).toEqual({
+      symbol: { source: "easyeda" },
+      footprint: { source: "easyeda" },
+    });
+  });
+
+  it("[Editor öffnen] fires onModify and removes the panel", () => {
+    const row = mountAnchorRow();
+    let modifyCalls = 0;
+    const panel = renderOverridePanel(row, {
+      match: { state: "yellow", rule: {} },
+      lowConfidenceBehaviour: "keepEasyeda",
+      onModify: () => { modifyCalls += 1; },
+    });
+    panel.querySelector(`[${OVERRIDE_YELLOW_OPEN_EDITOR_ATTR}]`).click();
+    expect(modifyCalls).toBe(1);
+    expect(
+      row.parentNode.querySelector(`[${OVERRIDE_PANEL_ATTR}="true"]`),
+    ).toBeNull();
   });
 });

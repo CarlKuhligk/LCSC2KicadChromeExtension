@@ -119,6 +119,28 @@ def test_fetch_metadata_returns_none_category_when_no_hint() -> None:
     assert result["categoryPath"] is None
 
 
+def test_fetch_metadata_detects_package_form_from_hint() -> None:
+    """V3 Confidence-Pipeline (Issue #31): Phase 1 surfaces ``packageForm`` so
+    the JS-side Auto-Template-Match heuristic can score footprint
+    suggestions against the LCSC ``Package`` cell. ``0603`` collapses to
+    the canonical imperial chip code."""
+    result = fetch_metadata(
+        "C22548",
+        {"package": "0603(1608 Metric)"},
+        cad_fetcher=_stub_fetcher(SAMPLE_C22548_CAD),
+    )
+    assert result["packageForm"]["canonical"] == "0603"
+    assert result["packageForm"]["family"] == "0603"
+    assert result["packageForm"]["confidence"] == 1.0
+
+
+def test_fetch_metadata_packageform_empty_when_no_hint() -> None:
+    result = fetch_metadata("C22548", cad_fetcher=_stub_fetcher(SAMPLE_C22548_CAD))
+    assert result["packageForm"]["canonical"] == ""
+    assert result["packageForm"]["family"] is None
+    assert result["packageForm"]["confidence"] == 0
+
+
 def test_fetch_metadata_rejects_missing_lcsc_id() -> None:
     with pytest.raises(ValueError):
         fetch_metadata("")
@@ -151,6 +173,7 @@ def test_fetch_metadata_does_not_propagate_cad_fetcher_errors() -> None:
         "categoryPath": "Passives/Resistors",
         "pinCount": 0,
         "datasheetUrl": "https://x/y.pdf",
+        "packageForm": {"canonical": "", "family": None, "raw": "", "confidence": 0},
     }
 
 

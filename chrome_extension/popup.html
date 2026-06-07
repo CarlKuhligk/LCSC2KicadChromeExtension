@@ -173,6 +173,19 @@
                 </div>
                 <div class="row g-3 settings-section-body">
                   <div class="col-12">
+                    <!-- Issue #31 — 🟡 Low-Confidence Behaviour (ADR-0006). Sits at the top
+                         of "Import defaults" because it gates the most visible Override Panel
+                         branch: when the matcher returns yellow, do we keep EasyEDA with a hint
+                         or open the Import-Editor? -->
+                    <label class="form-label settings-subfield-label"
+                      for="settings-low-confidence"
+                      title="Bei niedriger Confidence: Import-Editor öffnen (Default) oder EasyEDA behalten + Hinweis anzeigen.">Low-Confidence behaviour</label>
+                    <select class="form-select form-select-sm" id="settings-low-confidence">
+                      <option value="openEditor">Open Import-Editor</option>
+                      <option value="keepEasyeda">Keep EasyEDA + hint</option>
+                    </select>
+                    <div class="form-text">Applies when a Category Rule exists but a factor is missing, or when the Auto-Template-Match heuristic finds a candidate without a registered Rule.</div>
+                    <hr class="my-3" />
                     <div class="form-check form-switch">
                       <input class="form-check-input" type="checkbox" id="settings-overwrite" />
                       <label class="form-check-label" for="settings-overwrite">Overwrite footprints &amp; symbols by

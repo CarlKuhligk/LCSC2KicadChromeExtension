@@ -4714,6 +4714,10 @@ function attachButton(lcscId) {
       onPhase1Ok: async (phase1Result) => {
         let templateLibs = {};
         let templateLibsFootprints = {};
+        // Issue #31 — 🟡 Low-Confidence behaviour persists in popup
+        // Settings → ``lowConfidenceBehaviour`` (keepEasyeda | openEditor).
+        // Default is openEditor; missing snapshot falls back to it too.
+        let lowConfidenceBehaviour = "openEditor";
         try {
           // Force a refresh via the Native Host (V3 path) so a freshly added
           // template library populates without waiting for a popup-close →
@@ -4722,11 +4726,23 @@ function attachButton(lcscId) {
           if (refreshed?.ok && refreshed.data) {
             templateLibs = refreshed.data.templateSymbolsByLib || {};
             templateLibsFootprints = refreshed.data.templateFootprintsByLib || {};
+            if (typeof refreshed.data.lowConfidenceBehaviour === "string") {
+              lowConfidenceBehaviour =
+                refreshed.data.lowConfidenceBehaviour === "keepEasyeda"
+                  ? "keepEasyeda"
+                  : "openEditor";
+            }
           } else {
             const state = await contentRpc("getState", {}, k2cRpc(2, 200));
             if (state?.ok && state.data) {
               templateLibs = state.data.templateSymbolsByLib || {};
               templateLibsFootprints = state.data.templateFootprintsByLib || {};
+              if (typeof state.data.lowConfidenceBehaviour === "string") {
+                lowConfidenceBehaviour =
+                  state.data.lowConfidenceBehaviour === "keepEasyeda"
+                    ? "keepEasyeda"
+                    : "openEditor";
+              }
             }
           }
         } catch (e) {
@@ -4874,6 +4890,7 @@ function attachButton(lcscId) {
         };
         renderOverridePanel(anchorRow, {
           match,
+          lowConfidenceBehaviour,
           templateLibs,
           templateLibsFootprints,
           onEasyedaOnly: runEasyedaPhase2,

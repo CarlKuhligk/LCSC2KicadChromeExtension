@@ -121,6 +121,7 @@ export function wirePhase1Download(anchorRow, lcscId, deps) {
       pageHints = {
         categoryPath: typeof snap.category === "string" ? snap.category : null,
         datasheetUrl: typeof snap.datasheetUrl === "string" ? snap.datasheetUrl : null,
+        package: typeof snap.package === "string" ? snap.package : null,
       };
     } catch (e) {
       log("phase1: snapshot failed", e);

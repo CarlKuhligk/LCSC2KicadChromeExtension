@@ -28,6 +28,7 @@ import re
 from typing import Any, Callable
 
 from easyeda2kicad.helpers import normalize_category_path
+from easyeda2kicad.package_form import detect_package_form
 
 _LCSC_ID_RE = re.compile(r"^C\d+$")
 
@@ -89,6 +90,21 @@ def _pin_count_from_cad(cad: dict[str, Any]) -> int | None:
     return _count_pins_in_data_str(data_str)
 
 
+def _footprint_name_from_cad(cad: dict[str, Any]) -> str | None:
+    """Pull the EasyEDA package title (``packageDetail.title``) as a footprint
+    hint for ``detect_package_form``. Best-effort: many EasyEDA payloads only
+    carry the LCSC ``Package`` cell, which the page hint already covers."""
+    if not isinstance(cad, dict):
+        return None
+    package_detail = cad.get("packageDetail")
+    if not isinstance(package_detail, dict):
+        return None
+    title = package_detail.get("title")
+    if isinstance(title, str) and title.strip():
+        return title.strip()
+    return None
+
+
 def fetch_metadata(
     lcsc_id: Any,
     page_hints: dict[str, Any] | None = None,
@@ -133,9 +149,11 @@ def fetch_metadata(
 
     hint_category: Any = None
     hint_datasheet: Any = None
+    hint_package: Any = None
     if isinstance(page_hints, dict):
         hint_category = page_hints.get("categoryPath")
         hint_datasheet = page_hints.get("datasheetUrl")
+        hint_package = page_hints.get("package")
 
     category_path = normalize_category_path(hint_category) or None
     datasheet_url = (
@@ -146,9 +164,18 @@ def fetch_metadata(
     if isinstance(datasheet_url, str):
         datasheet_url = datasheet_url.strip() or None
 
+    raw_package = hint_package if isinstance(hint_package, str) else ""
+    footprint_name = _footprint_name_from_cad(cad)
+    package_form = detect_package_form(
+        raw_package,
+        footprint_name=footprint_name,
+        pin_count=pin_count if pin_count else None,
+    )
+
     return {
         "lcscId": normalized_id,
         "categoryPath": category_path,
         "pinCount": pin_count,
         "datasheetUrl": datasheet_url,
+        "packageForm": package_form,
     }

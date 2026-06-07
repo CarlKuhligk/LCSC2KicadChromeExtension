@@ -6,6 +6,8 @@ import { dirname, resolve } from "node:path";
 import {
   matchComponentRule,
   computeConfidenceState,
+  autoTemplateMatch,
+  AUTO_MATCH_MIN_SCORE,
   EASYEDA_FALLBACK_CONFIDENCE,
   GREEN_CONFIDENCE_THRESHOLD,
 } from "./confidenceState.mjs";
@@ -72,6 +74,210 @@ describe("computeConfidenceState", () => {
 
   it("returns 'yellow' when factors are missing entirely (no green claim from a bare rule)", () => {
     expect(computeConfidenceState({ x: 1 }, {}, {}, {})).toBe("yellow");
+  });
+
+  it("returns 'yellow' for rule=null + heuristicMatch=true (Auto-Template-Match without Rule)", () => {
+    // Issue #31, ADR-0006 AD-4: a Heuristik-Match (Auto-Template-Match
+    // suggestion above ``AUTO_MATCH_MIN_SCORE``) lifts ⚪ → 🟡 so the panel
+    // can show a Low-Confidence preview. Never green — that requires a
+    // registered Rule.
+    expect(
+      computeConfidenceState(null, {}, {}, { heuristicMatch: true, confidence: 1.0 }),
+    ).toBe("yellow");
+  });
+
+  it("returns 'white' for rule=null + heuristicMatch missing (no usable preview)", () => {
+    expect(
+      computeConfidenceState(null, {}, {}, { confidence: EASYEDA_FALLBACK_CONFIDENCE }),
+    ).toBe("white");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  autoTemplateMatch — KONZEPT §3.4, Issue #31                                */
+/* -------------------------------------------------------------------------- */
+
+describe("autoTemplateMatch (symbol)", () => {
+  const SYMBOL_LIB = "/templates/StdLib.kicad_sym";
+  const SYMBOL_LIBS = { [SYMBOL_LIB]: ["Resistor_Std", "Capacitor_Std", "MCU_Big"] };
+
+  it("returns null when no template library is registered", () => {
+    expect(
+      autoTemplateMatch("symbol", { categoryPath: "Passives/Resistors" }, null),
+    ).toBeNull();
+  });
+
+  it("name-token alone scores 0.5 — below the 0.6 floor (KONZEPT §3.4)", () => {
+    // Only the +0.5 leaf-token contribution fires; the heuristic refuses to
+    // surface a candidate until a second signal (pin-count or family) joins.
+    const suggestion = autoTemplateMatch(
+      "symbol",
+      { categoryPath: "Passives/Resistor" },
+      SYMBOL_LIBS,
+    );
+    expect(suggestion).toBeNull();
+  });
+
+  it("name-token + pin-count match clears the floor and surfaces the candidate", () => {
+    const suggestion = autoTemplateMatch(
+      "symbol",
+      { categoryPath: "Passives/Resistor", pinCount: 2 },
+      SYMBOL_LIBS,
+      { templatePinCounts: { [SYMBOL_LIB]: { Resistor_Std: 2 } } },
+    );
+    expect(suggestion?.choice).toEqual({
+      source: "template",
+      libPath: SYMBOL_LIB,
+      name: "Resistor_Std",
+    });
+    expect(suggestion.source).toBe("auto-template-match");
+    expect(suggestion.confidence).toBeGreaterThanOrEqual(AUTO_MATCH_MIN_SCORE);
+  });
+
+  it("scores leaf-token + pin-count at 0.8 and lists both reasons", () => {
+    const suggestion = autoTemplateMatch(
+      "symbol",
+      { categoryPath: "Passives/Resistor", pinCount: 2 },
+      SYMBOL_LIBS,
+      { templatePinCounts: { [SYMBOL_LIB]: { Resistor_Std: 2, Capacitor_Std: 2 } } },
+    );
+    expect(suggestion?.confidence).toBeCloseTo(0.8, 5);
+    expect(suggestion.reasons).toEqual(
+      expect.arrayContaining(["category leaf token", "pin-count 2"]),
+    );
+  });
+
+  it("never picks a candidate when its score falls below the 0.6 threshold", () => {
+    // Pin-count alone is +0.3 — below the floor.
+    const suggestion = autoTemplateMatch(
+      "symbol",
+      { categoryPath: "Unknown/Category", pinCount: 2 },
+      SYMBOL_LIBS,
+      { templatePinCounts: { [SYMBOL_LIB]: { Resistor_Std: 2 } } },
+    );
+    expect(suggestion).toBeNull();
+  });
+});
+
+describe("autoTemplateMatch (footprint)", () => {
+  const FP_LIB = "/templates/StdLib.kicad_sym";
+  const FP_LIBS = { [FP_LIB]: ["R_0603_1608Metric", "R_0805", "SOT-23-3"] };
+
+  it("uses packageForm.canonical for the +0.7 token match", () => {
+    const suggestion = autoTemplateMatch(
+      "footprint",
+      { packageForm: { canonical: "0603", family: "0603" } },
+      FP_LIBS,
+    );
+    expect(suggestion?.choice).toEqual({
+      source: "template",
+      libPath: FP_LIB,
+      name: "R_0603_1608Metric",
+    });
+    expect(suggestion.confidence).toBeCloseTo(0.7, 5);
+    expect(suggestion.source).toBe("auto-template-match");
+  });
+
+  it("adds family + pinSuffix contributions for SOT-style packages", () => {
+    const suggestion = autoTemplateMatch(
+      "footprint",
+      {
+        packageForm: { canonical: "SOT-23-3", family: "SOT-23", pinSuffix: 3 },
+      },
+      FP_LIBS,
+    );
+    // canonical "sot-23-3" doesn't tokenise to a single haystack token; the
+    // tokens after splitting are ["sot","23","3"]. Family "sot-23" -> ["sot","23"]
+    // matches name tokens. PinSuffix 3 matches token "3".
+    expect(suggestion?.choice.name).toBe("SOT-23-3");
+    expect(suggestion.confidence).toBeGreaterThanOrEqual(AUTO_MATCH_MIN_SCORE);
+  });
+
+  it("returns null when nothing crosses the 0.6 floor", () => {
+    const suggestion = autoTemplateMatch(
+      "footprint",
+      { packageForm: { canonical: "QFN-48" } },
+      FP_LIBS,
+    );
+    expect(suggestion).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  matchComponentRule — 🟡 yellow-state slice (Issue #31)                     */
+/* -------------------------------------------------------------------------- */
+
+describe("matchComponentRule (yellow-state slice)", () => {
+  const LIB = "/templates/StdLib.kicad_sym";
+
+  it("returns state='yellow' when no Rule matches but Auto-Template-Match finds a footprint", () => {
+    const result = matchComponentRule(
+      {
+        categoryPath: "Passives/Resistors",
+        packageForm: { canonical: "0603", family: "0603" },
+      },
+      {
+        categorySettings: {},
+        templateSymbolsByLib: {},
+        templateFootprintsByLib: { [LIB]: ["R_0603_1608Metric"] },
+      },
+    );
+    expect(result.state).toBe("yellow");
+    expect(result.footprint.source).toBe("auto-template-match");
+    expect(result.footprint.choice).toEqual({
+      source: "template",
+      libPath: LIB,
+      name: "R_0603_1608Metric",
+    });
+    expect(result.ruleKey).toBeNull();
+  });
+
+  it("returns state='yellow' when no Rule matches but Auto-Template-Match finds a symbol", () => {
+    const result = matchComponentRule(
+      { categoryPath: "Passives/Resistor", pinCount: 2 },
+      {
+        categorySettings: {},
+        templateSymbolsByLib: { [LIB]: ["Resistor_Std"] },
+        templatePinCounts: { [LIB]: { Resistor_Std: 2 } },
+      },
+    );
+    expect(result.state).toBe("yellow");
+    expect(result.symbol.source).toBe("auto-template-match");
+    expect(result.symbol.choice.name).toBe("Resistor_Std");
+  });
+
+  it("stays state='white' when no Rule + no heuristic candidate clears 0.6", () => {
+    const result = matchComponentRule(
+      { categoryPath: "Sensors/Specialty", pinCount: 4 },
+      {
+        categorySettings: {},
+        templateSymbolsByLib: { [LIB]: ["Resistor_Std"] },
+        templateFootprintsByLib: { [LIB]: ["R_0603"] },
+      },
+    );
+    expect(result.state).toBe("white");
+    expect(result.symbol.source).toBe("easyeda-fallback");
+    expect(result.footprint.source).toBe("easyeda-fallback");
+  });
+
+  it("Heuristik-Match alone never raises to 🟢 (ADR-0006 AD-4)", () => {
+    // Cap the auto-template match at confidence ≤ 1; even at 1.0 the lack
+    // of a registered Rule forces 🟡 yellow, never 🟢 green.
+    const result = matchComponentRule(
+      {
+        categoryPath: "Passives/Resistor",
+        pinCount: 2,
+        packageForm: { canonical: "0603", family: "0603" },
+      },
+      {
+        categorySettings: {},
+        templateSymbolsByLib: { [LIB]: ["Resistor_0603_Std"] },
+        templateFootprintsByLib: { [LIB]: ["R_0603_1608Metric"] },
+        templatePinCounts: { [LIB]: { Resistor_0603_Std: 2 } },
+      },
+    );
+    expect(result.state).not.toBe("green");
+    expect(result.state).toBe("yellow");
   });
 });
 
@@ -319,7 +525,8 @@ describe("classic-script confidenceState.js parity", () => {
   );
   const factory = new Function(
     `${categoryClassicSrc}\n${classicSrc}\n` +
-      "return { matchComponentRule, computeConfidenceState, EASYEDA_FALLBACK_CONFIDENCE, GREEN_CONFIDENCE_THRESHOLD };",
+      "return { matchComponentRule, computeConfidenceState, autoTemplateMatch, " +
+      "EASYEDA_FALLBACK_CONFIDENCE, GREEN_CONFIDENCE_THRESHOLD, AUTO_MATCH_MIN_SCORE };",
   );
   const classic = factory();
 
@@ -362,6 +569,28 @@ describe("classic-script confidenceState.js parity", () => {
         templateSymbolsByLib: {},
       },
     ],
+    // 🟡 Issue #31 — no Rule but Auto-Template-Match finds a footprint.
+    [
+      {
+        categoryPath: "Passives/Resistors",
+        packageForm: { canonical: "0603", family: "0603" },
+      },
+      {
+        categorySettings: {},
+        templateSymbolsByLib: {},
+        templateFootprintsByLib: { [GREEN_LIB]: ["R_0603_1608Metric"] },
+      },
+    ],
+    // 🟡 Issue #31 — no Rule but Auto-Template-Match finds a symbol via
+    // category leaf + cached TemplatePinCheck.
+    [
+      { categoryPath: "Passives/Resistor", pinCount: 2 },
+      {
+        categorySettings: {},
+        templateSymbolsByLib: { [GREEN_LIB]: ["Resistor_Std"] },
+        templatePinCounts: { [GREEN_LIB]: { Resistor_Std: 2 } },
+      },
+    ],
   ];
 
   it("EASYEDA_FALLBACK_CONFIDENCE matches the ESM", () => {
@@ -370,6 +599,21 @@ describe("classic-script confidenceState.js parity", () => {
 
   it("GREEN_CONFIDENCE_THRESHOLD matches the ESM", () => {
     expect(classic.GREEN_CONFIDENCE_THRESHOLD).toBe(GREEN_CONFIDENCE_THRESHOLD);
+  });
+
+  it("AUTO_MATCH_MIN_SCORE matches the ESM", () => {
+    expect(classic.AUTO_MATCH_MIN_SCORE).toBe(AUTO_MATCH_MIN_SCORE);
+  });
+
+  it("autoTemplateMatch matches the ESM for symbol + footprint cases", () => {
+    const sym = ["symbol", { categoryPath: "Passives/Resistor", pinCount: 2 },
+      { [GREEN_LIB]: ["Resistor_Std"] },
+      { templatePinCounts: { [GREEN_LIB]: { Resistor_Std: 2 } } }];
+    expect(classic.autoTemplateMatch(...sym)).toEqual(autoTemplateMatch(...sym));
+    const fp = ["footprint",
+      { packageForm: { canonical: "0603", family: "0603" } },
+      { [GREEN_LIB]: ["R_0603_1608Metric"] }];
+    expect(classic.autoTemplateMatch(...fp)).toEqual(autoTemplateMatch(...fp));
   });
 
   it("computeConfidenceState matches the ESM for null / yellow / green factor sets", () => {

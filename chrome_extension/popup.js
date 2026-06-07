@@ -188,6 +188,7 @@ const state = {
     projectRelative: false,
     projectRelativePath: "",
     categorySettings: {},
+    lowConfidenceBehaviour: "openEditor",
   },
   templateSymbols: [],
   ready: false,
@@ -335,6 +336,7 @@ function cacheElements() {
   elements.settingsProjectRelative = document.getElementById("settings-project-relative");
   elements.settingsProjectRelativePathGroup = document.getElementById("settings-project-relative-path-group");
   elements.settingsProjectRelativePath = document.getElementById("settings-project-relative-path");
+  elements.settingsLowConfidence = document.getElementById("settings-low-confidence");
   elements.themeOptions = Array.from(document.querySelectorAll(".theme-option"));
 
   // Modals shared
@@ -577,6 +579,10 @@ function applyState(snapshot = {}) {
   }
   if (typeof snapshot.projectRelativePath === "string") {
     state.settings.projectRelativePath = snapshot.projectRelativePath;
+  }
+  if (typeof snapshot.lowConfidenceBehaviour === "string") {
+    state.settings.lowConfidenceBehaviour =
+      snapshot.lowConfidenceBehaviour === "keepEasyeda" ? "keepEasyeda" : "openEditor";
   }
   if (snapshot.categorySettings && typeof snapshot.categorySettings === "object") {
     state.settings.categorySettings = dedupeCategorySettings({ ...snapshot.categorySettings });
@@ -989,6 +995,10 @@ function renderSettings() {
   elements.settingsProjectRelative.checked = state.settings.projectRelative;
   if (elements.settingsProjectRelativePath && !elements.settingsProjectRelativePath.matches(":focus")) {
     elements.settingsProjectRelativePath.value = state.settings.projectRelativePath || "";
+  }
+  if (elements.settingsLowConfidence) {
+    elements.settingsLowConfidence.value =
+      state.settings.lowConfidenceBehaviour === "keepEasyeda" ? "keepEasyeda" : "openEditor";
   }
   toggleSettingsProjectPath();
   renderCategoryTable();
@@ -1628,6 +1638,8 @@ function handleSettingsChange() {
     !== extensionWsEndpointKeyFromBaseUrl(state.settings.serverUrl)
       ? { serverUrl: resolvedServerUrl }
       : {};
+  const lowConfidenceBehaviour =
+    elements.settingsLowConfidence?.value === "keepEasyeda" ? "keepEasyeda" : "openEditor";
   const payload = {
     ...serverUrlPayload,
     overwriteFootprints: elements.settingsOverwrite.checked,
@@ -1635,10 +1647,12 @@ function handleSettingsChange() {
     debugLogs: elements.settingsDebug.checked,
     projectRelative: elements.settingsProjectRelative.checked,
     projectRelativePath,
+    lowConfidenceBehaviour,
     categorySettings,
   };
   state.settings.projectRelative = payload.projectRelative;
   state.settings.projectRelativePath = projectRelativePath;
+  state.settings.lowConfidenceBehaviour = lowConfidenceBehaviour;
   state.settings.categorySettings = categorySettings;
   saveUiPreferences();
   sendMessage("updateSettings", payload)
