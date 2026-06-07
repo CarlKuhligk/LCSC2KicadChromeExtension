@@ -2,16 +2,27 @@ import { describe, it, expect, beforeEach } from "vitest";
 import {
   buildOverridePanel,
   buildRegisterPrompt,
+  buildRegisterImportEditor,
   renderOverridePanel,
+  renderRegisterImportEditor,
+  collectRegisterEditorRule,
   selectionToOverrides,
   OVERRIDE_PANEL_ATTR,
   OVERRIDE_PANEL_MODE_ATTR,
+  OVERRIDE_PANEL_ROW_ATTR,
   OVERRIDE_SYMBOL_SELECT_ATTR,
   OVERRIDE_FOOTPRINT_SELECT_ATTR,
   OVERRIDE_CONFIRM_ATTR,
   OVERRIDE_CANCEL_ATTR,
   OVERRIDE_EASYEDA_ONLY_ATTR,
   OVERRIDE_REGISTER_ATTR,
+  OVERRIDE_REGISTER_EDITOR_ATTR,
+  OVERRIDE_REGISTER_SAVE_ATTR,
+  OVERRIDE_REGISTER_CANCEL_ATTR,
+  OVERRIDE_REGISTER_MAPPING_ROW_ATTR,
+  OVERRIDE_REGISTER_MAPPING_LCSC_ATTR,
+  OVERRIDE_REGISTER_MAPPING_KICAD_ATTR,
+  OVERRIDE_REGISTER_MAPPING_ADD_ATTR,
   EASYEDA_OPTION_VALUE,
 } from "./overridePanel.js";
 import { buildAnchorCardRow, ANCHOR_ROW_ATTR } from "./anchorCard.js";
@@ -311,5 +322,217 @@ describe("renderOverridePanel — white state", () => {
     expect(
       row.parentNode.querySelectorAll(`[${OVERRIDE_PANEL_ATTR}="true"]`).length,
     ).toBe(1);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  Issue #28 — Register Import-Editor (ADR-0006)                            */
+/* -------------------------------------------------------------------------- */
+
+const PAGE_PARAMS = {
+  Resistance: "10k",
+  Tolerance: "1%",
+  "Power(Watts)": "0.25W",
+  "Mfr. Part #": "RC0603FR-0710KL",
+};
+
+describe("buildRegisterImportEditor", () => {
+  it("renders a panel with mode=registerEditor", () => {
+    const panel = buildRegisterImportEditor(document, {});
+    expect(panel.getAttribute(OVERRIDE_PANEL_ATTR)).toBe("true");
+    expect(panel.getAttribute(OVERRIDE_PANEL_MODE_ATTR)).toBe("registerEditor");
+    expect(panel.getAttribute(OVERRIDE_REGISTER_EDITOR_ATTR)).toBe("true");
+  });
+
+  it("renders a Symbol-source dropdown with EasyEDA + Template-Optgroups", () => {
+    const panel = buildRegisterImportEditor(document, { templateLibs: ONE_LIB });
+    const sym = panel.querySelector(`[${OVERRIDE_SYMBOL_SELECT_ATTR}]`);
+    expect(sym).toBeTruthy();
+    const groups = Array.from(sym.querySelectorAll("optgroup")).map((g) => g.label);
+    expect(groups).toContain("MyTemplates");
+    const values = Array.from(sym.querySelectorAll("option")).map((o) => o.value);
+    expect(values[0]).toBe(EASYEDA_OPTION_VALUE);
+    expect(values).toContain(
+      "template:/home/user/templates/MyTemplates.kicad_sym:R0603",
+    );
+  });
+
+  it("does NOT render a Footprint dropdown in the Symbol-MVP", () => {
+    const panel = buildRegisterImportEditor(document, { templateLibs: ONE_LIB });
+    expect(panel.querySelector(`[${OVERRIDE_FOOTPRINT_SELECT_ATTR}]`)).toBeNull();
+  });
+
+  it("starts with one empty mapping row", () => {
+    const panel = buildRegisterImportEditor(document, {});
+    const rows = panel.querySelectorAll(
+      `[${OVERRIDE_REGISTER_MAPPING_ROW_ATTR}="true"]`,
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0].querySelector(`[${OVERRIDE_REGISTER_MAPPING_LCSC_ATTR}]`).value).toBe("");
+    expect(rows[0].querySelector(`[${OVERRIDE_REGISTER_MAPPING_KICAD_ATTR}]`).value).toBe("");
+  });
+
+  it("'+ Zeile' appends another empty mapping row", () => {
+    const panel = buildRegisterImportEditor(document, {});
+    panel.querySelector(`[${OVERRIDE_REGISTER_MAPPING_ADD_ATTR}]`).click();
+    panel.querySelector(`[${OVERRIDE_REGISTER_MAPPING_ADD_ATTR}]`).click();
+    expect(
+      panel.querySelectorAll(`[${OVERRIDE_REGISTER_MAPPING_ROW_ATTR}="true"]`).length,
+    ).toBe(3);
+  });
+
+  it("publishes LCSC labels as a datalist so the user can pick from the snapshot", () => {
+    const panel = buildRegisterImportEditor(document, { pageParams: PAGE_PARAMS });
+    const datalistOptions = Array.from(panel.querySelectorAll("datalist option")).map(
+      (o) => o.value,
+    );
+    expect(datalistOptions).toContain("Resistance");
+    expect(datalistOptions).toContain("Tolerance");
+    expect(datalistOptions).toContain("Power(Watts)");
+  });
+
+  it("shows the category path in the heading area", () => {
+    const panel = buildRegisterImportEditor(document, {
+      categoryPath: "Passives/Resistors/SMD",
+    });
+    expect(panel.textContent).toContain("Passives/Resistors/SMD");
+  });
+
+  it("has Übernehmen and Abbrechen buttons", () => {
+    const panel = buildRegisterImportEditor(document, {});
+    expect(panel.querySelector(`[${OVERRIDE_REGISTER_SAVE_ATTR}]`)).toBeTruthy();
+    expect(panel.querySelector(`[${OVERRIDE_REGISTER_CANCEL_ATTR}]`)).toBeTruthy();
+  });
+});
+
+describe("collectRegisterEditorRule", () => {
+  it("returns the chosen symbolSource + labelMapping", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      pageParams: PAGE_PARAMS,
+    });
+    const sym = panel.querySelector(`[${OVERRIDE_SYMBOL_SELECT_ATTR}]`);
+    sym.value = "template:/home/user/templates/MyTemplates.kicad_sym:R0603";
+    const row = panel.querySelector(`[${OVERRIDE_REGISTER_MAPPING_ROW_ATTR}="true"]`);
+    row.querySelector(`[${OVERRIDE_REGISTER_MAPPING_LCSC_ATTR}]`).value = "Resistance";
+    row.querySelector(`[${OVERRIDE_REGISTER_MAPPING_KICAD_ATTR}]`).value = "Value";
+    const payload = collectRegisterEditorRule(panel, "Passives/Resistors");
+    expect(payload).toEqual({
+      categoryPath: "Passives/Resistors",
+      rule: {
+        symbolSource: {
+          source: "template",
+          libPath: "/home/user/templates/MyTemplates.kicad_sym",
+          name: "R0603",
+        },
+        labelMapping: { Resistance: "Value" },
+      },
+    });
+  });
+
+  it("drops mapping rows where the LCSC label or the KiCad property is blank", () => {
+    const panel = buildRegisterImportEditor(document, {});
+    // Three rows; two of them half-filled.
+    panel.querySelector(`[${OVERRIDE_REGISTER_MAPPING_ADD_ATTR}]`).click();
+    panel.querySelector(`[${OVERRIDE_REGISTER_MAPPING_ADD_ATTR}]`).click();
+    const rows = panel.querySelectorAll(
+      `[${OVERRIDE_REGISTER_MAPPING_ROW_ATTR}="true"]`,
+    );
+    rows[0].querySelector(`[${OVERRIDE_REGISTER_MAPPING_LCSC_ATTR}]`).value = "Resistance";
+    rows[0].querySelector(`[${OVERRIDE_REGISTER_MAPPING_KICAD_ATTR}]`).value = "Value";
+    // Row 1: blank LCSC
+    rows[1].querySelector(`[${OVERRIDE_REGISTER_MAPPING_KICAD_ATTR}]`).value = "Power";
+    // Row 2: blank KiCad
+    rows[2].querySelector(`[${OVERRIDE_REGISTER_MAPPING_LCSC_ATTR}]`).value = "Tolerance";
+    const payload = collectRegisterEditorRule(panel, "Passives");
+    expect(payload.rule.labelMapping).toEqual({ Resistance: "Value" });
+  });
+
+  it("defaults to symbolSource={source:'easyeda'} when the user did not change the dropdown", () => {
+    const panel = buildRegisterImportEditor(document, { templateLibs: ONE_LIB });
+    const payload = collectRegisterEditorRule(panel, "Passives");
+    expect(payload.rule.symbolSource).toEqual({ source: "easyeda" });
+  });
+});
+
+describe("renderRegisterImportEditor", () => {
+  it("mounts the editor beneath the anchor row and returns it", () => {
+    const row = mountAnchorRow();
+    const editor = renderRegisterImportEditor(row, {
+      templateLibs: EMPTY_LIBS,
+      pageParams: PAGE_PARAMS,
+      categoryPath: "Passives/Resistors",
+    });
+    expect(editor).toBeTruthy();
+    expect(editor.getAttribute(OVERRIDE_PANEL_MODE_ATTR)).toBe("registerEditor");
+    expect(row.parentNode.contains(editor)).toBe(true);
+  });
+
+  it("replaces an existing white-state Register-Prompt with the editor (same DOM slot)", () => {
+    const row = mountAnchorRow();
+    renderOverridePanel(row, { match: { state: "white" } });
+    renderRegisterImportEditor(row, { templateLibs: EMPTY_LIBS });
+    // Only the editor remains.
+    const panels = row.parentNode.querySelectorAll(
+      `[${OVERRIDE_PANEL_ATTR}="true"]`,
+    );
+    expect(panels.length).toBe(1);
+    expect(panels[0].getAttribute(OVERRIDE_PANEL_MODE_ATTR)).toBe("registerEditor");
+  });
+
+  it("is idempotent — a second render returns the existing editor", () => {
+    const row = mountAnchorRow();
+    const first = renderRegisterImportEditor(row, {});
+    const second = renderRegisterImportEditor(row, {});
+    expect(second).toBe(first);
+    expect(
+      row.parentNode.querySelectorAll(`[${OVERRIDE_PANEL_ATTR}="true"]`).length,
+    ).toBe(1);
+  });
+
+  it("Übernehmen fires onSave with the collected rule and removes the panel", () => {
+    const row = mountAnchorRow();
+    const calls = [];
+    const editor = renderRegisterImportEditor(row, {
+      templateLibs: ONE_LIB,
+      pageParams: PAGE_PARAMS,
+      categoryPath: "Passives/Resistors",
+      onSave: (payload) => calls.push(payload),
+    });
+    const sym = editor.querySelector(`[${OVERRIDE_SYMBOL_SELECT_ATTR}]`);
+    sym.value = "template:/home/user/templates/MyTemplates.kicad_sym:R0603";
+    const mappingRow = editor.querySelector(
+      `[${OVERRIDE_REGISTER_MAPPING_ROW_ATTR}="true"]`,
+    );
+    mappingRow.querySelector(`[${OVERRIDE_REGISTER_MAPPING_LCSC_ATTR}]`).value =
+      "Resistance";
+    mappingRow.querySelector(`[${OVERRIDE_REGISTER_MAPPING_KICAD_ATTR}]`).value =
+      "Value";
+    editor.querySelector(`[${OVERRIDE_REGISTER_SAVE_ATTR}]`).click();
+    expect(calls).toEqual([
+      {
+        categoryPath: "Passives/Resistors",
+        rule: {
+          symbolSource: {
+            source: "template",
+            libPath: "/home/user/templates/MyTemplates.kicad_sym",
+            name: "R0603",
+          },
+          labelMapping: { Resistance: "Value" },
+        },
+      },
+    ]);
+    expect(row.parentNode.querySelector(`[${OVERRIDE_PANEL_ATTR}="true"]`)).toBeNull();
+  });
+
+  it("Abbrechen fires onCancel and removes the panel", () => {
+    const row = mountAnchorRow();
+    const cancelled = [];
+    const editor = renderRegisterImportEditor(row, {
+      onCancel: () => cancelled.push(true),
+    });
+    editor.querySelector(`[${OVERRIDE_REGISTER_CANCEL_ATTR}]`).click();
+    expect(cancelled).toEqual([true]);
+    expect(row.parentNode.querySelector(`[${OVERRIDE_PANEL_ATTR}="true"]`)).toBeNull();
   });
 });

@@ -1906,7 +1906,7 @@ let nativeHostConvertInFlight = false;
  * on the same warm port; the host's reader-thread + worker model (Issue
  * #26) serves them while ``convert`` runs.
  *
- * @param {{ lcscId: string, libraryPath?: string, overrides?: object }} payload
+ * @param {{ lcscId: string, libraryPath?: string, overrides?: object, labelMapping?: object, pageParams?: object }} payload
  * @returns {Promise<{ok: true, result: object} | {ok: false, error: string}>}
  */
 async function nativeHostConvert(payload) {
@@ -1932,6 +1932,18 @@ async function nativeHostConvert(payload) {
 
   const params = { lcscId, libraryPath };
   if (overrides) params.overrides = overrides;
+  // Issue #28 — Register slice: when the matched Rule carries a
+  // ``labelMapping`` the SW forwards it together with the LCSC page-params
+  // snapshot the content script lifted from the product page. The host
+  // projects ``pageParams`` through ``labelMapping`` into ``symbol_params``
+  // so the template Symbol's properties are filled with the part-specific
+  // LCSC values.
+  if (payload && typeof payload.labelMapping === "object" && payload.labelMapping !== null) {
+    params.labelMapping = payload.labelMapping;
+  }
+  if (payload && typeof payload.pageParams === "object" && payload.pageParams !== null) {
+    params.pageParams = payload.pageParams;
+  }
 
   nativeHostConvertInFlight = true;
   try {
@@ -1958,6 +1970,39 @@ async function nativeHostConvert(payload) {
   } finally {
     nativeHostConvertInFlight = false;
   }
+}
+
+/**
+ * V3 **Register** RPC bridge (Issue #28). Persists the user-authored
+ * Category Rule via the Native Host's ``setRule`` verb. Fast verb in
+ * host-terms — does not contend with the host's ``_busy_lock`` (only
+ * ``convert``/``fetchMetadata`` do) so it overlaps an in-flight Phase 2.
+ *
+ * @param {{ categoryPath: string, rule: object }} payload
+ * @returns {Promise<{ok: true, result: object} | {ok: false, error: string}>}
+ */
+async function nativeHostSetRule(payload) {
+  const categoryPath = typeof payload?.categoryPath === "string" ? payload.categoryPath : "";
+  const rule = payload && typeof payload.rule === "object" && payload.rule !== null
+    ? payload.rule
+    : null;
+  if (!categoryPath.trim() || !rule) {
+    return { ok: false, error: "categoryPath and rule are required" };
+  }
+  let envelope;
+  try {
+    envelope = await getWarmNativePort().send(
+      "setRule",
+      { categoryPath, rule },
+      { timeoutMs: 5000 },
+    );
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+  if (envelope && envelope.ok === true && envelope.result && typeof envelope.result === "object") {
+    return { ok: true, result: envelope.result };
+  }
+  return { ok: false, error: envelope?.error || "setRule returned no result" };
 }
 
 // =============================================================================
@@ -2782,6 +2827,18 @@ const RUNTIME_MESSAGE_HANDLERS = {
     lcscId: message.lcscId,
     libraryPath: message.libraryPath,
     overrides: message.overrides,
+    labelMapping: message.labelMapping,
+    pageParams: message.pageParams,
+  }),
+  /**
+   * V3 **Register** (Issue #28). Content script's Import-Editor relays the
+   * Category Path + ``ComponentRule`` shape; SW forwards to the Native
+   * Host's ``setRule`` verb. Returns ``{ok, result|error}`` so the
+   * Import-Editor can surface a clear "saved" / "failed" status.
+   */
+  v3SetRule: async (message) => nativeHostSetRule({
+    categoryPath: message.categoryPath,
+    rule: message.rule,
   }),
 };
 

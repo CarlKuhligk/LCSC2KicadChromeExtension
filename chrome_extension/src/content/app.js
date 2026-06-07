@@ -52,7 +52,11 @@ import { injectAnchorCard, ANCHOR_ROW_ATTR } from "./anchorCard.js";
 import { attachNativeHostStatus } from "./nativeHostStatusButton.js";
 import { wirePhase1Download } from "./phase1Fetch.js";
 import { runPhase2Convert } from "./phase2Convert.js";
-import { renderOverridePanel, OVERRIDE_PANEL_ROW_ATTR } from "./overridePanel.js";
+import {
+  renderOverridePanel,
+  renderRegisterImportEditor,
+  OVERRIDE_PANEL_ROW_ATTR,
+} from "./overridePanel.js";
 /** Datasheet panel / PDF.js pipeline — always on; filter DevTools console by `[KiCad datasheet]`. */
 function k2cDatasheetLog(...args) {
   console.info("[KiCad datasheet]", ...args);
@@ -4753,12 +4757,76 @@ function attachButton(lcscId) {
             log: (...args) => dbg("[phase2]", ...args),
           });
         };
+        // V3 Issue #28 — Register: ⚪ Register-Prompt's „registrieren"
+        // button opens the **Import-Editor** beneath the Anchor Card. The
+        // editor lets the user map Category → Symbol-Template + LCSC
+        // metadata labels → KiCad Symbol properties; on „Übernehmen" we
+        // persist the Rule via the SW's ``v3SetRule`` relay and continue
+        // straight into Phase 2 with the freshly-saved Symbol Source +
+        // labelMapping baked in (so the demoable end-to-end works).
+        const openRegisterEditor = () => {
+          let pageParams = {};
+          try {
+            const snap = extractPageData(document) || {};
+            if (snap.params && typeof snap.params === "object") {
+              pageParams = snap.params;
+            }
+          } catch (e) {
+            dbg("[register] snapshot for editor failed", e);
+          }
+          renderRegisterImportEditor(anchorRow, {
+            templateLibs,
+            pageParams,
+            categoryPath: phase1Result?.categoryPath || null,
+            onSave: async ({ categoryPath, rule }) => {
+              try {
+                const resp = await contentRpc(
+                  "v3SetRule",
+                  { categoryPath, rule },
+                  k2cRpc(2, 200),
+                );
+                if (!resp?.ok) {
+                  dbg("[register] setRule failed", resp?.error);
+                }
+              } catch (err) {
+                dbg("[register] setRule threw", err);
+              }
+              // Apply the just-saved rule to *this* import immediately so
+              // the user sees Phase 2 run with the Template + Properties
+              // they just configured (the next click for the same Category
+              // will be one-click via #29).
+              await runPhase2Convert(anchorRow, lcscId, {
+                rpc: async (id, libraryPath, ov) => {
+                  const resp = await contentRpc(
+                    "v3Convert",
+                    {
+                      lcscId: id,
+                      libraryPath,
+                      overrides: ov,
+                      labelMapping: rule.labelMapping || {},
+                      pageParams,
+                    },
+                    k2cRpc(2, 200),
+                  );
+                  if (resp?.ok && resp.data) return resp.data;
+                  return { ok: false, error: resp?.error || "unknown error" };
+                },
+                overrides: {
+                  symbol: rule.symbolSource || { source: "easyeda" },
+                  footprint: { source: "easyeda" },
+                },
+                log: (...args) => dbg("[phase2]", ...args),
+              });
+            },
+            onCancel: () => dbg("[register] cancelled"),
+          });
+        };
         renderOverridePanel(anchorRow, {
           match,
           templateLibs,
           templateLibsFootprints,
           onEasyedaOnly: runEasyedaPhase2,
-          onRegister: () => dbg("[overridePanel] register requested (#28)"),
+          onRegister: openRegisterEditor,
           onConfirm: async (overrides) => {
             await runPhase2Convert(anchorRow, lcscId, {
               rpc: async (id, libraryPath, ov) => {

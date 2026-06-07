@@ -24,6 +24,12 @@ Verbs handled:
   returns the (possibly ``None``) Rule. ``None`` is the signal that drives
   ``computeConfidenceState`` → ``"white"`` → Register-Prompt in the
   Override Panel. See ``native_host.rules`` for the store layout.
+- ``setRule`` — V3 **Category Rule** write (Issue #28). Persists the Rule
+  the user just authored in the Import-Editor (Category Path +
+  ``symbolSource`` + ``labelMapping``) into the same on-disk store
+  ``getRule`` reads back. ADR-0006 dropped ``autoApply`` / ``autoConfirm``
+  / ``action`` — ``setRule`` rejects those fields so legacy clients
+  cannot smuggle them back in.
 - ``listTemplates`` — read-only Template Library listing. Used by the
   Override Panel; stays responsive even while a ``convert`` is running.
 
@@ -67,7 +73,7 @@ from native_host.fs import (  # noqa: E402
 )
 from native_host.phase1 import fetch_metadata  # noqa: E402  (after sys.path setup)
 from native_host.phase2 import run_phase2_conversion  # noqa: E402
-from native_host.rules import get_rule  # noqa: E402
+from native_host.rules import get_rule, set_rule  # noqa: E402
 from native_host.templates import list_templates  # noqa: E402
 
 HOST_VERSION = "0.0.1"
@@ -252,6 +258,21 @@ def handle(
                 "error": f"{type(exc).__name__}: {exc}",
             }
         return {"id": request_id, "ok": True, "result": {"rule": rule}}
+
+    if verb == "setRule":
+        raw_params = request.get("params")
+        params = raw_params if isinstance(raw_params, dict) else {}
+        try:
+            written = set_rule(params.get("categoryPath"), params.get("rule"))
+        except ValueError as exc:
+            return {"id": request_id, "ok": False, "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "id": request_id,
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        return {"id": request_id, "ok": True, "result": {"rule": written}}
 
     if verb == "listTemplates":
         raw_params = request.get("params")
