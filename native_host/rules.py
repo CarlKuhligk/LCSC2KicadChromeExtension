@@ -140,6 +140,36 @@ companion JS shape lives in ``chrome_extension/src/content/overridePanel.js``
 the RPC round-trip is lossless.
 """
 
+_LEGACY_REMOVED_FIELDS: frozenset[str] = frozenset(
+    {"autoApply", "autoConfirm", "action"}
+)
+"""V2-era / pre-ADR-0006 fields that must disappear from any rule body the
+Rule store hands back.
+
+``set_rule`` rejects them with a ``ValueError`` (write-side guard, see
+``_normalize_rule``). But a user upgrading from a V2 build can have a
+``rules.json`` on disk that still carries these fields; loading must
+silently strip them (Issue #30) so the Confidence pipeline never sees the
+old apply/confirm/action triplet again.
+"""
+
+
+def _sanitize_rule_on_load(rule: Any) -> dict[str, Any] | None:
+    """Drop ADR-0006-removed fields from a stored rule body without losing
+    the rest.
+
+    Mirrors the JS-side ``cleanRuleEntry`` (``categoryPath.mjs``) for the
+    Rule-store shape: only the ADR-0006-removed triplet is stripped here;
+    every other field is preserved verbatim so the deepest-prefix lookup
+    keeps reading the body the SW expects. Returns ``None`` if the rule is
+    not a dict (so callers can ``return None`` on garbage entries).
+    """
+    if not isinstance(rule, dict):
+        return None
+    if not any(k in rule for k in _LEGACY_REMOVED_FIELDS):
+        return rule
+    return {k: v for k, v in rule.items() if k not in _LEGACY_REMOVED_FIELDS}
+
 
 def _normalize_source_layer(raw: Any, *, field: str) -> dict[str, Any]:
     """Coerce a source-layer entry (``symbolSource`` / ``footprintSource``) into
@@ -305,5 +335,4 @@ def get_rule(
     key = _resolve_deepest_prefix(normalized, rules)
     if key is None:
         return None
-    rule = rules.get(key)
-    return rule if isinstance(rule, dict) else None
+    return _sanitize_rule_on_load(rules.get(key))

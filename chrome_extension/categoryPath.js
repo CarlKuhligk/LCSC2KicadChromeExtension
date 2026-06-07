@@ -38,14 +38,66 @@ function canonicalCategoryKey(raw) {
   return n ? n.toLowerCase() : "";
 }
 
+function cleanSourceLayer(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  if (raw.source === "easyeda") return { source: "easyeda" };
+  if (raw.source !== "template") return null;
+  const libPath = typeof raw.libPath === "string" ? raw.libPath.trim() : "";
+  const name = typeof raw.name === "string" ? raw.name.trim() : "";
+  if (!libPath || !name) return null;
+  return { source: "template", libPath, name };
+}
+
+function cleanLabelMapping(raw) {
+  if (!raw || typeof raw !== "object") return {};
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof k !== "string" || typeof v !== "string") continue;
+    const kk = k.trim();
+    const vv = v.trim();
+    if (!kk || !vv) continue;
+    out[kk] = vv;
+  }
+  return out;
+}
+
 function mergeCategoryConfig(a, b) {
   const vp = (x) =>
     x && typeof x.valueParam === "string" && x.valueParam.trim() ? x.valueParam.trim() : "";
-  return {
+  const out = {
     hidePinNumbers: Boolean(a && a.hidePinNumbers) || Boolean(b && b.hidePinNumbers),
     hidePinNames: Boolean(a && a.hidePinNames) || Boolean(b && b.hidePinNames),
     valueParam: vp(a) || vp(b) || null,
   };
+  const symA = cleanSourceLayer(a && a.symbolSource);
+  const symB = cleanSourceLayer(b && b.symbolSource);
+  if (symA || symB) out.symbolSource = symA || symB;
+  const fpA = cleanSourceLayer(a && a.footprintSource);
+  const fpB = cleanSourceLayer(b && b.footprintSource);
+  if (fpA || fpB) out.footprintSource = fpA || fpB;
+  const labelB = cleanLabelMapping(b && b.labelMapping);
+  const labelA = cleanLabelMapping(a && a.labelMapping);
+  if (Object.keys(labelA).length || Object.keys(labelB).length) {
+    out.labelMapping = { ...labelB, ...labelA };
+  }
+  return out;
+}
+
+function cleanRuleEntry(v) {
+  if (!v || typeof v !== "object") return null;
+  const cfg = {
+    hidePinNumbers: Boolean(v.hidePinNumbers),
+    hidePinNames: Boolean(v.hidePinNames),
+    valueParam:
+      typeof v.valueParam === "string" && v.valueParam.trim() ? v.valueParam.trim() : null,
+  };
+  const sym = cleanSourceLayer(v.symbolSource);
+  if (sym) cfg.symbolSource = sym;
+  const fp = cleanSourceLayer(v.footprintSource);
+  if (fp) cfg.footprintSource = fp;
+  const labels = cleanLabelMapping(v.labelMapping);
+  if (Object.keys(labels).length) cfg.labelMapping = labels;
+  return cfg;
 }
 
 function dedupeCategorySettings(raw) {
@@ -53,16 +105,11 @@ function dedupeCategorySettings(raw) {
   /** @type {Map<string, { displayKey: string, cfg: object }>} */
   const map = new Map();
   for (const [k, v] of Object.entries(raw)) {
-    if (!v || typeof v !== "object") continue;
+    const cfg = cleanRuleEntry(v);
+    if (!cfg) continue;
     const displayKey = normalizeCategoryPath(k);
     const canon = canonicalCategoryKey(k);
     if (!canon) continue;
-    const cfg = {
-      hidePinNumbers: Boolean(v.hidePinNumbers),
-      hidePinNames: Boolean(v.hidePinNames),
-      valueParam:
-        typeof v.valueParam === "string" && v.valueParam.trim() ? v.valueParam.trim() : null,
-    };
     const prev = map.get(canon);
     if (!prev) {
       map.set(canon, { displayKey, cfg });
