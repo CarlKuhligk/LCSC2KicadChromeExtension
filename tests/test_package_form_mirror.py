@@ -159,7 +159,7 @@ class TestPythonJsParity(unittest.TestCase):
         process.stdout.write(JSON.stringify(out));
     """ % (
         (REPO_ROOT / "chrome_extension" / "shared" / "packageForm.mjs")
-        .as_posix()
+        .as_uri()
     )
 
     def _run_js(self) -> list:

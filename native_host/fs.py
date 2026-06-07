@@ -41,7 +41,6 @@ def _default_root_candidates() -> list[tuple[str, Path]]:
     home = Path.home()
     candidates: list[tuple[str, Path]] = [
         ("Documents", home / "Documents"),
-        ("Home", home),
     ]
     if sys.platform.startswith("win"):
         candidates.append(("KiCad libraries", Path("C:/Program Files/KiCad")))
