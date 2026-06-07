@@ -13,7 +13,7 @@
  * ``.mjs`` tests cover the canonical implementation).
  *
  * Globals defined: ``matchComponentRule``, ``computeConfidenceState``,
- * ``EASYEDA_FALLBACK_CONFIDENCE``.
+ * ``EASYEDA_FALLBACK_CONFIDENCE``, ``GREEN_CONFIDENCE_THRESHOLD``.
  *
  * Depends on the ``normalizeCategoryPath`` global already loaded by
  * ``categoryPath.js`` (background.js orders ``importScripts`` accordingly).
@@ -21,6 +21,12 @@
 
 /** Confidence assigned to an EasyEDA fallback when no Rule / no heuristic match exists. */
 const EASYEDA_FALLBACK_CONFIDENCE = 0.5;
+
+/** 🟢 threshold from KONZEPT.md §3.6 — high ≥ 0.85. */
+const GREEN_CONFIDENCE_THRESHOLD = 0.85;
+
+/** Confidence assigned when a Rule's Symbol-Template is resolvable in the registered libs. */
+const _RULE_TEMPLATE_CONFIDENCE = 0.95;
 
 function _easyedaFallback(layer, reason) {
   return {
@@ -30,6 +36,23 @@ function _easyedaFallback(layer, reason) {
     reasons: reason ? [reason] : [],
     source: "easyeda-fallback",
   };
+}
+
+function _isSymbolTemplateResolvable(symbolSource, templateSymbolsByLib) {
+  if (!symbolSource || symbolSource.source !== "template") return false;
+  const libPath = symbolSource.libPath;
+  const name = symbolSource.name;
+  if (!libPath || !name) return false;
+  if (!templateSymbolsByLib || typeof templateSymbolsByLib !== "object") {
+    return false;
+  }
+  const names = templateSymbolsByLib[libPath];
+  return Array.isArray(names) && names.includes(name);
+}
+
+function _hasLabelMappingEntries(labelMapping) {
+  if (!labelMapping || typeof labelMapping !== "object") return false;
+  return Object.keys(labelMapping).length > 0;
 }
 
 function _resolveDeepestPrefixRule(categoryPath, categorySettings) {
@@ -56,40 +79,62 @@ function _resolveDeepestPrefixRule(categoryPath, categorySettings) {
 function matchComponentRule(phase1, state) {
   const categoryPath = normalizeCategoryPath(phase1?.categoryPath);
   const categorySettings = state?.categorySettings || null;
+  const templateSymbolsByLib = state?.templateSymbolsByLib || null;
 
   const resolved = _resolveDeepestPrefixRule(categoryPath, categorySettings);
+  const rule = resolved?.rule || null;
+
+  const symbolTemplateResolvable = _isSymbolTemplateResolvable(
+    rule?.symbolSource,
+    templateSymbolsByLib,
+  );
+  const labelsMapped = _hasLabelMappingEntries(rule?.labelMapping);
 
   const guards = {
     pinCountOk: true,
     packageFormOk: true,
-    templatesResolvable: true,
+    templatesResolvable: symbolTemplateResolvable,
     pinPadResolvable: true,
     overwriteClear: true,
   };
 
-  const fallbackReason = resolved ? null : "no Category Rule registered";
-  const symbol = _easyedaFallback("symbol", fallbackReason);
-  const footprint = _easyedaFallback("footprint", fallbackReason);
+  let symbol;
+  let footprint;
+  if (symbolTemplateResolvable) {
+    symbol = {
+      layer: "symbol",
+      choice: { ...rule.symbolSource },
+      confidence: _RULE_TEMPLATE_CONFIDENCE,
+      reasons: [`Category Rule "${resolved.key}" symbol template`],
+      source: "rule",
+    };
+    footprint = _easyedaFallback(
+      "footprint",
+      "footprint follow-up slice — EasyEDA default",
+    );
+  } else {
+    const fallbackReason = resolved ? null : "no Category Rule registered";
+    symbol = _easyedaFallback("symbol", fallbackReason);
+    footprint = _easyedaFallback("footprint", fallbackReason);
+  }
 
-  const aggregateConfidence = Math.min(symbol.confidence, footprint.confidence);
+  const aggregateConfidence = symbol.confidence;
 
   const factors = {
     ruleResolved: Boolean(resolved),
+    categoryResolved: Boolean(resolved),
     symbolResolved: symbol.source !== "easyeda-fallback",
+    symbolTemplateResolvable,
+    labelsMapped,
     footprintResolved: footprint.source !== "easyeda-fallback",
     confidence: aggregateConfidence,
   };
 
-  const stateName = computeConfidenceState(
-    resolved?.rule || null,
-    symbol,
-    footprint,
-    factors,
-  );
+  const stateName = computeConfidenceState(rule, symbol, footprint, factors);
 
   return {
     ruleKey: resolved?.key ?? null,
-    rule: resolved?.rule ?? null,
+    rule,
     symbol,
     footprint,
     state: stateName,
@@ -98,7 +143,16 @@ function matchComponentRule(phase1, state) {
   };
 }
 
-function computeConfidenceState(rule, _symbol, _footprint, _factors) {
+function computeConfidenceState(rule, _symbol, _footprint, factors) {
   if (!rule) return "white";
+  const f = factors || {};
+  const greenReady =
+    f.ruleResolved === true
+    && f.categoryResolved === true
+    && f.symbolTemplateResolvable === true
+    && f.labelsMapped === true
+    && typeof f.confidence === "number"
+    && f.confidence >= GREEN_CONFIDENCE_THRESHOLD;
+  if (greenReady) return "green";
   return "yellow";
 }

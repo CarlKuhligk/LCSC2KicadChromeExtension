@@ -59,6 +59,16 @@ import { normalizeCategoryPath } from "./categoryPath.mjs";
 /** Confidence assigned to an EasyEDA fallback when no Rule / no heuristic match exists. */
 export const EASYEDA_FALLBACK_CONFIDENCE = 0.5;
 
+/**
+ * 🟢 threshold from KONZEPT.md §3.6: high ≥ 0.85, medium 0.6–0.85, low < 0.6.
+ * Pin only the high/green boundary here; the 🟡 medium band falls out of
+ * "rule exists but factor missing or confidence below this threshold".
+ */
+export const GREEN_CONFIDENCE_THRESHOLD = 0.85;
+
+/** Confidence assigned when a Rule's Symbol-Template is resolvable in the registered libs. */
+const RULE_TEMPLATE_CONFIDENCE = 0.95;
+
 function easyedaFallback(layer, reason) {
   return {
     layer,
@@ -67,6 +77,30 @@ function easyedaFallback(layer, reason) {
     reasons: reason ? [reason] : [],
     source: "easyeda-fallback",
   };
+}
+
+/**
+ * The Rule's Symbol-Template is "resolvable" when the libPath/name pair
+ * picked at registration time still exists in the user's registered
+ * Template Libraries. An EasyEDA-source rule (the seed default) has no
+ * template to resolve and therefore can never satisfy the 🟢 MVP factor
+ * "symbol template matched" (KONZEPT.md §3.6, ADR-0006).
+ */
+function isSymbolTemplateResolvable(symbolSource, templateSymbolsByLib) {
+  if (!symbolSource || symbolSource.source !== "template") return false;
+  const libPath = symbolSource.libPath;
+  const name = symbolSource.name;
+  if (!libPath || !name) return false;
+  if (!templateSymbolsByLib || typeof templateSymbolsByLib !== "object") {
+    return false;
+  }
+  const names = templateSymbolsByLib[libPath];
+  return Array.isArray(names) && names.includes(name);
+}
+
+function hasLabelMappingEntries(labelMapping) {
+  if (!labelMapping || typeof labelMapping !== "object") return false;
+  return Object.keys(labelMapping).length > 0;
 }
 
 /**
@@ -101,53 +135,92 @@ function resolveDeepestPrefixRule(categoryPath, categorySettings) {
 
 /**
  * Match Phase 1 metadata against the user's Category Rules and decide the
- * Confidence state. This slice (Issue #25) only wires the ⚪ ``white`` path:
- * when no Rule resolves, both Layers fall back to EasyEDA and
- * ``computeConfidenceState`` returns ``"white"`` (Register-Prompt). The 🟢
- * (#29) and 🟡 (#31) paths extend this function without rewriting the
- * caller contract.
+ * Confidence state. Issue #25 wired the ⚪ ``white`` path; this slice
+ * (#29) lights up the 🟢 ``green`` path by surfacing the Rule's
+ * ``symbolSource`` as the Symbol Suggestion when the Template Library it
+ * points at is still installed, and by raising the aggregate confidence
+ * past the 🟢 threshold so ``computeConfidenceState`` returns ``"green"``.
+ * The 🟡 path (#31) lands later; until then a resolved Rule that misses
+ * any MVP factor still falls through to ``"yellow"``.
+ *
+ * **MVP (Symbol-first):** only Symbol-layer factors gate 🟢. The
+ * Footprint Layer stays on the EasyEDA default and does not block green
+ * (KONZEPT.md §3.6, ADR-0006). Footprint/3D become green-relevant with
+ * the Footprint follow-up slice.
  *
  * @param {{ categoryPath?: string | null }} phase1
- * @param {{ categorySettings?: object | null }} [state]
+ * @param {{ categorySettings?: object | null, templateSymbolsByLib?: object | null }} [state]
  * @returns {MatchResult}
  */
 export function matchComponentRule(phase1, state) {
   const categoryPath = normalizeCategoryPath(phase1?.categoryPath);
   const categorySettings = state?.categorySettings || null;
+  const templateSymbolsByLib = state?.templateSymbolsByLib || null;
 
   const resolved = resolveDeepestPrefixRule(categoryPath, categorySettings);
+  const rule = resolved?.rule || null;
+
+  const symbolTemplateResolvable = isSymbolTemplateResolvable(
+    rule?.symbolSource,
+    templateSymbolsByLib,
+  );
+  const labelsMapped = hasLabelMappingEntries(rule?.labelMapping);
 
   const guards = {
     pinCountOk: true,
     packageFormOk: true,
-    templatesResolvable: true,
+    templatesResolvable: symbolTemplateResolvable,
     pinPadResolvable: true,
     overwriteClear: true,
   };
 
-  const fallbackReason = resolved ? null : "no Category Rule registered";
-  const symbol = easyedaFallback("symbol", fallbackReason);
-  const footprint = easyedaFallback("footprint", fallbackReason);
+  let symbol;
+  let footprint;
+  if (symbolTemplateResolvable) {
+    // 🟢 MVP path: Rule's Symbol-Template still resolves — surface it as
+    // the Suggestion so the Override Panel can render the Ein-Klick
+    // preview verbatim (no second look-up in the content script).
+    symbol = {
+      layer: "symbol",
+      choice: { ...rule.symbolSource },
+      confidence: RULE_TEMPLATE_CONFIDENCE,
+      reasons: [`Category Rule "${resolved.key}" symbol template`],
+      source: "rule",
+    };
+    // Footprint stays on EasyEDA until the Footprint follow-up slice
+    // (KONZEPT.md §3.6 "MVP (Symbol-first)").
+    footprint = easyedaFallback(
+      "footprint",
+      "footprint follow-up slice — EasyEDA default",
+    );
+  } else {
+    const fallbackReason = resolved ? null : "no Category Rule registered";
+    symbol = easyedaFallback("symbol", fallbackReason);
+    footprint = easyedaFallback("footprint", fallbackReason);
+  }
 
-  const aggregateConfidence = Math.min(symbol.confidence, footprint.confidence);
+  // MVP (Symbol-first): green decides on the Symbol Layer alone; the
+  // Footprint Layer's EasyEDA fallback must NOT drag the aggregate
+  // confidence down below the 🟢 threshold (KONZEPT.md §3.6 / ADR-0006
+  // "footprint/3D as confidence drivers arrive with the footprint
+  // follow-up slice").
+  const aggregateConfidence = symbol.confidence;
 
   const factors = {
     ruleResolved: Boolean(resolved),
+    categoryResolved: Boolean(resolved),
     symbolResolved: symbol.source !== "easyeda-fallback",
+    symbolTemplateResolvable,
+    labelsMapped,
     footprintResolved: footprint.source !== "easyeda-fallback",
     confidence: aggregateConfidence,
   };
 
-  const stateName = computeConfidenceState(
-    resolved?.rule || null,
-    symbol,
-    footprint,
-    factors,
-  );
+  const stateName = computeConfidenceState(rule, symbol, footprint, factors);
 
   return {
     ruleKey: resolved?.key ?? null,
-    rule: resolved?.rule ?? null,
+    rule,
     symbol,
     footprint,
     state: stateName,
@@ -158,30 +231,42 @@ export function matchComponentRule(phase1, state) {
 
 /**
  * Confidence state machine (ADR-0006 §3.5). Pure function — callers feed in
- * the resolved Rule (or ``null``), the two Layer suggestions, and a set of
- * factors that the Symbol/Footprint slices populate.
- *
- * This slice (Issue #25) wires ``white`` only:
+ * the resolved Rule (or ``null``), the two Layer suggestions, and the
+ * factors ``matchComponentRule`` populates.
  *
  *   - No registered Rule → ``"white"`` (Register-Prompt).
+ *   - Registered Rule + MVP factors satisfied + confidence ≥ green
+ *     threshold → ``"green"`` (Ein-Klick + [Modifizieren]).
+ *   - Anything in between → ``"yellow"`` (placeholder until #31 wires the
+ *     user-setting branch).
  *
- * The 🟢 ``green`` branch (#29) lights up when a Rule + symbol-template-
- * resolvable + category recognised + label mapping + high confidence are
- * all present; the 🟡 ``yellow`` branch (#31) catches the in-between cases.
- * Until those slices ship, anything past the ``white`` gate falls through
- * to ``"yellow"`` so an unfinished pipeline never silently delivers a 🟢
- * one-click result.
+ * **MVP (Symbol-first)** factors (KONZEPT.md §3.6, ADR-0006 §9): the
+ * registered Rule must resolve a Symbol Template against the installed
+ * Template Libraries, the LCSC Category must be recognised (implied by
+ * the deepest-prefix Rule lookup), and the Rule must carry a non-empty
+ * ``labelMapping``. Footprint / Pin↔Pad / 3D factors are NOT green
+ * blockers in the Symbol-MVP — they ride along on EasyEDA by default
+ * until the Footprint follow-up slice extends this state machine.
  *
  * @param {object | null} rule
- * @param {object} _symbol  unused in the white slice; reserved for 🟢/🟡
- * @param {object} _footprint  unused in the white slice; reserved for 🟢/🟡
- * @param {object} [_factors]  unused in the white slice; reserved for 🟢/🟡
+ * @param {object} _symbol  reserved for the 🟡 branch (#31)
+ * @param {object} _footprint  reserved for the 🟡 branch (#31)
+ * @param {object} [factors]  output of ``matchComponentRule``
  * @returns {"green" | "yellow" | "white"}
  */
-export function computeConfidenceState(rule, _symbol, _footprint, _factors) {
+export function computeConfidenceState(rule, _symbol, _footprint, factors) {
   if (!rule) return "white";
-  // 🟢 + 🟡 branches arrive with Issues #29 and #31. Until then any
-  // resolved rule lands in ``yellow`` so we never claim a 🟢 one-click
-  // before the dependent guards exist.
+  const f = factors || {};
+  const greenReady =
+    f.ruleResolved === true
+    && f.categoryResolved === true
+    && f.symbolTemplateResolvable === true
+    && f.labelsMapped === true
+    && typeof f.confidence === "number"
+    && f.confidence >= GREEN_CONFIDENCE_THRESHOLD;
+  if (greenReady) return "green";
+  // 🟡 placeholder — #31 splits this band into the keepEasyeda vs
+  // openEditor user-setting. Until then any resolved rule that misses an
+  // MVP factor lands here so we never silently grant a 🟢 one-click.
   return "yellow";
 }
