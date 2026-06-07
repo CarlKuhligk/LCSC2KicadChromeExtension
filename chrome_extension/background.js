@@ -4,6 +4,7 @@ importScripts("categoryPath.js");
 importScripts("confidenceState.js");
 importScripts("shared/extensionDefaults.js");
 importScripts("extensionWsClient.js");
+importScripts("nativeHostPort.js");
 
 // Normalize common LCSC parameter label variations to consistent KiCad field names
 const LCSC_PARAMS_MAP = {
@@ -842,48 +843,28 @@ function getTemplateLibraryPaths() {
  * call so the Override Panel (Issue #5) works without the legacy backend.
  * Returns `{ symbols, footprints }` (empty lists on any failure — V3 panel
  * degrades gracefully to "keep EasyEDA"-only).
+ *
+ * Issue #26: routed over the **Warm-Port** so Override Panel reads do not
+ * pay the Python cold-start cost and overlap an in-flight `convert`.
  */
 async function nativeHostListTemplates(libPath) {
-  let port;
+  let envelope;
   try {
-    port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
-  } catch (e) {
-    return { symbols: [], footprints: [], error: e?.message || "connectNative threw" };
-  }
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      try { port.disconnect(); } catch (_e) { /* already gone */ }
-      resolve(result);
-    };
-    const timer = setTimeout(
-      () => finish({ symbols: [], footprints: [], error: "timeout" }),
-      5000,
+    envelope = await getWarmNativePort().send(
+      "listTemplates",
+      { libPath },
+      { timeoutMs: 5000 },
     );
-    port.onMessage.addListener((msg) => {
-      clearTimeout(timer);
-      if (msg && msg.ok === true && msg.result && typeof msg.result === "object") {
-        finish({
-          symbols: Array.isArray(msg.result.symbols) ? msg.result.symbols : [],
-          footprints: Array.isArray(msg.result.footprints) ? msg.result.footprints : [],
-        });
-      } else {
-        finish({ symbols: [], footprints: [], error: msg?.error || "no result" });
-      }
-    });
-    port.onDisconnect.addListener(() => {
-      clearTimeout(timer);
-      const err = chrome.runtime.lastError;
-      finish({ symbols: [], footprints: [], error: err?.message || "disconnected" });
-    });
-    try {
-      port.postMessage({ id: Date.now(), verb: "listTemplates", params: { libPath } });
-    } catch (e) {
-      finish({ symbols: [], footprints: [], error: e?.message || "postMessage threw" });
-    }
-  });
+  } catch (e) {
+    return { symbols: [], footprints: [], error: e?.message || String(e) };
+  }
+  if (envelope && envelope.ok === true && envelope.result && typeof envelope.result === "object") {
+    return {
+      symbols: Array.isArray(envelope.result.symbols) ? envelope.result.symbols : [],
+      footprints: Array.isArray(envelope.result.footprints) ? envelope.result.footprints : [],
+    };
+  }
+  return { symbols: [], footprints: [], error: envelope?.error || "no result" };
 }
 
 /**
@@ -1744,48 +1725,66 @@ const NATIVE_HOST_CONVERT_TIMEOUT_MS = 60000;
  * service-worker idle thresholds, (b) cheap freshness check so the Anchor
  * Card button can flip to `offline` mid-session if the user stops the host.
  * See V3-SPEC.md §3 (Cold-start mitigation).
+ *
+ * Issue #26: with the Warm-Port (below) the ping ALSO holds the Native-Host
+ * process alive across the session — Chrome only kills the host when no
+ * extension port references it. So the 25-s ping is now both keep-alive
+ * for the SW (resets idle timer) AND keep-alive for Python (warm process).
  */
 const NATIVE_HOST_KEEPALIVE_ALARM = "v3-native-host-keepalive";
 const NATIVE_HOST_KEEPALIVE_PERIOD_MIN = 25 / 60;
 
-async function pingNativeHostOnce() {
-  let port;
-  try {
-    port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
-  } catch (e) {
-    return { online: false, error: e?.message || "connectNative threw" };
+/**
+ * V3 **Warm-Port** singleton (Issue #26). One persistent
+ * ``chrome.runtime.connectNative`` port reused for every RPC — Phase 1
+ * Fetch, Phase 2 Conversion, Override Panel reads (listTemplates), pings.
+ * The Python process stays alive across the whole session because Chrome
+ * does not kill a Native Host while an extension port references it; the
+ * 25-s keep-alive ping above piggybacks on the same warm port.
+ *
+ * Lazy: the first ``send()`` triggers ``chrome.runtime.connectNative``.
+ * Auto-reconnect: a port disconnect (Python crash, SW wake, manifest
+ * reload) is surfaced as a ``disconnected`` reply to in-flight callers;
+ * the next ``send()`` opens a fresh port transparently.
+ *
+ * Single-flight semantics for ``convert`` / ``fetchMetadata`` are still
+ * enforced HOST-side by the shared ``_busy_lock`` (ADR-0004); the warm
+ * port does NOT serialize sends. SW-side ``nativeHost*InFlight`` flags
+ * remain as a fast pre-check that skips a wire round-trip.
+ */
+let _warmNativePort = null;
+
+function getWarmNativePort() {
+  if (_warmNativePort) return _warmNativePort;
+  if (typeof globalThis.k2cCreateWarmNativePort !== "function") {
+    throw new Error("nativeHostPort.js was not loaded — check importScripts order");
   }
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      try { port.disconnect(); } catch (_e) { /* already gone */ }
-      resolve(result);
-    };
-    const timer = setTimeout(
-      () => finish({ online: false, error: "timeout" }),
-      NATIVE_HOST_PING_TIMEOUT_MS,
-    );
-    port.onMessage.addListener((msg) => {
-      clearTimeout(timer);
-      if (msg && msg.ok === true) {
-        finish({ online: true, version: msg.version || null });
-      } else {
-        finish({ online: false, error: msg?.error || "no ok flag" });
+  _warmNativePort = globalThis.k2cCreateWarmNativePort({
+    connectNative: () => chrome.runtime.connectNative(NATIVE_HOST_NAME),
+    onError: (err) => {
+      if (state?.debugLogs) {
+        console.warn("[v3 warm port]", err?.message || err);
       }
-    });
-    port.onDisconnect.addListener(() => {
-      clearTimeout(timer);
-      const err = chrome.runtime.lastError;
-      finish({ online: false, error: err?.message || "disconnected" });
-    });
-    try {
-      port.postMessage({ id: Date.now(), verb: "ping" });
-    } catch (e) {
-      finish({ online: false, error: e?.message || "postMessage threw" });
-    }
+    },
   });
+  return _warmNativePort;
+}
+
+async function pingNativeHostOnce() {
+  let envelope;
+  try {
+    envelope = await getWarmNativePort().send(
+      "ping",
+      undefined,
+      { timeoutMs: NATIVE_HOST_PING_TIMEOUT_MS },
+    );
+  } catch (e) {
+    return { online: false, error: e?.message || String(e) };
+  }
+  if (envelope && envelope.ok === true) {
+    return { online: true, version: envelope.version || null };
+  }
+  return { online: false, error: envelope?.error || "no ok flag" };
 }
 
 /**
@@ -1851,10 +1850,14 @@ if (chrome.alarms?.onAlarm?.addListener) {
 let nativeHostPhase1InFlight = false;
 
 /**
- * V3 **Phase 1 Fetch** RPC bridge (Issue #3). Opens a fresh Native-Host port
- * per call, sends one ``fetchMetadata`` frame, awaits the matching response,
- * disconnects. SW-side single-flight matches the Native-Host busy lock so a
- * second tab gets ``busy`` (ADR-0004) without round-tripping.
+ * V3 **Phase 1 Fetch** RPC bridge (Issue #3). Routed over the Warm-Port
+ * (Issue #26): the Native-Host process stays alive across this call and
+ * the follow-up Phase 2 click — no Python cold-start per RPC.
+ *
+ * SW-side single-flight matches the Native-Host busy lock so a second
+ * Phase 1 / Phase 2 attempt gets ``busy`` (ADR-0004) without a port
+ * round-trip. The host's own ``_busy_lock`` is the source of truth; the
+ * SW flag is just a fast pre-check.
  *
  * @param {{ lcscId: string, pageHints?: object }} payload
  * @returns {Promise<{ok: true, result: object} | {ok: false, error: string}>}
@@ -1871,64 +1874,37 @@ async function nativeHostFetchMetadata(payload) {
     payload?.pageHints && typeof payload.pageHints === "object" ? payload.pageHints : null;
 
   nativeHostPhase1InFlight = true;
-  let port;
   try {
-    port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
-  } catch (e) {
-    nativeHostPhase1InFlight = false;
-    return { ok: false, error: e?.message || "connectNative threw" };
-  }
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      nativeHostPhase1InFlight = false;
-      try { port.disconnect(); } catch (_e) { /* already gone */ }
-      resolve(result);
-    };
-    const timer = setTimeout(
-      () => finish({ ok: false, error: "timeout" }),
-      NATIVE_HOST_FETCH_METADATA_TIMEOUT_MS,
+    const envelope = await getWarmNativePort().send(
+      "fetchMetadata",
+      { lcscId, pageHints },
+      { timeoutMs: NATIVE_HOST_FETCH_METADATA_TIMEOUT_MS },
     );
-    port.onMessage.addListener((msg) => {
-      clearTimeout(timer);
-      if (msg && msg.ok === true && msg.result && typeof msg.result === "object") {
-        finish({ ok: true, result: msg.result });
-      } else {
-        finish({ ok: false, error: msg?.error || "fetchMetadata returned no result" });
-      }
-    });
-    port.onDisconnect.addListener(() => {
-      clearTimeout(timer);
-      const err = chrome.runtime.lastError;
-      finish({ ok: false, error: err?.message || "disconnected" });
-    });
-    try {
-      port.postMessage({
-        id: Date.now(),
-        verb: "fetchMetadata",
-        params: { lcscId, pageHints },
-      });
-    } catch (e) {
-      finish({ ok: false, error: e?.message || "postMessage threw" });
+    if (envelope && envelope.ok === true && envelope.result && typeof envelope.result === "object") {
+      return { ok: true, result: envelope.result };
     }
-  });
+    return { ok: false, error: envelope?.error || "fetchMetadata returned no result" };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  } finally {
+    nativeHostPhase1InFlight = false;
+  }
 }
 
 let nativeHostConvertInFlight = false;
 
 /**
- * V3 **Phase 2 Conversion** RPC bridge (Issue #4). Opens a fresh Native-Host
- * port, sends one ``convert`` frame, then reads progress frames from the same
- * port until the terminal ``done`` (``ok=true``) or ``error`` arrives —
- * ADR-0004: streamed progress on a single bidirectional Native-Messaging
- * channel. Each progress frame is broadcast to all LCSC content tabs as a
- * ``v3ConvertProgress`` message keyed by ``lcscId`` so the originating
- * Anchor Card button can render the live message.
+ * V3 **Phase 2 Conversion** RPC bridge (Issue #4). Routed over the
+ * Warm-Port (Issue #26) so the Python process the Phase 1 call just
+ * warmed stays alive for this conversion — no second cold start. Progress
+ * frames stream on the same warm channel (ADR-0004) and are broadcast
+ * to all LCSC content tabs as ``v3ConvertProgress`` keyed by ``lcscId``.
  *
- * SW-side single-flight matches the Native Host's busy lock so a second tab
- * gets ``busy`` immediately (no port open, no round-trip).
+ * SW-side single-flight matches the Native Host's busy lock so a second
+ * tab gets ``busy`` immediately (no wire round-trip). Read-only verbs
+ * (``listTemplates``, future ``getRule`` / ``fsList``) overlap this call
+ * on the same warm port; the host's reader-thread + worker model (Issue
+ * #26) serves them while ``convert`` runs.
  *
  * @param {{ lcscId: string, libraryPath?: string, overrides?: object }} payload
  * @returns {Promise<{ok: true, result: object} | {ok: false, error: string}>}
@@ -1954,65 +1930,34 @@ async function nativeHostConvert(payload) {
     ? payload.overrides
     : null;
 
+  const params = { lcscId, libraryPath };
+  if (overrides) params.overrides = overrides;
+
   nativeHostConvertInFlight = true;
-  let port;
   try {
-    port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
-  } catch (e) {
-    nativeHostConvertInFlight = false;
-    return { ok: false, error: e?.message || "connectNative threw" };
-  }
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      nativeHostConvertInFlight = false;
-      try { port.disconnect(); } catch (_e) { /* already gone */ }
-      resolve(result);
-    };
-    const timer = setTimeout(
-      () => finish({ ok: false, error: "timeout" }),
-      NATIVE_HOST_CONVERT_TIMEOUT_MS,
-    );
-    port.onMessage.addListener((msg) => {
-      // Progress frames keep the port open; only the terminal ``ok`` field
-      // resolves the promise. Match on ``type === "progress"`` so a future
-      // backend addition (e.g. ``warning`` frames) does not accidentally
-      // resolve here as ``error``.
-      if (msg && msg.type === "progress") {
+    const envelope = await getWarmNativePort().send("convert", params, {
+      timeoutMs: NATIVE_HOST_CONVERT_TIMEOUT_MS,
+      onProgress: (msg) => {
+        // Match the host frame shape (``type: "progress"`` + ``message`` +
+        // ``progress``) so future fields surface naturally to the content
+        // tab without touching the SW relay.
         broadcastToLcscContentTabs({
           type: "v3ConvertProgress",
           lcscId,
           message: typeof msg.message === "string" ? msg.message : "",
           progress: typeof msg.progress === "number" ? msg.progress : null,
         });
-        return;
-      }
-      clearTimeout(timer);
-      if (msg && msg.ok === true && msg.result && typeof msg.result === "object") {
-        finish({ ok: true, result: msg.result });
-      } else {
-        finish({ ok: false, error: msg?.error || "convert returned no result" });
-      }
+      },
     });
-    port.onDisconnect.addListener(() => {
-      clearTimeout(timer);
-      const err = chrome.runtime.lastError;
-      finish({ ok: false, error: err?.message || "disconnected" });
-    });
-    try {
-      const params = { lcscId, libraryPath };
-      if (overrides) params.overrides = overrides;
-      port.postMessage({
-        id: Date.now(),
-        verb: "convert",
-        params,
-      });
-    } catch (e) {
-      finish({ ok: false, error: e?.message || "postMessage threw" });
+    if (envelope && envelope.ok === true && envelope.result && typeof envelope.result === "object") {
+      return { ok: true, result: envelope.result };
     }
-  });
+    return { ok: false, error: envelope?.error || "convert returned no result" };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  } finally {
+    nativeHostConvertInFlight = false;
+  }
 }
 
 // =============================================================================
