@@ -467,25 +467,19 @@ export function buildRegisterImportEditor(doc, opts = {}) {
 
   // Prefill the Symbol Source dropdown when the caller supplied one (🟢
   // [Modifizieren] path). Fall back to the EasyEDA default for the
-  // fresh-register flow.
+  // fresh-register flow, and also when the supplied Template Library was
+  // unregistered between the Rule's save time and now — the candidate
+  // won't appear in the populated <option>s, and `renderOverridePanel`
+  // won't have routed to 🟢 in that case anyway.
   const initialSym = opts.initialSymbolSource;
-  let initialSymValue = EASYEDA_OPTION_VALUE;
-  if (initialSym && initialSym.source === "template" && initialSym.libPath && initialSym.name) {
-    initialSymValue = encodeTemplateValue(initialSym.libPath, initialSym.name);
-  }
-  // Only assign if the option exists; otherwise the select silently stays
-  // on the EasyEDA default (the Template Library was unregistered between
-  // the Rule's save time and now — `renderOverridePanel` won't have
-  // routed to 🟢 in that case anyway).
-  if (
-    Array.from(symSelect.querySelectorAll("option")).some(
-      (o) => o.value === initialSymValue,
-    )
-  ) {
-    symSelect.value = initialSymValue;
-  } else {
-    symSelect.value = EASYEDA_OPTION_VALUE;
-  }
+  const candidate =
+    initialSym?.source === "template" && initialSym.libPath && initialSym.name
+      ? encodeTemplateValue(initialSym.libPath, initialSym.name)
+      : EASYEDA_OPTION_VALUE;
+  const hasOption = Array.from(symSelect.options).some(
+    (o) => o.value === candidate,
+  );
+  symSelect.value = hasOption ? candidate : EASYEDA_OPTION_VALUE;
 
   return panel;
 }
