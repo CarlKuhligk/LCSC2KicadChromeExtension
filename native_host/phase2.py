@@ -35,6 +35,18 @@ Inputs (``params`` dict, validated below):
   footprint-template path needs the Pin-Map Sidecar (#9) and the 3D Layer
   follow-the-Footprint logic (#6) to land first.
 
+- ``labelMapping`` — optional, the Register slice's metadata projection
+  (Issue #28). ``{LcscParamKey: KiCadPropertyName}``. Combined with
+  ``pageParams`` (the LCSC params snapshot the content script lifts from
+  the product page) the runner builds ``symbol_params`` so the Template
+  symbol's properties get the part-specific LCSC values written into the
+  KiCad symbol — the demoable for "Symbol stammt aus Template, Properties
+  gefüllt".
+- ``pageParams`` — optional, the LCSC parameter snapshot
+  (``{label: value}``) the content script extracted with
+  ``extractPageData``. Used only when ``labelMapping`` is set; ignored
+  otherwise.
+
 Progress frames are intentionally free-form strings ("Connecting to
 EasyEDA…", "Writing .kicad_mod file…") plus an integer ``progress`` 0–100.
 The button UI renders the latest message verbatim.
@@ -144,6 +156,43 @@ def _validate_overrides(raw: Any) -> dict[str, dict[str, Any]]:
     return {"symbol": symbol, "footprint": footprint}
 
 
+def _build_symbol_params(
+    label_mapping: Any, page_params: Any
+) -> dict[str, str] | None:
+    """Project ``page_params`` through ``label_mapping`` into ``symbol_params``.
+
+    The Register slice (Issue #28) persists a ``{LcscLabel: KiCadProperty}``
+    map in the Rule. At Phase 2 time the runner walks the LCSC params
+    snapshot the content script lifted from the product page and emits the
+    KiCad-shaped ``{KiCadProperty: value}`` dict that
+    ``ConversionRequest.symbol_params`` consumes. Missing / blank entries
+    are skipped so a half-filled mapping does not write empty properties.
+
+    Returns ``None`` when nothing maps — keeps the existing default-path
+    behavior (no ``symbol_params``, no empty Property injection into the
+    template symbol).
+    """
+    if not isinstance(label_mapping, dict) or not label_mapping:
+        return None
+    if not isinstance(page_params, dict) or not page_params:
+        return None
+    out: dict[str, str] = {}
+    for lcsc_label, kicad_property in label_mapping.items():
+        if not isinstance(lcsc_label, str) or not isinstance(kicad_property, str):
+            continue
+        prop = kicad_property.strip()
+        if not prop:
+            continue
+        value = page_params.get(lcsc_label)
+        if not isinstance(value, str):
+            continue
+        v = value.strip()
+        if not v:
+            continue
+        out[prop] = v
+    return out or None
+
+
 def run_phase2_conversion(
     params: Any,
     emit: ProgressEmitter,
@@ -181,6 +230,14 @@ def run_phase2_conversion(
     symbol_override = overrides["symbol"]
     use_template = symbol_override["source"] == "template"
 
+    # Register slice (Issue #28): when the rule carries a ``labelMapping``
+    # the SW also forwards the LCSC param snapshot, and the runner projects
+    # them into ``symbol_params`` so the template Symbol's properties get
+    # the part-specific LCSC values instead of being left blank.
+    symbol_params = _build_symbol_params(
+        params.get("labelMapping"), params.get("pageParams")
+    )
+
     request = ConversionRequest(
         lcsc_id=lcsc_id,
         output_prefix=output_prefix,
@@ -197,6 +254,7 @@ def run_phase2_conversion(
         template_name=symbol_override.get("name") if use_template else None,
         template_lib_path=symbol_override.get("libPath") if use_template else None,
         force_template=use_template,
+        symbol_params=symbol_params,
     )
 
     def _progress_cb(_stage: ConversionStage, pct: int, message: Optional[str]) -> None:

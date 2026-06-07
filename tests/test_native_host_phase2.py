@@ -202,6 +202,118 @@ def test_request_passed_to_runner_omits_3d_layer() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Issue #28 — Register slice: labelMapping × pageParams → symbol_params
+# ---------------------------------------------------------------------------
+
+
+def _capturing_runner() -> tuple[dict[str, ConversionRequest], Callable[..., _StubResult]]:
+    """Return a runner that records the ConversionRequest it sees + the seen dict."""
+    seen: dict[str, ConversionRequest] = {}
+
+    def runner(request: ConversionRequest, _cb: Callable[..., None]) -> _StubResult:
+        seen["req"] = request
+        return _StubResult(
+            symbol_path="/tmp/MyLib.kicad_sym",
+            footprint_path="/tmp/MyLib.pretty/R0603.kicad_mod",
+        )
+
+    return seen, runner
+
+
+def test_label_mapping_projects_page_params_into_symbol_params() -> None:
+    """Issue #28: Phase 2 applies the rule's label mapping to LCSC params.
+
+    Demoable: registered part → Symbol from Template, Properties populated
+    from the LCSC metadata snapshot.
+    """
+    seen, runner = _capturing_runner()
+    run_phase2_conversion(
+        {
+            "lcscId": "C22548",
+            "libraryPath": "/tmp/MyLib",
+            "overrides": {
+                "symbol": {
+                    "source": "template",
+                    "libPath": "/tmp/MyTemplates.kicad_sym",
+                    "name": "R0603",
+                },
+                "footprint": {"source": "easyeda"},
+            },
+            "labelMapping": {
+                "Resistance": "Value",
+                "Tolerance": "Tolerance",
+                "Power(Watts)": "Power",
+            },
+            "pageParams": {
+                "Resistance": "10k",
+                "Tolerance": "1%",
+                "Power(Watts)": "0.25W",
+                "Mfr. Part #": "ignored — not in mapping",
+            },
+        },
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    req = seen["req"]
+    assert req.use_template is True
+    assert req.template_name == "R0603"
+    assert req.symbol_params == {
+        "Value": "10k",
+        "Tolerance": "1%",
+        "Power": "0.25W",
+    }
+
+
+def test_missing_page_params_skips_symbol_params_injection() -> None:
+    """A registered rule with mapping but no page snapshot → no symbol_params."""
+    seen, runner = _capturing_runner()
+    run_phase2_conversion(
+        {
+            "lcscId": "C22548",
+            "libraryPath": "/tmp/MyLib",
+            "labelMapping": {"Resistance": "Value"},
+        },
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    assert seen["req"].symbol_params is None
+
+
+def test_empty_label_mapping_leaves_symbol_params_none() -> None:
+    """No labelMapping in params → default-path behavior unchanged."""
+    seen, runner = _capturing_runner()
+    run_phase2_conversion(
+        {
+            "lcscId": "C22548",
+            "libraryPath": "/tmp/MyLib",
+            "pageParams": {"Resistance": "10k"},
+        },
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    assert seen["req"].symbol_params is None
+
+
+def test_label_mapping_drops_lcsc_keys_with_blank_values() -> None:
+    """A mapped LCSC key that is blank/missing on the page is silently skipped."""
+    seen, runner = _capturing_runner()
+    run_phase2_conversion(
+        {
+            "lcscId": "C22548",
+            "libraryPath": "/tmp/MyLib",
+            "labelMapping": {
+                "Resistance": "Value",
+                "Tolerance": "Tolerance",
+            },
+            "pageParams": {"Resistance": "10k", "Tolerance": "  "},
+        },
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    assert seen["req"].symbol_params == {"Value": "10k"}
+
+
+# ---------------------------------------------------------------------------
 # host.handle — convert RPC dispatch + progress streaming
 # ---------------------------------------------------------------------------
 

@@ -35,6 +35,14 @@ export const OVERRIDE_CANCEL_ATTR = "data-k2c-override-cancel";
 /** Register-Prompt buttons (⚪ white state, ADR-0006). */
 export const OVERRIDE_EASYEDA_ONLY_ATTR = "data-k2c-override-easyeda-only";
 export const OVERRIDE_REGISTER_ATTR = "data-k2c-override-register";
+/** Register Import-Editor controls (Issue #28). */
+export const OVERRIDE_REGISTER_EDITOR_ATTR = "data-k2c-register-editor";
+export const OVERRIDE_REGISTER_SAVE_ATTR = "data-k2c-register-save";
+export const OVERRIDE_REGISTER_CANCEL_ATTR = "data-k2c-register-cancel";
+export const OVERRIDE_REGISTER_MAPPING_ROW_ATTR = "data-k2c-register-mapping-row";
+export const OVERRIDE_REGISTER_MAPPING_LCSC_ATTR = "data-k2c-register-mapping-lcsc";
+export const OVERRIDE_REGISTER_MAPPING_KICAD_ATTR = "data-k2c-register-mapping-kicad";
+export const OVERRIDE_REGISTER_MAPPING_ADD_ATTR = "data-k2c-register-mapping-add";
 
 export const EASYEDA_OPTION_VALUE = "easyeda";
 const TEMPLATE_VALUE_PREFIX = "template:";
@@ -136,6 +144,206 @@ export function buildRegisterPrompt(doc, opts = {}) {
   panel.appendChild(actions);
 
   return panel;
+}
+
+/**
+ * Build a single LCSC-label ↔ KiCad-property row inside the Register
+ * Import-Editor's mapping table. Two text inputs side-by-side; the LCSC
+ * label list is hinted as a ``<datalist>`` (the editor builds one shared
+ * list for all rows so the user can pick from the snapshot or type a
+ * custom label).
+ */
+function buildMappingRow(doc, datalistId, initial = {}) {
+  const row = doc.createElement("div");
+  row.setAttribute(OVERRIDE_REGISTER_MAPPING_ROW_ATTR, "true");
+  row.style.cssText = "display:flex;gap:6px;align-items:center";
+
+  const lcsc = doc.createElement("input");
+  lcsc.type = "text";
+  lcsc.setAttribute(OVERRIDE_REGISTER_MAPPING_LCSC_ATTR, "true");
+  lcsc.placeholder = "LCSC label (z.B. Resistance)";
+  if (datalistId) lcsc.setAttribute("list", datalistId);
+  if (typeof initial.lcsc === "string") lcsc.value = initial.lcsc;
+  lcsc.style.cssText = "flex:1;min-width:0";
+  row.appendChild(lcsc);
+
+  const arrow = doc.createElement("span");
+  arrow.textContent = "→";
+  arrow.style.cssText = "color:#94a3b8;flex-shrink:0";
+  row.appendChild(arrow);
+
+  const kicad = doc.createElement("input");
+  kicad.type = "text";
+  kicad.setAttribute(OVERRIDE_REGISTER_MAPPING_KICAD_ATTR, "true");
+  kicad.placeholder = "Symbol-Property (z.B. Value)";
+  if (typeof initial.kicad === "string") kicad.value = initial.kicad;
+  kicad.style.cssText = "flex:1;min-width:0";
+  row.appendChild(kicad);
+
+  return row;
+}
+
+function collectMapping(panel) {
+  const rows = Array.from(
+    panel.querySelectorAll(`[${OVERRIDE_REGISTER_MAPPING_ROW_ATTR}="true"]`),
+  );
+  const mapping = {};
+  for (const row of rows) {
+    const lcsc = row.querySelector(`[${OVERRIDE_REGISTER_MAPPING_LCSC_ATTR}]`);
+    const kicad = row.querySelector(`[${OVERRIDE_REGISTER_MAPPING_KICAD_ATTR}]`);
+    const k = (lcsc?.value || "").trim();
+    const v = (kicad?.value || "").trim();
+    if (!k || !v) continue;
+    mapping[k] = v;
+  }
+  return mapping;
+}
+
+/**
+ * Build the **Register Import-Editor** (Issue #28). Opens from the ⚪
+ * Register-Prompt's „registrieren" button and lets the user author a
+ * **Category Rule**:
+ *
+ *   - Symbol Source — same dropdown the override panel uses, populated
+ *     from the Native Host's ``listTemplates`` so EasyEDA + every Template
+ *     Library symbol appears as an option.
+ *   - Label-Mapping rows — LCSC parameter labels (lifted from the page
+ *     snapshot) mapped onto KiCad Symbol Property names. ``+ Zeile``
+ *     appends another empty row; rows whose LCSC label or KiCad property
+ *     is blank are dropped on save.
+ *
+ * Footprint/3D stay on the EasyEDA default in the Symbol-MVP — those
+ * controls land with the footprint follow-up slice.
+ *
+ * @param {Document} doc
+ * @param {{
+ *   templateLibs?: Record<string, string[]>,
+ *   pageParams?: Record<string, string>,
+ *   categoryPath?: string | null,
+ *   onSave?: (rule: { categoryPath: string, rule: object }) => void,
+ *   onCancel?: () => void,
+ * }} [opts]
+ */
+export function buildRegisterImportEditor(doc, opts = {}) {
+  const panel = doc.createElement("div");
+  panel.setAttribute(OVERRIDE_PANEL_ATTR, "true");
+  panel.setAttribute(OVERRIDE_PANEL_MODE_ATTR, "registerEditor");
+  panel.setAttribute(OVERRIDE_REGISTER_EDITOR_ATTR, "true");
+  panel.style.cssText = [
+    "display:flex",
+    "flex-direction:column",
+    "gap:8px",
+    "padding:10px 12px",
+    "border:1px solid #cbd5e1",
+    "border-radius:6px",
+    "background:#f8fafc",
+    "margin-top:6px",
+    "font-size:12px",
+    "color:#1e293b",
+  ].join(";");
+
+  const heading = doc.createElement("div");
+  heading.textContent = "Registrieren";
+  heading.style.cssText =
+    "font-weight:600;font-size:11px;letter-spacing:0.04em;text-transform:uppercase;color:#475569";
+  panel.appendChild(heading);
+
+  const categoryLine = doc.createElement("div");
+  const categoryPath = typeof opts.categoryPath === "string" ? opts.categoryPath : "";
+  categoryLine.textContent = categoryPath
+    ? `Kategorie: ${categoryPath}`
+    : "Kategorie: (unbekannt)";
+  categoryLine.style.cssText = "color:#64748b";
+  panel.appendChild(categoryLine);
+
+  // Symbol-Source dropdown — same shape as the override panel's picker so
+  // the parser ``parseLayer`` can decode the chosen option without a
+  // second code path.
+  const symLabel = doc.createElement("label");
+  symLabel.style.cssText = "display:flex;align-items:center;gap:8px";
+  symLabel.appendChild(doc.createTextNode("Symbol"));
+  const symSelect = doc.createElement("select");
+  symSelect.setAttribute(OVERRIDE_SYMBOL_SELECT_ATTR, "true");
+  populateSelect(symSelect, doc, opts.templateLibs);
+  symLabel.appendChild(symSelect);
+  panel.appendChild(symLabel);
+
+  // Datalist hints from the LCSC page snapshot so the user can pick a
+  // label they already see on the product page instead of typing it.
+  const datalistId = "k2c-register-lcsc-labels";
+  const datalist = doc.createElement("datalist");
+  datalist.id = datalistId;
+  const pageParams = opts.pageParams && typeof opts.pageParams === "object" ? opts.pageParams : {};
+  for (const key of Object.keys(pageParams)) {
+    const opt = doc.createElement("option");
+    opt.value = key;
+    datalist.appendChild(opt);
+  }
+  panel.appendChild(datalist);
+
+  const mappingHeading = doc.createElement("div");
+  mappingHeading.textContent = "Metadaten-Mapping (LCSC → Symbol-Property)";
+  mappingHeading.style.cssText = "margin-top:4px;color:#475569";
+  panel.appendChild(mappingHeading);
+
+  const mappingHost = doc.createElement("div");
+  mappingHost.style.cssText = "display:flex;flex-direction:column;gap:4px";
+  panel.appendChild(mappingHost);
+  // Start with one empty row — the user can `+ Zeile` to add more.
+  mappingHost.appendChild(buildMappingRow(doc, datalistId));
+
+  const addRowBtn = doc.createElement("button");
+  addRowBtn.type = "button";
+  addRowBtn.textContent = "+ Zeile";
+  addRowBtn.setAttribute(OVERRIDE_REGISTER_MAPPING_ADD_ATTR, "true");
+  addRowBtn.style.cssText = "align-self:flex-start";
+  addRowBtn.addEventListener("click", () => {
+    mappingHost.appendChild(buildMappingRow(doc, datalistId));
+  });
+  panel.appendChild(addRowBtn);
+
+  const actions = doc.createElement("div");
+  actions.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:4px";
+
+  const cancelBtn = doc.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.textContent = "Abbrechen";
+  cancelBtn.setAttribute(OVERRIDE_REGISTER_CANCEL_ATTR, "true");
+  actions.appendChild(cancelBtn);
+
+  const saveBtn = doc.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.textContent = "Übernehmen";
+  saveBtn.setAttribute(OVERRIDE_REGISTER_SAVE_ATTR, "true");
+  actions.appendChild(saveBtn);
+
+  panel.appendChild(actions);
+
+  symSelect.value = EASYEDA_OPTION_VALUE;
+
+  return panel;
+}
+
+/**
+ * Translate the Register Import-Editor's DOM into the ``setRule`` RPC payload.
+ * The Symbol Source uses the same ``"<source>:<libPath>:<name>"`` grammar as
+ * the override panel so ``parseLayer`` decodes it into the ADR-0006
+ * ``ComponentRule`` shape verbatim.
+ *
+ * @param {HTMLElement} panel
+ * @param {string} categoryPath
+ * @returns {{ categoryPath: string, rule: { symbolSource: object, labelMapping: Record<string,string> } }}
+ */
+export function collectRegisterEditorRule(panel, categoryPath) {
+  const symSelect = panel.querySelector(`[${OVERRIDE_SYMBOL_SELECT_ATTR}]`);
+  const symbolSource = parseLayer(symSelect?.value);
+  return {
+    categoryPath: typeof categoryPath === "string" ? categoryPath : "",
+    rule: {
+      symbolSource,
+      labelMapping: collectMapping(panel),
+    },
+  };
 }
 
 /**
@@ -393,6 +601,89 @@ export function renderOverridePanel(anchorRow, opts = {}) {
       }
     }
   });
+
+  return panel;
+}
+
+/**
+ * Mount the **Register Import-Editor** beneath the Anchor Card. Replaces
+ * an existing Override Panel (e.g. the ⚪ Register-Prompt the user just
+ * clicked „registrieren" in) so the editor takes the same DOM slot — the
+ * user sees the editor flip in beneath the Anchor Card, not stack below
+ * the prompt.
+ *
+ * @param {HTMLElement} anchorRow
+ * @param {{
+ *   templateLibs?: Record<string, string[]>,
+ *   pageParams?: Record<string, string>,
+ *   categoryPath?: string | null,
+ *   onSave?: (payload: { categoryPath: string, rule: object }) => void,
+ *   onCancel?: () => void,
+ *   doc?: Document,
+ * }} [opts]
+ * @returns {HTMLElement | null}
+ */
+export function renderRegisterImportEditor(anchorRow, opts = {}) {
+  if (!anchorRow || !anchorRow.parentNode) return null;
+  const doc = opts.doc || (typeof document !== "undefined" ? document : null);
+  if (!doc) return null;
+
+  // Idempotency: an existing editor wins; otherwise replace any non-editor
+  // panel (typically the Register-Prompt the user clicked) so the editor
+  // takes its slot.
+  const existing = anchorRow.parentNode.querySelector(
+    `[${OVERRIDE_PANEL_ATTR}="true"]`,
+  );
+  if (existing?.getAttribute(OVERRIDE_PANEL_MODE_ATTR) === "registerEditor") {
+    return existing;
+  }
+  if (existing) {
+    const wrapper = existing.closest(`[${OVERRIDE_PANEL_ROW_ATTR}="true"]`) || existing;
+    wrapper.remove();
+  }
+
+  const panel = buildRegisterImportEditor(doc, opts);
+
+  let mount = panel;
+  if (anchorRow.tagName?.toLowerCase() === "tr") {
+    const tr = doc.createElement("tr");
+    tr.setAttribute(OVERRIDE_PANEL_ROW_ATTR, "true");
+    const td = doc.createElement("td");
+    td.colSpan = Math.max(1, anchorRow.children.length);
+    td.appendChild(panel);
+    tr.appendChild(td);
+    mount = tr;
+  }
+  anchorRow.parentNode.insertBefore(mount, anchorRow.nextSibling);
+
+  const removePanel = () => mount.remove();
+
+  panel
+    .querySelector(`[${OVERRIDE_REGISTER_SAVE_ATTR}]`)
+    ?.addEventListener("click", () => {
+      const payload = collectRegisterEditorRule(panel, opts.categoryPath || "");
+      removePanel();
+      if (typeof opts.onSave === "function") {
+        try {
+          opts.onSave(payload);
+        } catch (_e) {
+          /* swallow — caller logs */
+        }
+      }
+    });
+
+  panel
+    .querySelector(`[${OVERRIDE_REGISTER_CANCEL_ATTR}]`)
+    ?.addEventListener("click", () => {
+      removePanel();
+      if (typeof opts.onCancel === "function") {
+        try {
+          opts.onCancel();
+        } catch (_e) {
+          /* swallow */
+        }
+      }
+    });
 
   return panel;
 }
