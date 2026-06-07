@@ -35,6 +35,170 @@ def normalize_category_path(raw: Any) -> str:
     s = unicodedata.normalize("NFC", s)
     return "/".join(seg for seg in (part.strip() for part in s.split("/")) if seg)
 
+
+def canonical_category_key(raw: Any) -> str:
+    """Python mirror of ``canonicalCategoryKey`` (categoryPath.mjs).
+
+    Stable key for de-duplicating paths that differ only by letter case; used
+    as the object-key identity for the per-Category-Path settings store.
+    """
+    n = normalize_category_path(raw)
+    return n.lower() if n else ""
+
+
+def _clean_source_layer(raw: Any) -> dict[str, Any] | None:
+    """Permissive coerce of a ``symbolSource`` / ``footprintSource`` entry to
+    the ADR-0006 shape, or ``None`` when the input is not recognisable.
+
+    Mirrors ``chrome_extension/shared/categoryPath.mjs::cleanSourceLayer``.
+    Unlike ``native_host/rules.py::_normalize_source_layer`` this helper
+    **drops** malformed layers instead of raising — the persistence helpers
+    must never crash on a single bad row pulled out of storage.
+    """
+    if not isinstance(raw, dict):
+        return None
+    source = raw.get("source")
+    if source == "easyeda":
+        return {"source": "easyeda"}
+    if source != "template":
+        return None
+    lib_path = raw.get("libPath")
+    name = raw.get("name")
+    if not isinstance(lib_path, str) or not lib_path.strip():
+        return None
+    if not isinstance(name, str) or not name.strip():
+        return None
+    return {"source": "template", "libPath": lib_path.strip(), "name": name.strip()}
+
+
+def _clean_label_mapping(raw: Any) -> dict[str, str]:
+    """Permissive normalizer for the LCSC-label → KiCad-property map.
+
+    Mirrors ``chrome_extension/shared/categoryPath.mjs::cleanLabelMapping``.
+    Drops non-string and blank entries so a half-filled Import-Editor row in
+    storage cannot poison the rule downstream.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in raw.items():
+        if not isinstance(k, str) or not isinstance(v, str):
+            continue
+        kk = k.strip()
+        vv = v.strip()
+        if not kk or not vv:
+            continue
+        out[kk] = vv
+    return out
+
+
+def merge_category_config(a: Any, b: Any) -> dict[str, Any]:
+    """Python mirror of ``mergeCategoryConfig`` (categoryPath.mjs).
+
+    Pin-visibility flags OR (either side hiding wins); ``valueParam`` keeps
+    ``a``'s preference over ``b``'s. The ADR-0006 ``ComponentRule`` fields
+    (``symbolSource``, ``footprintSource``, ``labelMapping``) are preserved:
+    source layers prefer ``a`` when both are set; ``labelMapping`` is unioned
+    with ``a``'s keys overriding ``b``'s on conflict. Fields removed by
+    ADR-0006 (``autoApply``, ``autoConfirm``, ``action``) are silently dropped.
+
+    New fields are only emitted when at least one side carries a usable value,
+    matching the JS shape so the JS↔Python parity test stays meaningful.
+    """
+    def vp(x: Any) -> str:
+        if isinstance(x, dict):
+            v = x.get("valueParam")
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+
+    def flag(x: Any, name: str) -> bool:
+        return bool(isinstance(x, dict) and x.get(name))
+
+    out: dict[str, Any] = {
+        "hidePinNumbers": flag(a, "hidePinNumbers") or flag(b, "hidePinNumbers"),
+        "hidePinNames": flag(a, "hidePinNames") or flag(b, "hidePinNames"),
+        "valueParam": vp(a) or vp(b) or None,
+    }
+    sym_a = _clean_source_layer(a.get("symbolSource") if isinstance(a, dict) else None)
+    sym_b = _clean_source_layer(b.get("symbolSource") if isinstance(b, dict) else None)
+    if sym_a or sym_b:
+        out["symbolSource"] = sym_a or sym_b
+    fp_a = _clean_source_layer(a.get("footprintSource") if isinstance(a, dict) else None)
+    fp_b = _clean_source_layer(b.get("footprintSource") if isinstance(b, dict) else None)
+    if fp_a or fp_b:
+        out["footprintSource"] = fp_a or fp_b
+    label_b = _clean_label_mapping(b.get("labelMapping") if isinstance(b, dict) else None)
+    label_a = _clean_label_mapping(a.get("labelMapping") if isinstance(a, dict) else None)
+    if label_a or label_b:
+        merged = dict(label_b)
+        merged.update(label_a)
+        out["labelMapping"] = merged
+    return out
+
+
+def _clean_rule_entry(v: Any) -> dict[str, Any] | None:
+    """Python mirror of ``cleanRuleEntry`` (categoryPath.mjs).
+
+    Projects a raw storage value onto the surviving rule shape. V2 keys are
+    always emitted (with defaults) for stable shape; V3 keys are only emitted
+    when present. Fields removed by ADR-0006 are silently dropped.
+    """
+    if not isinstance(v, dict):
+        return None
+    cfg: dict[str, Any] = {
+        "hidePinNumbers": bool(v.get("hidePinNumbers")),
+        "hidePinNames": bool(v.get("hidePinNames")),
+        "valueParam": (
+            v["valueParam"].strip()
+            if isinstance(v.get("valueParam"), str) and v["valueParam"].strip()
+            else None
+        ),
+    }
+    sym = _clean_source_layer(v.get("symbolSource"))
+    if sym:
+        cfg["symbolSource"] = sym
+    fp = _clean_source_layer(v.get("footprintSource"))
+    if fp:
+        cfg["footprintSource"] = fp
+    labels = _clean_label_mapping(v.get("labelMapping"))
+    if labels:
+        cfg["labelMapping"] = labels
+    return cfg
+
+
+def dedupe_category_settings(raw: Any) -> dict[str, dict[str, Any]]:
+    """Python mirror of ``dedupeCategorySettings`` (categoryPath.mjs).
+
+    Collapses entries that differ only by letter case (longer display key
+    wins), strips entries whose key normalizes to empty, and doubles as a
+    load-time sanitizer for the Rule schema: V2-era
+    ``autoApply`` / ``autoConfirm`` / ``action`` fields (removed by ADR-0006)
+    are silently stripped, while ``symbolSource`` / ``footprintSource`` /
+    ``labelMapping`` ride through intact.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    # Map canonical-key → {displayKey, cfg}; Python 3.7+ dicts preserve
+    # insertion order so JS↔Python output ordering matches.
+    bucket: dict[str, dict[str, Any]] = {}
+    for k, v in raw.items():
+        cfg = _clean_rule_entry(v)
+        if cfg is None:
+            continue
+        display_key = normalize_category_path(k)
+        canon = canonical_category_key(k)
+        if not canon:
+            continue
+        prev = bucket.get(canon)
+        if prev is None:
+            bucket[canon] = {"displayKey": display_key, "cfg": cfg}
+        else:
+            prev["cfg"] = merge_category_config(prev["cfg"], cfg)
+            if len(display_key) > len(prev["displayKey"]):
+                prev["displayKey"] = display_key
+    return {entry["displayKey"]: entry["cfg"] for entry in bucket.values()}
+
 sym_lib_regex_kicad_sym = (
     r'\n(?P<indent>[ \t]*)\(symbol "{component_name}".*?\n(?P=indent)\)'
 )

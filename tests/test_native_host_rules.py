@@ -99,6 +99,76 @@ def test_default_store_path_is_user_scoped() -> None:
 
 
 # ---------------------------------------------------------------------------
+# get_rule — load-time sanitization of ADR-0006-removed fields (Issue #30)
+# ---------------------------------------------------------------------------
+
+
+def test_get_rule_silently_strips_legacy_auto_apply_field(tmp_path: Path) -> None:
+    """A V2-era rule on disk that still carries ``autoApply`` must come back
+    cleaned — the rest of the rule survives the strip verbatim."""
+    store = tmp_path / "rules.json"
+    legacy = {
+        "categoryPath": "Passives/Resistors",
+        "symbolSource": {"source": "easyeda"},
+        "labelMapping": {"Resistance": "Value"},
+        "autoApply": "auto",
+    }
+    _write_store(store, {"Passives/Resistors": legacy})
+    rule = get_rule("Passives/Resistors", store_path=store)
+    assert rule is not None
+    assert "autoApply" not in rule
+    assert rule["categoryPath"] == "Passives/Resistors"
+    assert rule["symbolSource"] == {"source": "easyeda"}
+    assert rule["labelMapping"] == {"Resistance": "Value"}
+
+
+def test_get_rule_silently_strips_full_legacy_triplet(tmp_path: Path) -> None:
+    """All three ADR-0006-removed fields disappear together; the rest of the
+    rule (including the V3 ComponentRule fields) is untouched."""
+    store = tmp_path / "rules.json"
+    legacy = {
+        "categoryPath": "Passives/Resistors",
+        "symbolSource": {
+            "source": "template",
+            "libPath": "/libs/R.kicad_sym",
+            "name": "R_SMD",
+        },
+        "footprintSource": {
+            "source": "template",
+            "libPath": "/libs/R.pretty",
+            "name": "R_0805",
+        },
+        "labelMapping": {"Resistance": "Value"},
+        "autoApply": "auto",
+        "autoConfirm": True,
+        "action": "skip",
+    }
+    _write_store(store, {"Passives/Resistors": legacy})
+    rule = get_rule("Passives/Resistors", store_path=store)
+    assert rule is not None
+    assert "autoApply" not in rule
+    assert "autoConfirm" not in rule
+    assert "action" not in rule
+    assert rule["symbolSource"] == legacy["symbolSource"]
+    assert rule["footprintSource"] == legacy["footprintSource"]
+    assert rule["labelMapping"] == legacy["labelMapping"]
+
+
+def test_get_rule_no_op_when_no_legacy_fields(tmp_path: Path) -> None:
+    """A clean rule on disk passes through ``_sanitize_rule_on_load`` as the
+    same object (no copy, no shape change)."""
+    store = tmp_path / "rules.json"
+    clean = {
+        "categoryPath": "Passives/Resistors",
+        "symbolSource": {"source": "easyeda"},
+        "labelMapping": {},
+    }
+    _write_store(store, {"Passives/Resistors": clean})
+    rule = get_rule("Passives/Resistors", store_path=store)
+    assert rule == clean
+
+
+# ---------------------------------------------------------------------------
 # host.handle — getRule RPC dispatch
 # ---------------------------------------------------------------------------
 

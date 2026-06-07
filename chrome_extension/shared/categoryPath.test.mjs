@@ -125,6 +125,109 @@ describe("mergeCategoryConfig", () => {
       valueParam: null,
     });
   });
+
+  /* -------- V3 ComponentRule fields (ADR-0006, Issue #30) -------- */
+
+  it("preserves a's symbolSource when only a has one", () => {
+    const out = mergeCategoryConfig(
+      { symbolSource: { source: "easyeda" } },
+      { hidePinNumbers: true },
+    );
+    expect(out.symbolSource).toEqual({ source: "easyeda" });
+  });
+
+  it("falls back to b's symbolSource when a has none", () => {
+    const out = mergeCategoryConfig(
+      { hidePinNumbers: true },
+      {
+        symbolSource: {
+          source: "template",
+          libPath: "/libs/R.kicad_sym",
+          name: "R_SMD",
+        },
+      },
+    );
+    expect(out.symbolSource).toEqual({
+      source: "template",
+      libPath: "/libs/R.kicad_sym",
+      name: "R_SMD",
+    });
+  });
+
+  it("prefers a's symbolSource over b's when both are set", () => {
+    const out = mergeCategoryConfig(
+      { symbolSource: { source: "easyeda" } },
+      {
+        symbolSource: {
+          source: "template",
+          libPath: "/libs/R.kicad_sym",
+          name: "R_SMD",
+        },
+      },
+    );
+    expect(out.symbolSource).toEqual({ source: "easyeda" });
+  });
+
+  it("preserves footprintSource the same way as symbolSource", () => {
+    const out = mergeCategoryConfig(
+      {},
+      {
+        footprintSource: {
+          source: "template",
+          libPath: "/libs/R.pretty",
+          name: "R_0805",
+        },
+      },
+    );
+    expect(out.footprintSource).toEqual({
+      source: "template",
+      libPath: "/libs/R.pretty",
+      name: "R_0805",
+    });
+  });
+
+  it("unions labelMapping with a's keys winning on conflict", () => {
+    const out = mergeCategoryConfig(
+      { labelMapping: { Resistance: "Value", Tolerance: "Tol_A" } },
+      { labelMapping: { Tolerance: "Tol_B", Power: "Power" } },
+    );
+    expect(out.labelMapping).toEqual({
+      Tolerance: "Tol_A",
+      Power: "Power",
+      Resistance: "Value",
+    });
+  });
+
+  it("drops malformed source-layer descriptors instead of throwing", () => {
+    const out = mergeCategoryConfig(
+      { symbolSource: { source: "template", libPath: "/lib.kicad_sym" } },
+      { symbolSource: { source: "bogus" } },
+    );
+    expect(out.symbolSource).toBeUndefined();
+  });
+
+  it("omits the V3 fields when neither side carries them (no shape bloat)", () => {
+    const out = mergeCategoryConfig({ valueParam: "Resistance" }, { hidePinNumbers: true });
+    expect(out).toEqual({
+      hidePinNumbers: true,
+      hidePinNames: false,
+      valueParam: "Resistance",
+    });
+    expect(out).not.toHaveProperty("symbolSource");
+    expect(out).not.toHaveProperty("footprintSource");
+    expect(out).not.toHaveProperty("labelMapping");
+  });
+
+  it("silently drops ADR-0006-removed fields (autoApply / autoConfirm / action)", () => {
+    const out = mergeCategoryConfig(
+      { autoApply: "auto", autoConfirm: true, action: "skip" },
+      { valueParam: "Resistance" },
+    );
+    expect(out).not.toHaveProperty("autoApply");
+    expect(out).not.toHaveProperty("autoConfirm");
+    expect(out).not.toHaveProperty("action");
+    expect(out.valueParam).toBe("Resistance");
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -167,6 +270,108 @@ describe("dedupeCategorySettings", () => {
       "Valid/Path": { hidePinNumbers: false, hidePinNames: false, valueParam: null },
     });
     expect(Object.keys(out)).toEqual(["Valid/Path"]);
+  });
+
+  /* -------- V3 ComponentRule fields (ADR-0006, Issue #30) -------- */
+
+  it("preserves symbolSource / footprintSource / labelMapping verbatim", () => {
+    const rule = {
+      hidePinNumbers: false,
+      hidePinNames: false,
+      valueParam: null,
+      symbolSource: {
+        source: "template",
+        libPath: "/libs/R.kicad_sym",
+        name: "R_SMD",
+      },
+      footprintSource: {
+        source: "template",
+        libPath: "/libs/R.pretty",
+        name: "R_0805",
+      },
+      labelMapping: { Resistance: "Value", Tolerance: "Tol" },
+    };
+    const out = dedupeCategorySettings({ "Passives/Resistors": rule });
+    expect(out["Passives/Resistors"]).toEqual({
+      hidePinNumbers: false,
+      hidePinNames: false,
+      valueParam: null,
+      symbolSource: rule.symbolSource,
+      footprintSource: rule.footprintSource,
+      labelMapping: rule.labelMapping,
+    });
+  });
+
+  it("silently strips ADR-0006-removed fields when loading legacy rules", () => {
+    const out = dedupeCategorySettings({
+      "Passives/Resistors": {
+        hidePinNumbers: false,
+        hidePinNames: false,
+        valueParam: "Resistance",
+        autoApply: "auto",
+        autoConfirm: true,
+        action: "skip",
+        symbolSource: { source: "easyeda" },
+      },
+    });
+    const entry = out["Passives/Resistors"];
+    expect(entry).not.toHaveProperty("autoApply");
+    expect(entry).not.toHaveProperty("autoConfirm");
+    expect(entry).not.toHaveProperty("action");
+    expect(entry.valueParam).toBe("Resistance");
+    expect(entry.symbolSource).toEqual({ source: "easyeda" });
+  });
+
+  it("merges new fields when case-collapsing duplicates (deepest a-wins, label union)", () => {
+    const out = dedupeCategorySettings({
+      "Passives/Resistors": {
+        symbolSource: { source: "easyeda" },
+        labelMapping: { Resistance: "Value" },
+      },
+      "passives/resistors": {
+        footprintSource: {
+          source: "template",
+          libPath: "/libs/R.pretty",
+          name: "R_0805",
+        },
+        labelMapping: { Power: "Power" },
+      },
+    });
+    expect(Object.keys(out)).toHaveLength(1);
+    const [k] = Object.keys(out);
+    const merged = out[k];
+    expect(merged.symbolSource).toEqual({ source: "easyeda" });
+    expect(merged.footprintSource).toEqual({
+      source: "template",
+      libPath: "/libs/R.pretty",
+      name: "R_0805",
+    });
+    expect(merged.labelMapping).toEqual({
+      Power: "Power",
+      Resistance: "Value",
+    });
+  });
+
+  it("drops blank labelMapping entries", () => {
+    const out = dedupeCategorySettings({
+      "Passives/Resistors": {
+        labelMapping: { Resistance: "Value", "": "Skipped", Tolerance: "  " },
+      },
+    });
+    expect(out["Passives/Resistors"].labelMapping).toEqual({
+      Resistance: "Value",
+    });
+  });
+
+  it("drops malformed source-layer descriptors instead of writing a broken rule", () => {
+    const out = dedupeCategorySettings({
+      "Passives/Resistors": {
+        symbolSource: { source: "template", libPath: "/libs/R.kicad_sym" },
+        footprintSource: { source: "bogus" },
+      },
+    });
+    expect(out["Passives/Resistors"]).not.toHaveProperty("symbolSource");
+    expect(out["Passives/Resistors"]).not.toHaveProperty("footprintSource");
   });
 });
 
@@ -238,6 +443,40 @@ describe("classic-script categoryPath.js parity", () => {
       "///": { hidePinNumbers: true, hidePinNames: true, valueParam: "X" },
       "Valid/Path": { hidePinNumbers: false, hidePinNames: false, valueParam: null },
     },
+    // V3 ComponentRule fields — both halves of a case-collision must survive
+    // the dedupe pass identically on both sides.
+    {
+      "Passives/Resistors": {
+        hidePinNumbers: false,
+        hidePinNames: false,
+        valueParam: null,
+        symbolSource: { source: "easyeda" },
+        labelMapping: { Resistance: "Value" },
+      },
+      "passives/resistors": {
+        hidePinNumbers: false,
+        hidePinNames: false,
+        valueParam: null,
+        footprintSource: {
+          source: "template",
+          libPath: "/libs/R.pretty",
+          name: "R_0805",
+        },
+        labelMapping: { Power: "Power" },
+      },
+    },
+    // Legacy V2-era row carrying the ADR-0006-removed fields — they must
+    // disappear in lockstep on both sides.
+    {
+      "Passives/Resistors": {
+        hidePinNumbers: true,
+        hidePinNames: false,
+        valueParam: "Resistance",
+        autoApply: "auto",
+        autoConfirm: true,
+        action: "skip",
+      },
+    },
   ];
 
   it("normalizeCategoryPath matches the ESM across the corpus", () => {
@@ -260,6 +499,27 @@ describe("classic-script categoryPath.js parity", () => {
       [
         { hidePinNumbers: true, hidePinNames: false },
         { hidePinNumbers: false, hidePinNames: true },
+      ],
+      // V3 ComponentRule fields — source layers + labelMapping merge order
+      // must be identical on both sides for the JS↔Python parity step
+      // to mean anything.
+      [
+        { symbolSource: { source: "easyeda" } },
+        {
+          symbolSource: {
+            source: "template",
+            libPath: "/libs/R.kicad_sym",
+            name: "R_SMD",
+          },
+        },
+      ],
+      [
+        { labelMapping: { Resistance: "Value", Tolerance: "Tol_A" } },
+        { labelMapping: { Tolerance: "Tol_B", Power: "Power" } },
+      ],
+      [
+        { autoApply: "auto", autoConfirm: true, action: "skip" },
+        { valueParam: "Resistance" },
       ],
     ];
     for (const [a, b] of pairs) {
