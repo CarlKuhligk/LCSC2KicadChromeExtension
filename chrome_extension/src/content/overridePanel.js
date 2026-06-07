@@ -288,20 +288,21 @@ export function buildOneClickPanel(doc, opts = {}) {
  * Two actions:
  *   1. **[EasyEDA übernehmen]** (primary, prefilled) — fires
  *      ``onEasyedaOnly`` with the EasyEDA fallback overrides baked in.
- *   2. **[Editor öffnen]** — escape hatch; fires ``onOpenEditor`` so the
+ *   2. **[Editor öffnen]** — escape hatch; fires ``onModify`` so the
  *      caller can swap this panel for the Import-Editor (the same one
- *      Register / Modify use).
+ *      Register / 🟢 Modify use).
  *
- * The ``"openEditor"`` branch of the setting bypasses this builder
- * entirely and renders the Import-Editor directly — see
- * ``renderOverridePanel``.
+ * ``buildYellowPanel`` only constructs the DOM; ``renderOverridePanel``
+ * wires the buttons to the supplied callbacks. The ``"openEditor"``
+ * branch of the setting bypasses this builder entirely and renders the
+ * Import-Editor directly — see ``renderOverridePanel``.
  *
  * @param {Document} doc
  * @param {{
  *   ruleKey?: string | null,
  *   match?: object | null,
  *   onEasyedaOnly?: () => void,
- *   onOpenEditor?: () => void,
+ *   onModify?: () => void,
  * }} [opts]
  */
 export function buildYellowPanel(doc, opts = {}) {

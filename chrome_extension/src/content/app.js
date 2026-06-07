@@ -4883,8 +4883,17 @@ function attachButton(lcscId) {
         };
         const openModifyEditor = () => {
           const rule = match?.rule || {};
+          // 🟡 Issue #31: when yellow is driven by an Auto-Template-Match
+          // (no Rule), seed the editor with the heuristic's Symbol pick so
+          // the user doesn't lose the suggestion on the way into Register
+          // (ADR-0006: openEditor "with the heuristic suggestion pre-filled").
+          // Footprint heuristic prefill rides the Footprint follow-up slice.
+          const heuristicSymbol =
+            match?.symbol?.source === "auto-template-match"
+              ? match.symbol.choice
+              : null;
           openRegisterEditor({
-            initialSymbolSource: rule.symbolSource || null,
+            initialSymbolSource: rule.symbolSource || heuristicSymbol || null,
             initialLabelMapping: rule.labelMapping || null,
           });
         };
