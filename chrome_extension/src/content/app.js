@@ -4707,7 +4707,7 @@ function attachButton(lcscId) {
       // time). Cancel leaves Phase 1's metadata visible — the user can
       // click Download again to re-open the panel. Category Rules /
       // Skip-Panel Flow land in #8; this slice always shows the panel.
-      onPhase1Ok: async () => {
+      onPhase1Ok: async (phase1Result) => {
         let templateLibs = {};
         let templateLibsFootprints = {};
         try {
@@ -4728,9 +4728,37 @@ function attachButton(lcscId) {
         } catch (e) {
           dbg("[overridePanel] template fetch failed", e);
         }
+        // V3 Confidence pipeline (Issue #25, ADR-0006): the SW augments the
+        // Phase-1 response with ``matchResult{state,confidence,...}``. In
+        // the ⚪ ``white`` state (no Category Rule matched) the Override
+        // Panel renders the Register-Prompt; ``nur EasyEDA`` triggers the
+        // existing default-path import (no regression). 🟢/🟡 states land
+        // with #29 and #31.
+        const match = phase1Result?.matchResult || null;
+        const runEasyedaPhase2 = async () => {
+          await runPhase2Convert(anchorRow, lcscId, {
+            rpc: async (id, libraryPath, ov) => {
+              const resp = await contentRpc(
+                "v3Convert",
+                { lcscId: id, libraryPath, overrides: ov },
+                k2cRpc(2, 200),
+              );
+              if (resp?.ok && resp.data) return resp.data;
+              return { ok: false, error: resp?.error || "unknown error" };
+            },
+            overrides: {
+              symbol: { source: "easyeda" },
+              footprint: { source: "easyeda" },
+            },
+            log: (...args) => dbg("[phase2]", ...args),
+          });
+        };
         renderOverridePanel(anchorRow, {
+          match,
           templateLibs,
           templateLibsFootprints,
+          onEasyedaOnly: runEasyedaPhase2,
+          onRegister: () => dbg("[overridePanel] register requested (#28)"),
           onConfirm: async (overrides) => {
             await runPhase2Convert(anchorRow, lcscId, {
               rpc: async (id, libraryPath, ov) => {
