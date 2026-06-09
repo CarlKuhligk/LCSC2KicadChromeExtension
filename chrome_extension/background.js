@@ -2897,10 +2897,27 @@ const RUNTIME_MESSAGE_HANDLERS = {
    * Host's ``setRule`` verb. Returns ``{ok, result|error}`` so the
    * Import-Editor can surface a clear "saved" / "failed" status.
    */
-  v3SetRule: async (message) => nativeHostSetRule({
-    categoryPath: message.categoryPath,
-    rule: message.rule,
-  }),
+  v3SetRule: async (message) => {
+    const res = await nativeHostSetRule({
+      categoryPath: message.categoryPath,
+      rule: message.rule,
+    });
+    // Close the Confidence learn-loop (ADR-0006): matchComponentRule (Phase 1)
+    // resolves against state.categorySettings, so the just-registered rule must
+    // be mirrored there too — not only into the Native-Host store. Without this
+    // the next import of the same category never matches and stays ⚪ white.
+    const path =
+      typeof message.categoryPath === "string" ? message.categoryPath.trim() : "";
+    if (res?.ok && res.result?.rule && path) {
+      state.categorySettings = dedupeCategorySettings({
+        ...state.categorySettings,
+        [path]: res.result.rule,
+      });
+      await persistState(["categorySettings"]);
+      broadcastState();
+    }
+    return res;
+  },
   /**
    * V3 **TemplatePinCheck** (Issue #31). Content-side relay to the Native
    * Host verb. Returns ``{ok, result|error}`` with
