@@ -272,6 +272,51 @@ def test_validate_library_empty_path_raises(tmp_path: Path) -> None:
         fs.validate_library("", [str(tmp_path)])
 
 
+def test_scaffold_library_creates_symbol_and_dirs(tmp_path: Path) -> None:
+    result = fs.scaffold_library(str(tmp_path), "NewLib", extra_roots=[str(tmp_path)])
+    sym = tmp_path / "NewLib.kicad_sym"
+    assert sym.is_file()
+    assert (tmp_path / "NewLib.pretty").is_dir()
+    assert (tmp_path / "NewLib.3dshapes").is_dir()
+    assert result["exists"] is True
+    assert result["resolvedLibraryPrefix"].endswith("NewLib")
+    # Empty symbol-lib header, with our own generator string (not uPesy).
+    head = sym.read_text(encoding="utf-8")
+    assert head.startswith("(kicad_symbol_lib")
+    assert "theautomatist/KiCad-Parts-Importer" in head
+
+
+def test_scaffold_library_idempotent_does_not_clobber(tmp_path: Path) -> None:
+    sym = tmp_path / "Keep.kicad_sym"
+    sym.write_text("(kicad_symbol_lib PRECIOUS)", encoding="utf-8")
+    fs.scaffold_library(str(tmp_path), "Keep", extra_roots=[str(tmp_path)])
+    # An existing symbol file must survive a re-scaffold untouched.
+    assert sym.read_text(encoding="utf-8") == "(kicad_symbol_lib PRECIOUS)"
+
+
+def test_scaffold_library_rejects_base_outside_whitelist(tmp_path: Path) -> None:
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    denied = tmp_path / "denied"
+    denied.mkdir()
+    with pytest.raises(ValueError, match="outside allowed roots"):
+        fs.scaffold_library(str(denied), "X", extra_roots=[str(allowed)])
+
+
+def test_scaffold_library_rejects_name_with_separators(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="invalid library name"):
+        fs.scaffold_library(str(tmp_path), "evil/../esc", extra_roots=[str(tmp_path)])
+
+
+def test_scaffold_library_symbol_only(tmp_path: Path) -> None:
+    fs.scaffold_library(
+        str(tmp_path), "SymOnly", footprint=False, model=False, extra_roots=[str(tmp_path)]
+    )
+    assert (tmp_path / "SymOnly.kicad_sym").is_file()
+    assert not (tmp_path / "SymOnly.pretty").exists()
+    assert not (tmp_path / "SymOnly.3dshapes").exists()
+
+
 # ---------------------------------------------------------------------------
 # host.handle — RPC dispatcher branches
 # ---------------------------------------------------------------------------

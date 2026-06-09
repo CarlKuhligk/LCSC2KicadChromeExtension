@@ -297,3 +297,62 @@ def validate_library(path: Any, extra_roots: Any = None) -> dict[str, Any]:
         "writable": os.access(str(parent_dir), os.W_OK) if parent_exists else False,
         "parentExists": parent_exists,
     }
+
+
+def scaffold_library(
+    base_path: Any,
+    name: Any,
+    symbol: bool = True,
+    footprint: bool = True,
+    model: bool = False,
+    extra_roots: Any = None,
+) -> dict[str, Any]:
+    """Create an empty KiCad library under an allowed root.
+
+    Writes ``<base>/<name>.kicad_sym`` (empty symbol-lib header) plus the
+    ``.pretty`` (and, when requested, ``.3dshapes``) sibling directories. The
+    base folder must be inside the allowed roots (Q-PICK-1). Idempotent: an
+    existing symbol file is left untouched so re-scaffolding never clobbers a
+    populated library. Mirrors ``service.conversion._ensure_output_scaffold``
+    but stands alone so the popup can create a target before the first import.
+
+    Returns the camelCase shape the SW's ``handleCreateLibrary`` consumes.
+    """
+    base = _require_path(base_path)
+    lib_name = name.strip() if isinstance(name, str) else ""
+    if not lib_name:
+        raise ValueError("library name is required")
+    if any(sep in lib_name for sep in ("/", "\\")) or lib_name in (".", ".."):
+        raise ValueError(f"invalid library name: {lib_name!r}")
+    allowed = _allowed_paths(extra_roots)
+    _assert_inside(base, allowed)
+    if not base.is_dir():
+        raise ValueError(f"base folder is not a directory: {base!s}")
+
+    prefix = base / lib_name
+    symbol_path = prefix.with_suffix(".kicad_sym")
+    pretty_dir = prefix.with_suffix(".pretty")
+    model_dir = prefix.with_suffix(".3dshapes")
+    try:
+        if footprint:
+            pretty_dir.mkdir(exist_ok=True)
+        if model or footprint:
+            model_dir.mkdir(exist_ok=True)
+        if symbol and not symbol_path.exists():
+            symbol_path.write_text(
+                "(kicad_symbol_lib\n"
+                "  (version 20211014)\n"
+                "  (generator https://github.com/theautomatist/KiCad-Parts-Importer)\n"
+                ")\n",
+                encoding="utf-8",
+            )
+    except PermissionError as exc:
+        raise ValueError(f"cannot create library under {base!s}: {exc}") from exc
+
+    return {
+        "resolvedLibraryPrefix": str(prefix),
+        "symbolPath": str(symbol_path) if symbol else "",
+        "footprintDir": str(pretty_dir) if footprint else "",
+        "modelDir": str(model_dir) if (model or footprint) else "",
+        "exists": symbol_path.is_file(),
+    }

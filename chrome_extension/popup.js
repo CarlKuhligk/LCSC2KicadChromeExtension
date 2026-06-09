@@ -174,6 +174,9 @@ const state = {
   /** @type {"light"|"dark"} */
   uiTheme: "light",
   connected: false,
+  // V3: the library picker gates on the Native Host (Native Messaging), not the
+  // dead V2 WebSocket `connected` flag. Set by refreshNativeHostStatus().
+  nativeHostOnline: false,
   connectionHint: null,
   libraries: [],
   libraryTotals: { symbols: 0, footprints: 0, models: 0 },
@@ -277,17 +280,22 @@ async function refreshNativeHostStatus() {
     const response = await chrome.runtime.sendMessage({ type: "pingNativeHost" });
     const payload = response?.ok ? response.data : null;
     if (payload?.online) {
+      state.nativeHostOnline = true;
       textEl.textContent = `online · v${payload.version || "?"}`;
       textEl.style.color = "var(--bs-success, #198754)";
     } else {
+      state.nativeHostOnline = false;
       const err = payload?.error || response?.error || "no host";
       textEl.textContent = `offline — ${err} (run the installer?)`;
       textEl.style.color = "var(--bs-danger, #dc3545)";
     }
   } catch (e) {
+    state.nativeHostOnline = false;
     textEl.textContent = `offline — ${e?.message || "ping failed"}`;
     textEl.style.color = "var(--bs-danger, #dc3545)";
   }
+  // Library picker buttons gate on the Native Host being reachable.
+  updateBackendControls();
 }
 
 function cacheElements() {
@@ -393,8 +401,8 @@ function bindEvents() {
 
   elements.pickerButtons.forEach((button) => {
     button.addEventListener("click", () => {
-      if (!state.connected) {
-        showToast("Connect to the backend first.", "warning");
+      if (!state.nativeHostOnline) {
+        showToast("Native Host is offline — run the installer / reload.", "warning");
         return;
       }
       const mode = button.dataset.picker;
@@ -616,11 +624,11 @@ function renderConnectionStatus() {
 
 function updateBackendControls() {
   if (!elements.pickerButtons?.length) return;
-  const disabled = !state.connected;
+  const disabled = !state.nativeHostOnline;
   elements.pickerButtons.forEach((button) => {
     button.disabled = disabled;
     if (disabled) {
-      button.setAttribute("title", "Connect to the backend first.");
+      button.setAttribute("title", "Native Host offline — run the installer / reload.");
       button.setAttribute("aria-disabled", "true");
     } else {
       button.removeAttribute("title");

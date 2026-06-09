@@ -1026,6 +1026,32 @@ async function nativeHostValidateLibrary(path) {
   return response.result;
 }
 
+/**
+ * V3 **Create Library** (Native Host ``scaffoldLibrary``). Writes an empty
+ * ``<base>/<name>.kicad_sym`` + ``.pretty``/``.3dshapes`` siblings inside an
+ * allowed root. Replaces the V2 WebSocket ``libraries_scaffold`` path.
+ *
+ * @returns {Promise<{resolvedLibraryPrefix, symbolPath, footprintDir, modelDir, exists}>}
+ */
+async function nativeHostScaffoldLibrary(payload) {
+  const response = await nativeHostFsRpc(
+    "scaffoldLibrary",
+    {
+      basePath: payload.basePath,
+      name: payload.name,
+      symbol: payload.symbol,
+      footprint: payload.footprint,
+      model: payload.model,
+      extraRoots: getUserAddedRoots(),
+    },
+    30000,
+  );
+  if (!response.ok) {
+    throw new Error(response.error || "Failed to create library.");
+  }
+  return response.result;
+}
+
 async function refreshTemplateStatus() {
   const libPaths = getTemplateLibraryPaths();
   state.templateLibraryPath = libPaths.length ? libPaths[0] : null;
@@ -1617,35 +1643,35 @@ async function handleCreateLibrary(payload = {}) {
   if (!name) {
     throw new Error("Please provide a library name.");
   }
-  const scaffold = await scaffoldLibraryOnServer({
-    base_path: basePath,
-    library_name: name,
+  const scaffold = await nativeHostScaffoldLibrary({
+    basePath,
+    name,
     symbol: payload.symbol !== false,
     footprint: payload.footprint !== false,
     model: Boolean(payload.model),
-    project_relative: false,
   });
   const now = new Date().toISOString();
+  const resolvedPrefix = normalizePath(scaffold.resolvedLibraryPrefix);
   const existing = state.libraries.find(
-    (library) => library.path === normalizePath(scaffold.resolved_library_prefix),
+    (library) => library.path === resolvedPrefix,
   );
   const record = {
     id: existing?.id || createLibraryId(),
     name,
     basePath,
-    path: normalizePath(scaffold.resolved_library_prefix),
-    resolvedPrefix: normalizePath(scaffold.resolved_library_prefix),
-    symbolPath: normalizePath(scaffold.symbol_path || `${scaffold.resolved_library_prefix}.kicad_sym`),
+    path: resolvedPrefix,
+    resolvedPrefix,
+    symbolPath: normalizePath(scaffold.symbolPath || `${resolvedPrefix}.kicad_sym`),
     createdAt: existing?.createdAt || now,
     updatedAt: now,
     active: true,
     assets: {
-      symbol: Boolean(scaffold.symbol_path),
-      footprint: Boolean(scaffold.footprint_dir),
-      model: Boolean(scaffold.model_dir),
+      symbol: Boolean(scaffold.symbolPath),
+      footprint: Boolean(scaffold.footprintDir),
+      model: Boolean(scaffold.modelDir),
     },
     counts: {
-      symbol: scaffold.symbol_path ? 1 : 0,
+      symbol: scaffold.exists ? 1 : 0,
       footprint: 0,
       model: 0,
     },
@@ -1672,12 +1698,12 @@ async function handleImportLibrary(payload = {}) {
     throw new Error("Please select a .kicad_sym file.");
   }
 
-  const validation = await validateLibraryOnServer(symbolPath);
-  if (!validation.exists || !validation.assets?.symbol) {
+  const validation = await nativeHostValidateLibrary(symbolPath);
+  if (!validation.exists || !validation.symbol?.exists) {
     throw new Error("The selected file is not a valid library.");
   }
 
-  const resolvedSymbol = normalizePath(validation.resolved_path || symbolPath);
+  const resolvedSymbol = normalizePath(validation.symbolPath || symbolPath);
   const name = sanitizeLibraryName(deriveLibraryNameFromPath(resolvedSymbol));
   if (!name) {
     throw new Error("Could not determine library name.");
@@ -1701,18 +1727,20 @@ async function handleImportLibrary(payload = {}) {
     updatedAt: now,
     active: true,
     assets: {
-      symbol: Boolean(validation.assets?.symbol),
-      footprint: Boolean(validation.assets?.footprint),
-      model: Boolean(validation.assets?.model),
+      symbol: Boolean(validation.symbol?.exists),
+      footprint: Boolean(validation.footprintDir?.exists),
+      model: false,
     },
     counts: {
-      symbol: Number(validation.counts?.symbol) || (validation.assets?.symbol ? 1 : 0),
-      footprint: Number(validation.counts?.footprint) || 0,
-      model: Number(validation.counts?.model) || 0,
+      // V3 validateLibrary reports existence only, not element counts; the
+      // inventory refresh (still V2-WS) backfills real counts in a follow-up.
+      symbol: validation.symbol?.exists ? 1 : 0,
+      footprint: 0,
+      model: 0,
     },
-    warnings: Array.isArray(validation.warnings) ? validation.warnings : [],
+    warnings: [],
     projectId: payload.projectId || existing?.projectId || "default",
-    modelPath: typeof validation.model_path === "string" ? validation.model_path.trim() : "",
+    modelPath: "",
     missing: !validation.exists,
     lastValidation: now,
   };

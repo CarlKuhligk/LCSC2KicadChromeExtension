@@ -74,6 +74,7 @@ from native_host.fs import (  # noqa: E402
     check_path,
     list_directory,
     list_roots,
+    scaffold_library,
     validate_library,
 )
 from native_host.phase1 import fetch_metadata  # noqa: E402  (after sys.path setup)
@@ -314,7 +315,7 @@ def handle(
     # extension (it persists the user-added folders client-side and forwards
     # them on every call). All four verbs share the same fast-path try/except
     # so a path-outside-whitelist surfaces as a validation error, not a crash.
-    if verb in ("fsRoots", "fsList", "fsCheck", "validateLibrary"):
+    if verb in ("fsRoots", "fsList", "fsCheck", "validateLibrary", "scaffoldLibrary"):
         raw_params = request.get("params")
         params = raw_params if isinstance(raw_params, dict) else {}
         extra_roots = params.get("extraRoots")
@@ -325,6 +326,15 @@ def handle(
                 result = list_directory(params.get("path"), extra_roots)
             elif verb == "fsCheck":
                 result = check_path(params.get("path"), extra_roots)
+            elif verb == "scaffoldLibrary":
+                result = scaffold_library(
+                    params.get("basePath"),
+                    params.get("name"),
+                    symbol=params.get("symbol", True),
+                    footprint=params.get("footprint", True),
+                    model=params.get("model", False),
+                    extra_roots=extra_roots,
+                )
             else:
                 result = validate_library(params.get("path"), extra_roots)
         except ValueError as exc:
