@@ -2,6 +2,10 @@
 
 V3 resolves every LCSC import through a **confidence state machine** with three states, not through a per-rule `autoApply: off/suggest/auto` mode with a silent Skip-Panel path. The import preview is **always visible** — there is no zero-click background write — but in the best case a single click is all it takes.
 
+> **Amendment (2026-06-09, from the first end-to-end test).** Two refinements to the metadata handling and dialog presentation described below:
+> - **Metadata is auto-upserted, not hand-mapped.** Every LCSC spec-table param becomes a symbol Property on import (existing → value replaced, missing → added); stock/price/qty are filtered out by the page scraper. The manual label-mapping editor is removed; the Import-Editor shows a **read-only property preview**. The rule no longer carries a `labelMapping`. Consequently the **"metadata labels mapped" one-click factor is dropped** — `labelsMapped` is always satisfied, so the MVP 🟢 threshold is now **symbol-template matched + category recognised + high confidence**.
+> - **The ⚪ Register-Prompt and the Import-Editor are modal overlays** (dimmed backdrop); 🟢/🟡 stay inline (their always-visible preview is page flow, not a dialog).
+
 - **🟢 Fully defined** — a rule exists, metadata + template data resolve, confidence is high → a **one-click Import** (no separate confirm, no countdown; the resolved result is shown before the click) plus a secondary **"Modify"** button that opens the Import-Editor for the special case.
 - **🟡 Low confidence** — known but the match is uncertain → behaviour is a **user setting**: "keep EasyEDA + unobtrusive hint" *or* open the Import-Editor.
 - **⚪ New / unknown** — no rule → an **active prompt**: "new part — download EasyEDA only *or* register?".

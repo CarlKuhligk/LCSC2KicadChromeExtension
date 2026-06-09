@@ -2,6 +2,16 @@
 
 Laufendes Protokoll der vom Nutzer beantworteten Konzept-Fragen. Ergänzt den 🔴-Block in `KONZEPT.md`.
 
+## Runde 3 — 2026-06-09 (Testlauf-Feedback, verfeinert ADR-0006)
+
+Aus dem ersten echten End-to-End-Import abgeleitete Verfeinerungen. Diese **überschreiben** frühere Aussagen zum Metadaten-Mapping (Runde 1 `Q-RULES-1`, Ein-Klick-Schwelle unten):
+
+- **Metadaten: kein manuelles Label-Mapping mehr.** Alle LCSC-Spec-Tabellen-Parameter werden beim Import **automatisch** als Symbol-Properties upsertet (existierendes Feld → Wert ersetzen, fehlendes → hinzufügen; Stock/Preis/Menge filtert der Scraper aus). Begründung des Nutzers: „alle Daten stehen ja in der Tabelle". Der editierbare Metadaten-Mapper entfällt; der Import-Editor zeigt stattdessen eine **read-only Property-Vorschau**. Die `ComponentRule` trägt kein `labelMapping` mehr (leer).
+- **Confidence-Schwelle angepasst:** „Metadaten-Labels gemappt" entfällt als 🟢-Faktor (`labelsMapped` ist immer erfüllt, da auto). 🟢 = **Symbol-Template gematcht + Kategorie erkannt + hohe Confidence**. Behebt zugleich einen Bug, der die Lernschleife sonst dauerhaft auf 🟡 gehalten hätte.
+- **Dialoge als Modal-Overlays:** ⚪ Register-Prompt **und** Import-Editor sind Modal-Overlays (abgedunkelter Hintergrund), nicht inline. 🟢/🟡 bleiben inline (Seitenfluss, kein Dialog).
+- **Lernschleife-Fix:** registrierte Regel wird in `state.categorySettings` gespiegelt (nicht nur in den Native-Host-Store), damit der nächste Match sie findet.
+- **Library-Management auf Native Host migriert:** Create (neuer `scaffoldLibrary`-Verb) + Import (`validateLibrary`) — die V2-WebSocket-Pfade (`libraries_scaffold`/`_validate`) waren tot. Picker-Buttons hängen jetzt am Native-Host-Status statt am toten WS-`connected`.
+
 ## Runde 1 — 2026-06-04
 
 - **Repo/Branding (`UQ-BRANDING`)** → **Bestehendes Repo behalten.** Kanonische URL = `https://github.com/theautomatist/KiCad-Parts-Importer`. Dieser String wird in den AGPL-Generator-Eintrag jeder geschriebenen KiCad-Datei und in den Source-Link (README/Popup) eingebrannt. Entriegelt die AGPL-Hygiene im Cleanup.
