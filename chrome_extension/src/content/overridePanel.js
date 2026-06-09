@@ -1,5 +1,7 @@
 "use strict";
 
+import { mountCsModal } from "./dialog.js";
+
 /**
  * V3 **Override Panel** — inline UI between Phase 1 Fetch and Phase 2
  * Conversion (Issue #5). Replaces V2's 5-dialog cascade with one inline
@@ -43,6 +45,7 @@ export const OVERRIDE_REGISTER_MAPPING_ROW_ATTR = "data-k2c-register-mapping-row
 export const OVERRIDE_REGISTER_MAPPING_LCSC_ATTR = "data-k2c-register-mapping-lcsc";
 export const OVERRIDE_REGISTER_MAPPING_KICAD_ATTR = "data-k2c-register-mapping-kicad";
 export const OVERRIDE_REGISTER_MAPPING_ADD_ATTR = "data-k2c-register-mapping-add";
+export const OVERRIDE_REGISTER_PROP_PREVIEW_ATTR = "data-k2c-register-prop-preview";
 /** 🟢 One-Click panel controls (Issue #29). */
 export const OVERRIDE_IMPORT_ATTR = "data-k2c-override-import";
 export const OVERRIDE_MODIFY_ATTR = "data-k2c-override-modify";
@@ -377,58 +380,10 @@ export function buildYellowPanel(doc, opts = {}) {
   return panel;
 }
 
-/**
- * Build a single LCSC-label ↔ KiCad-property row inside the Register
- * Import-Editor's mapping table. Two text inputs side-by-side; the LCSC
- * label list is hinted as a ``<datalist>`` (the editor builds one shared
- * list for all rows so the user can pick from the snapshot or type a
- * custom label).
- */
-function buildMappingRow(doc, datalistId, initial = {}) {
-  const row = doc.createElement("div");
-  row.setAttribute(OVERRIDE_REGISTER_MAPPING_ROW_ATTR, "true");
-  row.style.cssText = "display:flex;gap:6px;align-items:center";
-
-  const lcsc = doc.createElement("input");
-  lcsc.type = "text";
-  lcsc.setAttribute(OVERRIDE_REGISTER_MAPPING_LCSC_ATTR, "true");
-  lcsc.placeholder = "LCSC label (z.B. Resistance)";
-  if (datalistId) lcsc.setAttribute("list", datalistId);
-  if (typeof initial.lcsc === "string") lcsc.value = initial.lcsc;
-  lcsc.style.cssText = "flex:1;min-width:0";
-  row.appendChild(lcsc);
-
-  const arrow = doc.createElement("span");
-  arrow.textContent = "→";
-  arrow.style.cssText = "color:#94a3b8;flex-shrink:0";
-  row.appendChild(arrow);
-
-  const kicad = doc.createElement("input");
-  kicad.type = "text";
-  kicad.setAttribute(OVERRIDE_REGISTER_MAPPING_KICAD_ATTR, "true");
-  kicad.placeholder = "Symbol-Property (z.B. Value)";
-  if (typeof initial.kicad === "string") kicad.value = initial.kicad;
-  kicad.style.cssText = "flex:1;min-width:0";
-  row.appendChild(kicad);
-
-  return row;
-}
-
-function collectMapping(panel) {
-  const rows = Array.from(
-    panel.querySelectorAll(`[${OVERRIDE_REGISTER_MAPPING_ROW_ATTR}="true"]`),
-  );
-  const mapping = {};
-  for (const row of rows) {
-    const lcsc = row.querySelector(`[${OVERRIDE_REGISTER_MAPPING_LCSC_ATTR}]`);
-    const kicad = row.querySelector(`[${OVERRIDE_REGISTER_MAPPING_KICAD_ATTR}]`);
-    const k = (lcsc?.value || "").trim();
-    const v = (kicad?.value || "").trim();
-    if (!k || !v) continue;
-    mapping[k] = v;
-  }
-  return mapping;
-}
+// Note: the V2-era manual label-mapping editor (buildMappingRow / collectMapping)
+// was removed in the ADR-0006 refinement (2026-06-09). Metadata is now
+// auto-upserted from the page snapshot; the editor shows a read-only preview
+// instead of an editable LCSC→Property mapping table.
 
 /**
  * Build the **Register Import-Editor** (Issue #28). Opens from the ⚪
@@ -507,49 +462,55 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   symLabel.appendChild(symSelect);
   panel.appendChild(symLabel);
 
-  // Datalist hints from the LCSC page snapshot so the user can pick a
-  // label they already see on the product page instead of typing it.
-  const datalistId = "k2c-register-lcsc-labels";
-  const datalist = doc.createElement("datalist");
-  datalist.id = datalistId;
-  const pageParams = opts.pageParams && typeof opts.pageParams === "object" ? opts.pageParams : {};
-  for (const key of Object.keys(pageParams)) {
-    const opt = doc.createElement("option");
-    opt.value = key;
-    datalist.appendChild(opt);
-  }
-  panel.appendChild(datalist);
+  // Metadata preview (ADR-0006, refined 2026-06-09): no manual mapping. Every
+  // LCSC spec param is auto-upserted as a symbol Property on import. Show a
+  // read-only list so the user sees exactly which Properties will be written
+  // (existing Property → value replaced, missing → added).
+  const pageParams =
+    opts.pageParams && typeof opts.pageParams === "object" ? opts.pageParams : {};
+  const propEntries = Object.entries(pageParams).filter(
+    ([k, v]) =>
+      typeof k === "string" && k.trim() && typeof v === "string" && v.trim(),
+  );
 
-  const mappingHeading = doc.createElement("div");
-  mappingHeading.textContent = "Metadaten-Mapping (LCSC → Symbol-Property)";
-  mappingHeading.style.cssText = "margin-top:4px;color:#475569";
-  panel.appendChild(mappingHeading);
+  const propHeading = doc.createElement("div");
+  propHeading.textContent = propEntries.length
+    ? `Eigenschaften, die ins Symbol übernommen werden (${propEntries.length})`
+    : "Keine Metadaten auf der Produktseite gefunden";
+  propHeading.style.cssText = "margin-top:4px;color:#475569";
+  panel.appendChild(propHeading);
 
-  const mappingHost = doc.createElement("div");
-  mappingHost.style.cssText = "display:flex;flex-direction:column;gap:4px";
-  panel.appendChild(mappingHost);
-  const initialMapping =
-    opts.initialLabelMapping && typeof opts.initialLabelMapping === "object"
-      ? Object.entries(opts.initialLabelMapping)
-      : [];
-  if (initialMapping.length) {
-    for (const [lcsc, kicad] of initialMapping) {
-      mappingHost.appendChild(buildMappingRow(doc, datalistId, { lcsc, kicad }));
+  if (propEntries.length) {
+    const propList = doc.createElement("div");
+    propList.setAttribute(OVERRIDE_REGISTER_PROP_PREVIEW_ATTR, "true");
+    propList.style.cssText = [
+      "display:flex",
+      "flex-direction:column",
+      "gap:2px",
+      "max-height:180px",
+      "overflow:auto",
+      "border:1px solid #e2e8f0",
+      "border-radius:4px",
+      "padding:6px 8px",
+      "background:#ffffff",
+    ].join(";");
+    for (const [k, v] of propEntries) {
+      const propRow = doc.createElement("div");
+      propRow.style.cssText =
+        "display:flex;justify-content:space-between;gap:12px;line-height:1.4";
+      const key = doc.createElement("span");
+      key.textContent = k;
+      key.style.cssText = "color:#475569;flex:0 0 auto";
+      const val = doc.createElement("span");
+      val.textContent = v;
+      val.style.cssText =
+        "color:#0f172a;font-weight:500;text-align:right;word-break:break-word";
+      propRow.appendChild(key);
+      propRow.appendChild(val);
+      propList.appendChild(propRow);
     }
-  } else {
-    // Start with one empty row — the user can `+ Zeile` to add more.
-    mappingHost.appendChild(buildMappingRow(doc, datalistId));
+    panel.appendChild(propList);
   }
-
-  const addRowBtn = doc.createElement("button");
-  addRowBtn.type = "button";
-  addRowBtn.textContent = "+ Zeile";
-  addRowBtn.setAttribute(OVERRIDE_REGISTER_MAPPING_ADD_ATTR, "true");
-  addRowBtn.style.cssText = "align-self:flex-start";
-  addRowBtn.addEventListener("click", () => {
-    mappingHost.appendChild(buildMappingRow(doc, datalistId));
-  });
-  panel.appendChild(addRowBtn);
 
   const actions = doc.createElement("div");
   actions.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:4px";
@@ -604,7 +565,9 @@ export function collectRegisterEditorRule(panel, categoryPath) {
     categoryPath: typeof categoryPath === "string" ? categoryPath : "",
     rule: {
       symbolSource,
-      labelMapping: collectMapping(panel),
+      // ADR-0006 (refined): metadata is auto-upserted from the page snapshot;
+      // the rule no longer carries a manual label mapping.
+      labelMapping: {},
     },
   };
 }
@@ -1008,45 +971,45 @@ export function renderOverridePanel(anchorRow, opts = {}) {
  * @returns {HTMLElement | null}
  */
 export function renderRegisterImportEditor(anchorRow, opts = {}) {
-  if (!anchorRow || !anchorRow.parentNode) return null;
   const doc = opts.doc || (typeof document !== "undefined" ? document : null);
   if (!doc) return null;
 
-  // Idempotency: an existing editor wins; otherwise replace any non-editor
-  // panel (typically the Register-Prompt the user clicked) so the editor
-  // takes its slot.
-  const existing = anchorRow.parentNode.querySelector(
-    `[${OVERRIDE_PANEL_ATTR}="true"]`,
-  );
-  if (existing?.getAttribute(OVERRIDE_PANEL_MODE_ATTR) === "registerEditor") {
-    return existing;
-  }
-  if (existing) {
-    const wrapper = existing.closest(`[${OVERRIDE_PANEL_ROW_ATTR}="true"]`) || existing;
-    wrapper.remove();
-  }
-
+  // ADR-0006 (refined 2026-06-09): the Import-Editor is a modal overlay, not an
+  // inline Anchor-Card row — better to use, dims the page behind it. The
+  // ``anchorRow`` argument is kept for API compatibility but no longer drives
+  // the mount; the panel goes into a centered ``mountCsModal`` shell on
+  // ``document.body``. Idempotency is handled by mountCsModal (it dismisses any
+  // existing modal with the same id first).
   const panel = buildRegisterImportEditor(doc, opts);
 
-  let mount = panel;
-  if (anchorRow.tagName?.toLowerCase() === "tr") {
-    const tr = doc.createElement("tr");
-    tr.setAttribute(OVERRIDE_PANEL_ROW_ATTR, "true");
-    const td = doc.createElement("td");
-    td.colSpan = Math.max(1, anchorRow.children.length);
-    td.appendChild(panel);
-    tr.appendChild(td);
-    mount = tr;
-  }
-  anchorRow.parentNode.insertBefore(mount, anchorRow.nextSibling);
-
-  const removePanel = () => mount.remove();
+  let settled = false;
+  const { dismiss } = mountCsModal({
+    id: "k2c-register-editor-modal",
+    maxWidthPx: 560,
+    children: [panel],
+    closeOnBackdrop: true,
+    closeOnEscape: true,
+    onDismiss: () => {
+      // Backdrop / Escape / cancel all funnel through here. Guard against a
+      // double-fire after a save() already dismissed.
+      if (settled) return;
+      settled = true;
+      if (typeof opts.onCancel === "function") {
+        try {
+          opts.onCancel();
+        } catch (_e) {
+          /* swallow */
+        }
+      }
+    },
+  });
 
   panel
     .querySelector(`[${OVERRIDE_REGISTER_SAVE_ATTR}]`)
     ?.addEventListener("click", () => {
       const payload = collectRegisterEditorRule(panel, opts.categoryPath || "");
-      removePanel();
+      settled = true; // suppress the onDismiss -> onCancel path for a save
+      dismiss();
       if (typeof opts.onSave === "function") {
         try {
           opts.onSave(payload);
@@ -1059,14 +1022,8 @@ export function renderRegisterImportEditor(anchorRow, opts = {}) {
   panel
     .querySelector(`[${OVERRIDE_REGISTER_CANCEL_ATTR}]`)
     ?.addEventListener("click", () => {
-      removePanel();
-      if (typeof opts.onCancel === "function") {
-        try {
-          opts.onCancel();
-        } catch (_e) {
-          /* swallow */
-        }
-      }
+      // dismiss() triggers onDismiss -> opts.onCancel.
+      dismiss();
     });
 
   return panel;

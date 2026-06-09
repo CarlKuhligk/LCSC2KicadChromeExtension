@@ -24,6 +24,7 @@ import {
   OVERRIDE_REGISTER_MAPPING_LCSC_ATTR,
   OVERRIDE_REGISTER_MAPPING_KICAD_ATTR,
   OVERRIDE_REGISTER_MAPPING_ADD_ATTR,
+  OVERRIDE_REGISTER_PROP_PREVIEW_ATTR,
   OVERRIDE_IMPORT_ATTR,
   OVERRIDE_MODIFY_ATTR,
   OVERRIDE_ONECLICK_PREVIEW_ATTR,
@@ -370,33 +371,27 @@ describe("buildRegisterImportEditor", () => {
     expect(panel.querySelector(`[${OVERRIDE_FOOTPRINT_SELECT_ATTR}]`)).toBeNull();
   });
 
-  it("starts with one empty mapping row", () => {
-    const panel = buildRegisterImportEditor(document, {});
-    const rows = panel.querySelectorAll(
-      `[${OVERRIDE_REGISTER_MAPPING_ROW_ATTR}="true"]`,
-    );
-    expect(rows.length).toBe(1);
-    expect(rows[0].querySelector(`[${OVERRIDE_REGISTER_MAPPING_LCSC_ATTR}]`).value).toBe("");
-    expect(rows[0].querySelector(`[${OVERRIDE_REGISTER_MAPPING_KICAD_ATTR}]`).value).toBe("");
-  });
-
-  it("'+ Zeile' appends another empty mapping row", () => {
-    const panel = buildRegisterImportEditor(document, {});
-    panel.querySelector(`[${OVERRIDE_REGISTER_MAPPING_ADD_ATTR}]`).click();
-    panel.querySelector(`[${OVERRIDE_REGISTER_MAPPING_ADD_ATTR}]`).click();
-    expect(
-      panel.querySelectorAll(`[${OVERRIDE_REGISTER_MAPPING_ROW_ATTR}="true"]`).length,
-    ).toBe(3);
-  });
-
-  it("publishes LCSC labels as a datalist so the user can pick from the snapshot", () => {
+  it("renders a read-only property preview from the snapshot (no manual mapper)", () => {
+    // ADR-0006 (refined): no manual label-mapping UI; all scraped params are
+    // shown as the Properties that will be auto-upserted into the symbol.
     const panel = buildRegisterImportEditor(document, { pageParams: PAGE_PARAMS });
-    const datalistOptions = Array.from(panel.querySelectorAll("datalist option")).map(
-      (o) => o.value,
-    );
-    expect(datalistOptions).toContain("Resistance");
-    expect(datalistOptions).toContain("Tolerance");
-    expect(datalistOptions).toContain("Power(Watts)");
+    expect(
+      panel.querySelector(`[${OVERRIDE_REGISTER_MAPPING_ROW_ATTR}="true"]`),
+    ).toBeNull();
+    expect(panel.querySelector(`[${OVERRIDE_REGISTER_MAPPING_ADD_ATTR}]`)).toBeNull();
+    const preview = panel.querySelector(`[${OVERRIDE_REGISTER_PROP_PREVIEW_ATTR}]`);
+    expect(preview).toBeTruthy();
+    expect(preview.textContent).toContain("Resistance");
+    expect(preview.textContent).toContain("Tolerance");
+    expect(preview.textContent).toContain("Power(Watts)");
+  });
+
+  it("shows a 'no metadata' note when the snapshot has no params", () => {
+    const panel = buildRegisterImportEditor(document, { pageParams: {} });
+    expect(
+      panel.querySelector(`[${OVERRIDE_REGISTER_PROP_PREVIEW_ATTR}]`),
+    ).toBeNull();
+    expect(panel.textContent).toContain("Keine Metadaten");
   });
 
   it("shows the category path in the heading area", () => {
@@ -414,16 +409,13 @@ describe("buildRegisterImportEditor", () => {
 });
 
 describe("collectRegisterEditorRule", () => {
-  it("returns the chosen symbolSource + labelMapping", () => {
+  it("returns the chosen symbolSource + an empty labelMapping (metadata is auto)", () => {
     const panel = buildRegisterImportEditor(document, {
       templateLibs: ONE_LIB,
       pageParams: PAGE_PARAMS,
     });
     const sym = panel.querySelector(`[${OVERRIDE_SYMBOL_SELECT_ATTR}]`);
     sym.value = "template:/home/user/templates/MyTemplates.kicad_sym:R0603";
-    const row = panel.querySelector(`[${OVERRIDE_REGISTER_MAPPING_ROW_ATTR}="true"]`);
-    row.querySelector(`[${OVERRIDE_REGISTER_MAPPING_LCSC_ATTR}]`).value = "Resistance";
-    row.querySelector(`[${OVERRIDE_REGISTER_MAPPING_KICAD_ATTR}]`).value = "Value";
     const payload = collectRegisterEditorRule(panel, "Passives/Resistors");
     expect(payload).toEqual({
       categoryPath: "Passives/Resistors",
@@ -433,27 +425,10 @@ describe("collectRegisterEditorRule", () => {
           libPath: "/home/user/templates/MyTemplates.kicad_sym",
           name: "R0603",
         },
-        labelMapping: { Resistance: "Value" },
+        // ADR-0006 (refined): no manual mapping — all params auto-upserted.
+        labelMapping: {},
       },
     });
-  });
-
-  it("drops mapping rows where the LCSC label or the KiCad property is blank", () => {
-    const panel = buildRegisterImportEditor(document, {});
-    // Three rows; two of them half-filled.
-    panel.querySelector(`[${OVERRIDE_REGISTER_MAPPING_ADD_ATTR}]`).click();
-    panel.querySelector(`[${OVERRIDE_REGISTER_MAPPING_ADD_ATTR}]`).click();
-    const rows = panel.querySelectorAll(
-      `[${OVERRIDE_REGISTER_MAPPING_ROW_ATTR}="true"]`,
-    );
-    rows[0].querySelector(`[${OVERRIDE_REGISTER_MAPPING_LCSC_ATTR}]`).value = "Resistance";
-    rows[0].querySelector(`[${OVERRIDE_REGISTER_MAPPING_KICAD_ATTR}]`).value = "Value";
-    // Row 1: blank LCSC
-    rows[1].querySelector(`[${OVERRIDE_REGISTER_MAPPING_KICAD_ATTR}]`).value = "Power";
-    // Row 2: blank KiCad
-    rows[2].querySelector(`[${OVERRIDE_REGISTER_MAPPING_LCSC_ATTR}]`).value = "Tolerance";
-    const payload = collectRegisterEditorRule(panel, "Passives");
-    expect(payload.rule.labelMapping).toEqual({ Resistance: "Value" });
   });
 
   it("defaults to symbolSource={source:'easyeda'} when the user did not change the dropdown", () => {
@@ -464,7 +439,7 @@ describe("collectRegisterEditorRule", () => {
 });
 
 describe("renderRegisterImportEditor", () => {
-  it("mounts the editor beneath the anchor row and returns it", () => {
+  it("mounts the editor as a modal overlay on document.body and returns it", () => {
     const row = mountAnchorRow();
     const editor = renderRegisterImportEditor(row, {
       templateLibs: EMPTY_LIBS,
@@ -473,32 +448,24 @@ describe("renderRegisterImportEditor", () => {
     });
     expect(editor).toBeTruthy();
     expect(editor.getAttribute(OVERRIDE_PANEL_MODE_ATTR)).toBe("registerEditor");
-    expect(row.parentNode.contains(editor)).toBe(true);
+    // ADR-0006 (refined): the editor is a modal overlay on document.body, not
+    // an inline row beneath the Anchor Card.
+    expect(document.body.contains(editor)).toBe(true);
+    expect(document.getElementById("k2c-register-editor-modal")).toBeTruthy();
   });
 
-  it("replaces an existing white-state Register-Prompt with the editor (same DOM slot)", () => {
+  it("a second render replaces the first modal (one editor overlay at a time)", () => {
     const row = mountAnchorRow();
-    renderOverridePanel(row, { match: { state: "white" } });
-    renderRegisterImportEditor(row, { templateLibs: EMPTY_LIBS });
-    // Only the editor remains.
-    const panels = row.parentNode.querySelectorAll(
-      `[${OVERRIDE_PANEL_ATTR}="true"]`,
-    );
-    expect(panels.length).toBe(1);
-    expect(panels[0].getAttribute(OVERRIDE_PANEL_MODE_ATTR)).toBe("registerEditor");
-  });
-
-  it("is idempotent — a second render returns the existing editor", () => {
-    const row = mountAnchorRow();
-    const first = renderRegisterImportEditor(row, {});
-    const second = renderRegisterImportEditor(row, {});
-    expect(second).toBe(first);
+    renderRegisterImportEditor(row, {});
+    renderRegisterImportEditor(row, {});
     expect(
-      row.parentNode.querySelectorAll(`[${OVERRIDE_PANEL_ATTR}="true"]`).length,
+      document.querySelectorAll(
+        `[${OVERRIDE_PANEL_MODE_ATTR}="registerEditor"]`,
+      ).length,
     ).toBe(1);
   });
 
-  it("Übernehmen fires onSave with the collected rule and removes the panel", () => {
+  it("Übernehmen fires onSave with the rule and dismisses the modal", () => {
     const row = mountAnchorRow();
     const calls = [];
     const editor = renderRegisterImportEditor(row, {
@@ -509,13 +476,6 @@ describe("renderRegisterImportEditor", () => {
     });
     const sym = editor.querySelector(`[${OVERRIDE_SYMBOL_SELECT_ATTR}]`);
     sym.value = "template:/home/user/templates/MyTemplates.kicad_sym:R0603";
-    const mappingRow = editor.querySelector(
-      `[${OVERRIDE_REGISTER_MAPPING_ROW_ATTR}="true"]`,
-    );
-    mappingRow.querySelector(`[${OVERRIDE_REGISTER_MAPPING_LCSC_ATTR}]`).value =
-      "Resistance";
-    mappingRow.querySelector(`[${OVERRIDE_REGISTER_MAPPING_KICAD_ATTR}]`).value =
-      "Value";
     editor.querySelector(`[${OVERRIDE_REGISTER_SAVE_ATTR}]`).click();
     expect(calls).toEqual([
       {
@@ -526,14 +486,15 @@ describe("renderRegisterImportEditor", () => {
             libPath: "/home/user/templates/MyTemplates.kicad_sym",
             name: "R0603",
           },
-          labelMapping: { Resistance: "Value" },
+          labelMapping: {},
         },
       },
     ]);
-    expect(row.parentNode.querySelector(`[${OVERRIDE_PANEL_ATTR}="true"]`)).toBeNull();
+    // Modal overlay is gone after save.
+    expect(document.getElementById("k2c-register-editor-modal")).toBeNull();
   });
 
-  it("Abbrechen fires onCancel and removes the panel", () => {
+  it("Abbrechen fires onCancel and dismisses the modal", () => {
     const row = mountAnchorRow();
     const cancelled = [];
     const editor = renderRegisterImportEditor(row, {
@@ -541,7 +502,18 @@ describe("renderRegisterImportEditor", () => {
     });
     editor.querySelector(`[${OVERRIDE_REGISTER_CANCEL_ATTR}]`).click();
     expect(cancelled).toEqual([true]);
-    expect(row.parentNode.querySelector(`[${OVERRIDE_PANEL_ATTR}="true"]`)).toBeNull();
+    expect(document.getElementById("k2c-register-editor-modal")).toBeNull();
+  });
+
+  it("save does not also fire onCancel (no double-settle)", () => {
+    const row = mountAnchorRow();
+    const calls = [];
+    const editor = renderRegisterImportEditor(row, {
+      onSave: () => calls.push("save"),
+      onCancel: () => calls.push("cancel"),
+    });
+    editor.querySelector(`[${OVERRIDE_REGISTER_SAVE_ATTR}]`).click();
+    expect(calls).toEqual(["save"]);
   });
 
   it("[Modifizieren] entry: prefills the Symbol dropdown with the matched rule's source", () => {
@@ -558,27 +530,6 @@ describe("renderRegisterImportEditor", () => {
     expect(sym.value).toBe(
       "template:/home/user/templates/MyTemplates.kicad_sym:R0603",
     );
-  });
-
-  it("[Modifizieren] entry: prefills mapping rows with the matched rule's labelMapping", () => {
-    const row = mountAnchorRow();
-    const editor = renderRegisterImportEditor(row, {
-      templateLibs: ONE_LIB,
-      initialLabelMapping: { Resistance: "Value", Tolerance: "Tolerance" },
-    });
-    const rows = editor.querySelectorAll(
-      `[${OVERRIDE_REGISTER_MAPPING_ROW_ATTR}="true"]`,
-    );
-    expect(rows.length).toBe(2);
-    expect(
-      rows[0].querySelector(`[${OVERRIDE_REGISTER_MAPPING_LCSC_ATTR}]`).value,
-    ).toBe("Resistance");
-    expect(
-      rows[0].querySelector(`[${OVERRIDE_REGISTER_MAPPING_KICAD_ATTR}]`).value,
-    ).toBe("Value");
-    expect(
-      rows[1].querySelector(`[${OVERRIDE_REGISTER_MAPPING_LCSC_ATTR}]`).value,
-    ).toBe("Tolerance");
   });
 
   it("falls back to EasyEDA on prefill when the supplied template lib was unregistered", () => {
