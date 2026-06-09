@@ -323,13 +323,14 @@ describe("renderOverridePanel — white state", () => {
     expect(row.parentNode.querySelector(`[${OVERRIDE_PANEL_ATTR}="true"]`)).toBeNull();
   });
 
-  it("is idempotent in the white state too — a second render returns the existing prompt", () => {
+  it("a second white render replaces the prompt modal (one overlay at a time)", () => {
     const row = mountAnchorRow();
-    const first = renderOverridePanel(row, { match: { state: "white" } });
-    const second = renderOverridePanel(row, { match: { state: "white" } });
-    expect(second).toBe(first);
+    renderOverridePanel(row, { match: { state: "white" } });
+    renderOverridePanel(row, { match: { state: "white" } });
+    // ⚪ is a modal now; mountCsModal keeps a single prompt overlay by id, so a
+    // re-render replaces rather than stacking.
     expect(
-      row.parentNode.querySelectorAll(`[${OVERRIDE_PANEL_ATTR}="true"]`).length,
+      document.querySelectorAll(`[${OVERRIDE_PANEL_ATTR}="true"]`).length,
     ).toBe(1);
   });
 });

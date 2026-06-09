@@ -755,13 +755,20 @@ export function renderOverridePanel(anchorRow, opts = {}) {
   const doc = opts.doc || (typeof document !== "undefined" ? document : null);
   if (!doc) return null;
 
-  const existing = anchorRow.parentNode.querySelector(`[${OVERRIDE_PANEL_ATTR}="true"]`);
-  if (existing) return existing;
-
   const matchState = opts.match?.state;
   const isWhite = matchState === "white";
   const isGreen = matchState === "green";
   const isYellow = matchState === "yellow";
+
+  // Inline idempotency for the non-modal states (🟢/🟡/sources). ⚪ white now
+  // mounts as a modal overlay; mountCsModal dismisses any existing prompt modal
+  // by id, so a re-render simply replaces it (no inline "return existing").
+  if (!isWhite) {
+    const existing = anchorRow.parentNode.querySelector(
+      `[${OVERRIDE_PANEL_ATTR}="true"]`,
+    );
+    if (existing) return existing;
+  }
   const lowConfidenceBehaviour =
     opts.lowConfidenceBehaviour === "keepEasyeda" ? "keepEasyeda" : "openEditor";
 
@@ -800,23 +807,37 @@ export function renderOverridePanel(anchorRow, opts = {}) {
     panel = buildOverridePanel(doc, opts);
   }
 
-  // Wrap the panel in a <tr><td colspan>…</td></tr> when the anchor lives in
-  // a table so it lines up with the existing Anchor Card row. Outside a
-  // table (Float Fallback) the panel is inserted as a plain sibling.
-  let mount = panel;
-  if (anchorRow.tagName?.toLowerCase() === "tr") {
-    const tr = doc.createElement("tr");
-    tr.setAttribute(OVERRIDE_PANEL_ROW_ATTR, "true");
-    const td = doc.createElement("td");
-    td.colSpan = Math.max(1, anchorRow.children.length);
-    td.appendChild(panel);
-    tr.appendChild(td);
-    mount = tr;
+  // ⚪ white Register-Prompt mounts as a modal overlay (ADR-0006 refined, user
+  // choice 2026-06-09) so it reads as a dialog. 🟢/🟡/sources stay inline
+  // beneath the Anchor Card — their always-visible preview is part of the page
+  // flow, not a dialog, and would be intrusive as an overlay on every part.
+  let removePanel;
+  if (isWhite) {
+    const { dismiss } = mountCsModal({
+      id: "k2c-register-prompt-modal",
+      maxWidthPx: 460,
+      children: [panel],
+      closeOnBackdrop: true,
+      closeOnEscape: true,
+    });
+    removePanel = dismiss;
+  } else {
+    // Wrap the panel in a <tr><td colspan>…</td></tr> when the anchor lives in
+    // a table so it lines up with the existing Anchor Card row. Outside a
+    // table (Float Fallback) the panel is inserted as a plain sibling.
+    let mount = panel;
+    if (anchorRow.tagName?.toLowerCase() === "tr") {
+      const tr = doc.createElement("tr");
+      tr.setAttribute(OVERRIDE_PANEL_ROW_ATTR, "true");
+      const td = doc.createElement("td");
+      td.colSpan = Math.max(1, anchorRow.children.length);
+      td.appendChild(panel);
+      tr.appendChild(td);
+      mount = tr;
+    }
+    anchorRow.parentNode.insertBefore(mount, anchorRow.nextSibling);
+    removePanel = () => mount.remove();
   }
-
-  anchorRow.parentNode.insertBefore(mount, anchorRow.nextSibling);
-
-  const removePanel = () => mount.remove();
 
   if (isWhite) {
     const easyedaBtn = panel.querySelector(`[${OVERRIDE_EASYEDA_ONLY_ATTR}]`);
