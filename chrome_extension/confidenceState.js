@@ -211,20 +211,71 @@ function _resolveDeepestPrefixRule(categoryPath, categorySettings) {
   return { key: bestKey, rule: categorySettings[bestKey] };
 }
 
+// Category-Property auto-match (self-describing templates) — see the canonical
+// shared/confidenceState.mjs for the full doc. A symbol's Category matches when
+// it equals one segment of the LCSC path (case-insensitive) or is a prefix.
+function _matchTemplateByCategory(categoryPath, categoriesByLib) {
+  if (!categoryPath || typeof categoryPath !== "string") return null;
+  if (!categoriesByLib || typeof categoriesByLib !== "object") return null;
+  const pathLower = categoryPath.trim().toLowerCase();
+  if (!pathLower) return null;
+  const segments = new Set(
+    pathLower.split("/").map((s) => s.trim()).filter(Boolean),
+  );
+  const hits = [];
+  for (const libPath of Object.keys(categoriesByLib)) {
+    const byName = categoriesByLib[libPath];
+    if (!byName || typeof byName !== "object") continue;
+    for (const name of Object.keys(byName)) {
+      const cat = byName[name];
+      if (typeof cat !== "string" || !cat.trim()) continue;
+      const c = cat.trim().toLowerCase();
+      const matches =
+        segments.has(c) || pathLower === c || pathLower.startsWith(`${c}/`);
+      if (matches) hits.push({ libPath, name, category: cat.trim() });
+    }
+  }
+  if (hits.length === 0) return null;
+  if (hits.length === 1) return hits[0];
+  return { ambiguous: true };
+}
+
 function matchComponentRule(phase1, state) {
   const categoryPath = normalizeCategoryPath(phase1?.categoryPath);
   const categorySettings = state?.categorySettings || null;
   const templateSymbolsByLib = state?.templateSymbolsByLib || null;
   const templateFootprintsByLib = state?.templateFootprintsByLib || null;
+  const templateCategoriesByLib = state?.templateCategoriesByLib || null;
   const templatePinCounts = state?.templatePinCounts || null;
 
   const resolved = _resolveDeepestPrefixRule(categoryPath, categorySettings);
-  const rule = resolved?.rule || null;
+  let rule = resolved?.rule || null;
+  let ruleKey = resolved?.key ?? null;
 
-  const symbolTemplateResolvable = _isSymbolTemplateResolvable(
+  let symbolTemplateResolvable = _isSymbolTemplateResolvable(
     rule?.symbolSource,
     templateSymbolsByLib,
   );
+
+  // Category-Property auto-match (self-describing templates): unique match ->
+  // synthesise a rule so green lights up without manual registration.
+  let categoryMatched = false;
+  if (!symbolTemplateResolvable) {
+    const catHit = _matchTemplateByCategory(categoryPath, templateCategoriesByLib);
+    if (catHit && !catHit.ambiguous) {
+      rule = {
+        symbolSource: {
+          source: "template",
+          libPath: catHit.libPath,
+          name: catHit.name,
+        },
+        labelMapping: {},
+      };
+      ruleKey = `category:${catHit.category}`;
+      symbolTemplateResolvable = true;
+      categoryMatched = true;
+    }
+  }
   // ADR-0006 (refined 2026-06-09): metadata is auto-upserted from the LCSC
   // page (all spec params → symbol Properties), so "labels mapped" is always
   // satisfied for a registered rule — no manual mapping gates green anymore.
@@ -240,8 +291,12 @@ function matchComponentRule(phase1, state) {
       layer: "symbol",
       choice: { ...rule.symbolSource },
       confidence: _RULE_TEMPLATE_CONFIDENCE,
-      reasons: [`Category Rule "${resolved.key}" symbol template`],
-      source: "rule",
+      reasons: [
+        categoryMatched
+          ? `category match → ${rule.symbolSource.name}`
+          : `Category Rule "${resolved.key}" symbol template`,
+      ],
+      source: categoryMatched ? "category-match" : "rule",
     };
     footprint = _easyedaFallback(
       "footprint",
@@ -276,8 +331,8 @@ function matchComponentRule(phase1, state) {
   const aggregateConfidence = symbol.confidence;
 
   const factors = {
-    ruleResolved: Boolean(resolved),
-    categoryResolved: Boolean(resolved),
+    ruleResolved: Boolean(resolved) || categoryMatched,
+    categoryResolved: Boolean(resolved) || categoryMatched,
     symbolResolved: symbol.source !== "easyeda-fallback",
     symbolTemplateResolvable,
     labelsMapped,
@@ -291,7 +346,7 @@ function matchComponentRule(phase1, state) {
   const stateName = computeConfidenceState(rule, symbol, footprint, factors);
 
   return {
-    ruleKey: resolved?.key ?? null,
+    ruleKey,
     rule,
     symbol,
     footprint,

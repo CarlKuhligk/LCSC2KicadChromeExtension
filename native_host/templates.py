@@ -25,6 +25,7 @@ from typing import Any, Callable
 from easyeda2kicad.helpers import (
     count_pins_in_symbol_string,
     extract_symbol_from_lib,
+    list_symbol_categories,
     list_symbols_in_lib,
 )
 
@@ -152,9 +153,11 @@ def list_templates(lib_path: Any) -> dict[str, Any]:
         lib_path: Filesystem path to the ``.kicad_sym`` file. Required.
 
     Returns:
-        ``{"libPath": str, "symbols": [...], "footprints": [...]}``. Both
-        lists may be empty when the file is missing or the layer doesn't
-        exist.
+        ``{"libPath": str, "symbols": [...], "symbolCategories": {name: cat},
+        "footprints": [...]}``. ``symbolCategories`` maps the subset of symbols
+        that declare a KiCad ``Category`` property to that value (used for
+        auto-matching against the LCSC category). Lists/maps may be empty when
+        the file is missing or the layer doesn't exist.
 
     Raises:
         ValueError: when ``lib_path`` is missing or empty.
@@ -164,10 +167,13 @@ def list_templates(lib_path: Any) -> dict[str, Any]:
     if not candidate:
         raise ValueError("libPath is required")
     sym = Path(candidate)
-    symbols = list_symbols_in_lib(str(sym)) if sym.is_file() else []
+    is_file = sym.is_file()
+    symbols = list_symbols_in_lib(str(sym)) if is_file else []
+    symbol_categories = list_symbol_categories(str(sym)) if is_file else {}
     footprints = _list_footprints_in_pretty(_resolve_pretty_dir(sym))
     return {
         "libPath": candidate,
         "symbols": list(symbols),
+        "symbolCategories": dict(symbol_categories),
         "footprints": list(footprints),
     }

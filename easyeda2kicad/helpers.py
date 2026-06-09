@@ -301,6 +301,41 @@ def list_symbols_in_lib(lib_path: str) -> list:
         return []
 
 
+def list_symbol_categories(lib_path: str) -> dict:
+    """Map each top-level symbol that declares a KiCad ``Category`` property to
+    its (trimmed, non-empty) category value.
+
+    The ``Category`` symbol property couples a template symbol to an LCSC
+    category for auto-matching: the symbol is self-describing, so no separate
+    rule store is needed (a template author sets ``Category = "Resistors"`` on
+    the R symbol and any LCSC resistor matches it). Symbols without the property
+    are omitted. One symbol -> one category.
+    """
+    try:
+        with open(lib_path, encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+    except OSError:
+        return {}
+    # Each top-level symbol block runs from its own ``(symbol "Name"`` token to
+    # the next ``(symbol ...`` token (the first sub-symbol or the next part).
+    # The Category property lives in that block, before the sub-symbols.
+    matches = list(re.finditer(r'\(symbol\s+"([^"]+)"', content))
+    out: dict = {}
+    for i, m in enumerate(matches):
+        name = m.group(1)
+        if re.search(r"_\d+_\d+$", name):
+            continue  # sub-symbol
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
+        block = content[start:end]
+        cat_m = re.search(r'\(property\s+"Category"\s+"([^"]*)"', block)
+        if cat_m:
+            cat = cat_m.group(1).strip()
+            if cat:
+                out[name] = cat
+    return out
+
+
 def count_pins_in_symbol_string(symbol_str: str) -> int:
     """
     Count top-level (pin ...) blocks in a KiCad symbol string.

@@ -151,6 +151,7 @@ let state = {
   templateSymbols: [],
   templateSymbolsByLib: {},
   templateFootprintsByLib: {},
+  templateCategoriesByLib: {},
 };
 
 let healthTimer = null;
@@ -1058,15 +1059,24 @@ async function refreshTemplateStatus() {
   state.templateSymbols = [];
   state.templateSymbolsByLib = {};
   state.templateFootprintsByLib = {};
+  state.templateCategoriesByLib = {};
   if (!libPaths.length) {
     broadcastState();
     return;
   }
   const allNames = new Set();
   for (const libPath of libPaths) {
-    const { symbols, footprints } = await nativeHostListTemplates(libPath);
+    const { symbols, footprints, symbolCategories } =
+      await nativeHostListTemplates(libPath);
     state.templateSymbolsByLib[libPath] = symbols;
     state.templateFootprintsByLib[libPath] = footprints;
+    // Category-Property index (self-describing templates): {name: category}
+    // for the subset of symbols that declare a Category. Drives the
+    // category-based auto-match in confidenceState.
+    state.templateCategoriesByLib[libPath] =
+      symbolCategories && typeof symbolCategories === "object"
+        ? symbolCategories
+        : {};
     symbols.forEach((name) => allNames.add(name));
   }
   state.templateSymbols = Array.from(allNames).sort();
@@ -1350,6 +1360,7 @@ function snapshotState() {
     templateSymbols: (state.templateSymbols || []).slice(),
     templateSymbolsByLib: state.templateSymbolsByLib ? { ...state.templateSymbolsByLib } : {},
     templateFootprintsByLib: state.templateFootprintsByLib ? { ...state.templateFootprintsByLib } : {},
+    templateCategoriesByLib: state.templateCategoriesByLib ? { ...state.templateCategoriesByLib } : {},
     templateLibraryPath: state.templateLibraryPath || null,
     jobs: jobsArray,
     jobHistory: historyArray,
@@ -2441,6 +2452,7 @@ const RUNTIME_MESSAGE_HANDLERS = {
     return {
       templateSymbolsByLib: state.templateSymbolsByLib ? { ...state.templateSymbolsByLib } : {},
       templateFootprintsByLib: state.templateFootprintsByLib ? { ...state.templateFootprintsByLib } : {},
+      templateCategoriesByLib: state.templateCategoriesByLib ? { ...state.templateCategoriesByLib } : {},
       templateSymbols: (state.templateSymbols || []).slice(),
       // Issue #31 — content-script's Override Panel reads this to pick the
       // 🟡 keepEasyeda vs openEditor branch without a second roundtrip.
@@ -2888,6 +2900,7 @@ const RUNTIME_MESSAGE_HANDLERS = {
       matchResult = matchComponentRule(resp.result, {
         categorySettings: state.categorySettings,
         templateSymbolsByLib: state.templateSymbolsByLib,
+        templateCategoriesByLib: state.templateCategoriesByLib,
       });
     } catch (e) {
       // Never let a bug in the matcher knock out Phase 1 itself — the

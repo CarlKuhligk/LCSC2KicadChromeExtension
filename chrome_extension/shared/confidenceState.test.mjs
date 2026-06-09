@@ -506,6 +506,80 @@ describe("matchComponentRule (green-state slice)", () => {
   });
 });
 
+describe("matchComponentRule (category-property auto-match)", () => {
+  const LIB = "/home/user/templates/StdLib.kicad_sym";
+  const baseState = {
+    categorySettings: {}, // no registered rules — pure category match
+    templateSymbolsByLib: { [LIB]: ["R", "C"] },
+    templateCategoriesByLib: { [LIB]: { R: "Resistors", C: "Capacitors" } },
+  };
+
+  it("🟢 green on a unique category match (self-registered template)", () => {
+    const result = matchComponentRule(
+      { categoryPath: "Resistors/Chip Resistor - Surface Mount" },
+      baseState,
+    );
+    expect(result.state).toBe("green");
+    expect(result.symbol.choice).toEqual({
+      source: "template",
+      libPath: LIB,
+      name: "R",
+    });
+    expect(result.symbol.source).toBe("category-match");
+    expect(result.ruleKey).toBe("category:Resistors");
+  });
+
+  it("matches a deeper LCSC path via the flat category segment", () => {
+    const result = matchComponentRule(
+      { categoryPath: "Capacitors/Multilayer Ceramic Capacitors MLCC - SMD" },
+      baseState,
+    );
+    expect(result.state).toBe("green");
+    expect(result.symbol.choice.name).toBe("C");
+  });
+
+  it("no green when no symbol category matches the LCSC path", () => {
+    const result = matchComponentRule(
+      { categoryPath: "Connectors/Headers" },
+      baseState,
+    );
+    expect(result.state).not.toBe("green");
+    expect(result.symbol.source).not.toBe("category-match");
+  });
+
+  it("ambiguous category (two symbols share it) does not auto-pick green", () => {
+    const result = matchComponentRule(
+      { categoryPath: "Resistors/Chip Resistor" },
+      {
+        categorySettings: {},
+        templateSymbolsByLib: { [LIB]: ["R", "R2"] },
+        templateCategoriesByLib: { [LIB]: { R: "Resistors", R2: "Resistors" } },
+      },
+    );
+    expect(result.symbol.source).not.toBe("category-match");
+    expect(result.state).not.toBe("green");
+  });
+
+  it("a registered rule wins over the category match", () => {
+    const result = matchComponentRule(
+      { categoryPath: "Resistors/Chip" },
+      {
+        // Rule deliberately points at "C" to prove it beats the category "R".
+        categorySettings: {
+          Resistors: {
+            symbolSource: { source: "template", libPath: LIB, name: "C" },
+            labelMapping: {},
+          },
+        },
+        templateSymbolsByLib: { [LIB]: ["R", "C"] },
+        templateCategoriesByLib: { [LIB]: { R: "Resistors", C: "Capacitors" } },
+      },
+    );
+    expect(result.symbol.choice.name).toBe("C");
+    expect(result.symbol.source).toBe("rule");
+  });
+});
+
 /* -------------------------------------------------------------------------- */
 /*  Classic-script parity                                                     */
 /*                                                                            */

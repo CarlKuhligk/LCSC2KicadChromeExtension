@@ -309,3 +309,52 @@ def test_host_template_pin_check_returns_validation_error() -> None:
     assert response["id"] == "v"
     assert response["ok"] is False
     assert "lcscId" in response["error"]
+
+
+# ---------------------------------------------------------------------------
+# Category-Property auto-match (self-describing templates, ADR-0006 refined)
+# ---------------------------------------------------------------------------
+
+SAMPLE_KICAD_SYM_WITH_CATEGORY = """(kicad_symbol_lib (version 20240618) (generator kicad-parts-importer)
+  (symbol "R"
+    (property "Reference" "R" (at 0 0 0))
+    (property "Category" "Resistors" (at 0 0 0))
+    (symbol "R_0_1" (pin passive line (at 0 0 0) (length 1)))
+  )
+  (symbol "C"
+    (property "Reference" "C" (at 0 0 0))
+    (property "Category" "Capacitors" (at 0 0 0))
+    (symbol "C_0_1" (pin passive line (at 0 0 0) (length 1)))
+  )
+  (symbol "NoCat"
+    (property "Reference" "U" (at 0 0 0))
+    (symbol "NoCat_0_1" (pin passive line (at 0 0 0) (length 1)))
+  )
+)
+"""
+
+
+def test_list_symbol_categories_reads_category_property(tmp_path: Path) -> None:
+    from easyeda2kicad.helpers import list_symbol_categories
+
+    sym = tmp_path / "Cats.kicad_sym"
+    sym.write_text(SAMPLE_KICAD_SYM_WITH_CATEGORY, encoding="utf-8")
+    cats = list_symbol_categories(str(sym))
+    assert cats == {"R": "Resistors", "C": "Capacitors"}
+    # A symbol without a Category property is omitted (not mapped to "").
+    assert "NoCat" not in cats
+
+
+def test_list_symbol_categories_missing_file(tmp_path: Path) -> None:
+    from easyeda2kicad.helpers import list_symbol_categories
+
+    assert list_symbol_categories(str(tmp_path / "nope.kicad_sym")) == {}
+
+
+def test_list_templates_includes_symbol_categories(tmp_path: Path) -> None:
+    sym = tmp_path / "Cats.kicad_sym"
+    sym.write_text(SAMPLE_KICAD_SYM_WITH_CATEGORY, encoding="utf-8")
+    result = templates.list_templates(str(sym))
+    # symbolCategories maps only the tagged subset; symbols lists them all.
+    assert result["symbolCategories"] == {"R": "Resistors", "C": "Capacitors"}
+    assert set(result["symbols"]) == {"R", "C", "NoCat"}
