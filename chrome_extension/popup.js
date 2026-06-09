@@ -1839,7 +1839,7 @@ function renderPickerPathBreadcrumb() {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "btn btn-sm btn-secondary";
-      button.textContent = crumb?.label || crumb?.path || "";
+      button.textContent = crumb?.name || crumb?.label || crumb?.path || "";
       if (index === crumbs.length - 1) {
         button.disabled = true;
         button.classList.add("active");
@@ -1857,9 +1857,9 @@ function renderPickerPathBreadcrumb() {
 function renderPickerList(entries) {
   elements.pickerList.innerHTML = "";
   const extension = state.picker.filterExtension ? state.picker.filterExtension.toLowerCase() : null;
-  const directories = entries.filter((entry) => entry.is_dir);
+  const directories = entries.filter((entry) => entry.type === "dir");
   const files = extension
-    ? entries.filter((entry) => !entry.is_dir && entry.name.toLowerCase().endsWith(extension))
+    ? entries.filter((entry) => entry.type !== "dir" && entry.name.toLowerCase().endsWith(extension))
     : [];
 
   if (!directories.length && !files.length) {
@@ -1874,7 +1874,7 @@ function renderPickerList(entries) {
 
   const displayEntries = [...directories, ...files];
   displayEntries.forEach((entry) => {
-    const isDir = Boolean(entry.is_dir);
+    const isDir = entry.type === "dir";
     const item = document.createElement("li");
     item.className = "list-group-item list-group-item-action d-flex justify-content-between align-items-center";
     item.dataset.path = entry.path;
