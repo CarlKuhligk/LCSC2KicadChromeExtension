@@ -220,11 +220,12 @@ def _capturing_runner() -> tuple[dict[str, ConversionRequest], Callable[..., _St
     return seen, runner
 
 
-def test_label_mapping_projects_page_params_into_symbol_params() -> None:
-    """Issue #28: Phase 2 applies the rule's label mapping to LCSC params.
+def test_all_page_params_become_symbol_properties() -> None:
+    """ADR-0006 (refined): Phase 2 upserts ALL scraped LCSC params as symbol
+    Properties — property name is the LCSC label, no manual mapping.
 
     Demoable: registered part → Symbol from Template, Properties populated
-    from the LCSC metadata snapshot.
+    from the full LCSC spec table.
     """
     seen, runner = _capturing_runner()
     run_phase2_conversion(
@@ -239,16 +240,11 @@ def test_label_mapping_projects_page_params_into_symbol_params() -> None:
                 },
                 "footprint": {"source": "easyeda"},
             },
-            "labelMapping": {
-                "Resistance": "Value",
-                "Tolerance": "Tolerance",
-                "Power(Watts)": "Power",
-            },
             "pageParams": {
                 "Resistance": "10k",
                 "Tolerance": "1%",
                 "Power(Watts)": "0.25W",
-                "Mfr. Part #": "ignored — not in mapping",
+                "Mfr. Part #": "RC0603FR-0710KL",
             },
         },
         emit=lambda *_: None,
@@ -257,10 +253,12 @@ def test_label_mapping_projects_page_params_into_symbol_params() -> None:
     req = seen["req"]
     assert req.use_template is True
     assert req.template_name == "R0603"
+    # Every param flows through; the property name is the LCSC label verbatim.
     assert req.symbol_params == {
-        "Value": "10k",
+        "Resistance": "10k",
         "Tolerance": "1%",
-        "Power": "0.25W",
+        "Power(Watts)": "0.25W",
+        "Mfr. Part #": "RC0603FR-0710KL",
     }
 
 
@@ -279,14 +277,13 @@ def test_missing_page_params_skips_symbol_params_injection() -> None:
     assert seen["req"].symbol_params is None
 
 
-def test_empty_label_mapping_leaves_symbol_params_none() -> None:
-    """No labelMapping in params → default-path behavior unchanged."""
+def test_no_page_params_leaves_symbol_params_none() -> None:
+    """No pageParams at all → no Property injection (default-path unchanged)."""
     seen, runner = _capturing_runner()
     run_phase2_conversion(
         {
             "lcscId": "C22548",
             "libraryPath": "/tmp/MyLib",
-            "pageParams": {"Resistance": "10k"},
         },
         emit=lambda *_: None,
         conversion_runner=runner,
@@ -294,23 +291,19 @@ def test_empty_label_mapping_leaves_symbol_params_none() -> None:
     assert seen["req"].symbol_params is None
 
 
-def test_label_mapping_drops_lcsc_keys_with_blank_values() -> None:
-    """A mapped LCSC key that is blank/missing on the page is silently skipped."""
+def test_blank_page_param_values_are_skipped() -> None:
+    """A param with a blank value is silently skipped (no empty Property)."""
     seen, runner = _capturing_runner()
     run_phase2_conversion(
         {
             "lcscId": "C22548",
             "libraryPath": "/tmp/MyLib",
-            "labelMapping": {
-                "Resistance": "Value",
-                "Tolerance": "Tolerance",
-            },
             "pageParams": {"Resistance": "10k", "Tolerance": "  "},
         },
         emit=lambda *_: None,
         conversion_runner=runner,
     )
-    assert seen["req"].symbol_params == {"Value": "10k"}
+    assert seen["req"].symbol_params == {"Resistance": "10k"}
 
 
 # ---------------------------------------------------------------------------

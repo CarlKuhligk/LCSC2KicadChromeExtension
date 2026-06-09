@@ -353,7 +353,10 @@ export function matchComponentRule(phase1, state) {
     rule?.symbolSource,
     templateSymbolsByLib,
   );
-  const labelsMapped = hasLabelMappingEntries(rule?.labelMapping);
+  // ADR-0006 (refined 2026-06-09): metadata is auto-upserted from the LCSC
+  // page (all spec params → symbol Properties), so "labels mapped" is always
+  // satisfied for a registered rule — no manual mapping gates green anymore.
+  const labelsMapped = true;
 
   const phase1Normalized = { ...(phase1 || {}), categoryPath };
   const autoMatchOpts = { templatePinCounts };

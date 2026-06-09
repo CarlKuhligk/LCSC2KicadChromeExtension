@@ -156,40 +156,33 @@ def _validate_overrides(raw: Any) -> dict[str, dict[str, Any]]:
     return {"symbol": symbol, "footprint": footprint}
 
 
-def _build_symbol_params(
-    label_mapping: Any, page_params: Any
-) -> dict[str, str] | None:
-    """Project ``page_params`` through ``label_mapping`` into ``symbol_params``.
+def _build_symbol_params(page_params: Any) -> dict[str, str] | None:
+    """Project ALL scraped LCSC params into ``symbol_params`` (auto-upsert).
 
-    The Register slice (Issue #28) persists a ``{LcscLabel: KiCadProperty}``
-    map in the Rule. At Phase 2 time the runner walks the LCSC params
-    snapshot the content script lifted from the product page and emits the
-    KiCad-shaped ``{KiCadProperty: value}`` dict that
-    ``ConversionRequest.symbol_params`` consumes. Missing / blank entries
-    are skipped so a half-filled mapping does not write empty properties.
+    ADR-0006 (refined 2026-06-09): no manual label mapping. Every spec-table
+    parameter the content script scraped from the product page becomes a KiCad
+    symbol Property — the property name is the LCSC label itself, the value is
+    the part's value. Stock / price / quantity columns are already filtered out
+    by the page scraper (``lcscPageSnapshot``), so what arrives here are the
+    technical specs + standard meta (MPN, Manufacturer, Datasheet, …).
 
-    Returns ``None`` when nothing maps — keeps the existing default-path
-    behavior (no ``symbol_params``, no empty Property injection into the
-    template symbol).
+    The template merger upserts these: a Property already on the template gets
+    its value replaced; a missing one is injected as a hidden Property. Blank
+    values are skipped so we never write empty fields.
+
+    Returns ``None`` when there is nothing to write — keeps the default-path
+    behavior (no Property injection).
     """
-    if not isinstance(label_mapping, dict) or not label_mapping:
-        return None
     if not isinstance(page_params, dict) or not page_params:
         return None
     out: dict[str, str] = {}
-    for lcsc_label, kicad_property in label_mapping.items():
-        if not isinstance(lcsc_label, str) or not isinstance(kicad_property, str):
+    for label, value in page_params.items():
+        if not isinstance(label, str) or not isinstance(value, str):
             continue
-        prop = kicad_property.strip()
-        if not prop:
-            continue
-        value = page_params.get(lcsc_label)
-        if not isinstance(value, str):
-            continue
+        k = label.strip()
         v = value.strip()
-        if not v:
-            continue
-        out[prop] = v
+        if k and v:
+            out[k] = v
     return out or None
 
 
@@ -230,13 +223,11 @@ def run_phase2_conversion(
     symbol_override = overrides["symbol"]
     use_template = symbol_override["source"] == "template"
 
-    # Register slice (Issue #28): when the rule carries a ``labelMapping``
-    # the SW also forwards the LCSC param snapshot, and the runner projects
-    # them into ``symbol_params`` so the template Symbol's properties get
-    # the part-specific LCSC values instead of being left blank.
-    symbol_params = _build_symbol_params(
-        params.get("labelMapping"), params.get("pageParams")
-    )
+    # Metadata-as-Properties (ADR-0006, refined 2026-06-09): project ALL
+    # scraped LCSC params into symbol_params; the template merger upserts them
+    # onto the symbol (existing Property -> value replaced, missing -> injected).
+    # No manual label mapping — the part's full spec table flows into the symbol.
+    symbol_params = _build_symbol_params(params.get("pageParams"))
 
     request = ConversionRequest(
         lcsc_id=lcsc_id,

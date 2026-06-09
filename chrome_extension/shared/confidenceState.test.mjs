@@ -473,7 +473,9 @@ describe("matchComponentRule (green-state slice)", () => {
     expect(result.symbol.choice).toEqual({ source: "easyeda" });
   });
 
-  it("falls back to 🟡 when the Rule's labelMapping is missing or empty", () => {
+  it("stays 🟢 with no labelMapping — metadata is auto-upserted (ADR-0006 refined)", () => {
+    // ADR-0006 (refined 2026-06-09): all LCSC spec params are auto-upserted as
+    // symbol Properties, so an empty/absent labelMapping no longer blocks green.
     const result = matchComponentRule(
       { categoryPath: "Passives/Resistors" },
       {
@@ -483,7 +485,7 @@ describe("matchComponentRule (green-state slice)", () => {
         templateSymbolsByLib: greenState.templateSymbolsByLib,
       },
     );
-    expect(result.state).toBe("yellow");
+    expect(result.state).toBe("green");
   });
 
   it("falls back to 🟡 when the symbolSource is EasyEDA (no template to resolve)", () => {
