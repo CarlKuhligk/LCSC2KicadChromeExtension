@@ -1730,8 +1730,8 @@ function setLibraryModalTab(mode) {
 }
 
 function openDirectoryPicker({ mode, onSelect, applyLabel, initialPath }) {
-  if (!state.connected) {
-    showToast("Connect to the backend first.", "warning");
+  if (!state.nativeHostOnline) {
+    showToast("Native Host is offline — run the installer / reload.", "warning");
     return;
   }
   state.picker.mode = mode;
