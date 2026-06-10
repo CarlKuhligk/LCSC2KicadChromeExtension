@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "KiCad Parts Importer",
-  "version": "2.0.0",
-  "description": "Download KiCad 9+ compatible symbols, footprints & 3D from LCSC. Local backend via WebSocket (API URL in Settings).",
+  "version": "3.0.0",
+  "description": "Download KiCad 9+ compatible symbols, footprints & 3D from LCSC. Local backend via Native Host.",
   "permissions": [
     "storage",
     "nativeMessaging",
