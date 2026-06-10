@@ -730,3 +730,58 @@ def test_pin_visibility_flags_default_false() -> None:
     )
     assert seen["req"].hide_pin_numbers is False
     assert seen["req"].hide_pin_names is False
+
+
+def test_value_param_fills_value_override_and_excludes_property() -> None:
+    """valueParam → ConversionRequest.symbol_value_override (Ω-stripped for
+    Resistance) AND the chosen key is excluded from symbol_params (no dup)."""
+    seen, runner = _capturing_runner()
+    run_phase2_conversion(
+        {
+            "lcscId": "C22548",
+            "libraryPath": "/tmp/MyLib",
+            "valueParam": "Resistance",
+            "pageParams": {"Resistance": "10kΩ", "Tolerance": "1%"},
+        },
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    req = seen["req"]
+    assert req.symbol_value_override == "10k"  # Ω stripped
+    assert req.symbol_value_param_key == "Resistance"
+    # The Value-Param is NOT also written as a duplicate Property.
+    assert req.symbol_params == {"Tolerance": "1%"}
+
+
+def test_value_param_non_resistance_keeps_unit() -> None:
+    """Only Resistance gets the Ω-strip; other params pass through verbatim."""
+    seen, runner = _capturing_runner()
+    run_phase2_conversion(
+        {
+            "lcscId": "C1",
+            "libraryPath": "/tmp/MyLib",
+            "valueParam": "Capacitance",
+            "pageParams": {"Capacitance": "100nF"},
+        },
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    assert seen["req"].symbol_value_override == "100nF"
+    assert seen["req"].symbol_value_param_key == "Capacitance"
+
+
+def test_value_param_missing_key_is_tolerated() -> None:
+    """valueParam pointing at an absent key → no override, no crash."""
+    seen, runner = _capturing_runner()
+    run_phase2_conversion(
+        {
+            "lcscId": "C1",
+            "libraryPath": "/tmp/MyLib",
+            "valueParam": "Resistance",
+            "pageParams": {"Tolerance": "1%"},
+        },
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    assert seen["req"].symbol_value_override is None
+    assert seen["req"].symbol_value_param_key is None

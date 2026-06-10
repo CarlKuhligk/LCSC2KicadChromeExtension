@@ -135,6 +135,7 @@ _ALLOWED_RULE_FIELDS: frozenset[str] = frozenset(
         "labelMapping",
         "hidePinNumbers",
         "hidePinNames",
+        "valueParam",
     }
 )
 """ADR-0006 ComponentRule fields persisted by the Register slice.
@@ -260,6 +261,13 @@ def _normalize_rule(rule: Any, category_path: str) -> dict[str, Any]:
         # the schematic. Applied by the engine (template_merger + exporter).
         "hidePinNumbers": bool(rule.get("hidePinNumbers")),
         "hidePinNames": bool(rule.get("hidePinNames")),
+        # Value-Param: the LCSC param name whose value fills the KiCad Value
+        # field (e.g. "Resistance"). Stored as a trimmed string, or None.
+        "valueParam": (
+            rule["valueParam"].strip()
+            if isinstance(rule.get("valueParam"), str) and rule["valueParam"].strip()
+            else None
+        ),
     }
     if "footprintSource" in rule and rule["footprintSource"] is not None:
         # Reserved slot for the footprint follow-up slice. Validate with the

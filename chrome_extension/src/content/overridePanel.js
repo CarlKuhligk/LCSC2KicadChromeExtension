@@ -2,6 +2,7 @@
 
 import { mountCsModal } from "./dialog.js";
 import { templatesMatchingCategory } from "../../shared/confidenceState.mjs";
+import { detectValueParam } from "../../shared/valueParam.mjs";
 
 /**
  * V3 **Override Panel** — inline UI between Phase 1 Fetch and Phase 2
@@ -52,6 +53,7 @@ export const OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR = "data-k2c-register-template-
 export const OVERRIDE_REGISTER_SHOWALL_ATTR = "data-k2c-register-showall";
 export const OVERRIDE_REGISTER_HIDE_PINNUM_ATTR = "data-k2c-register-hide-pinnum";
 export const OVERRIDE_REGISTER_HIDE_PINNAME_ATTR = "data-k2c-register-hide-pinname";
+export const OVERRIDE_REGISTER_VALUE_PARAM_ATTR = "data-k2c-register-value-param";
 /** 🟢 One-Click panel controls (Issue #29). */
 export const OVERRIDE_IMPORT_ATTR = "data-k2c-override-import";
 export const OVERRIDE_MODIFY_ATTR = "data-k2c-override-modify";
@@ -596,16 +598,46 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   );
   panel.appendChild(pinRow);
 
-  // Metadata preview (ADR-0006, refined 2026-06-09): no manual mapping. Every
-  // LCSC spec param is auto-upserted as a symbol Property on import. Show a
-  // read-only list so the user sees exactly which Properties will be written
-  // (existing Property → value replaced, missing → added).
+  // Value-Param + Metadata preview (ADR-0006 refined). The Value dropdown picks
+  // the one param whose value fills the KiCad Value field; the read-only preview
+  // lists every param written as a Property and marks the chosen one ("→ Value")
+  // — that one is NOT also written as a duplicate Property (engine excludes it).
   const pageParams =
     opts.pageParams && typeof opts.pageParams === "object" ? opts.pageParams : {};
   const propEntries = Object.entries(pageParams).filter(
     ([k, v]) =>
       typeof k === "string" && k.trim() && typeof v === "string" && v.trim(),
   );
+
+  // Value-Param dropdown (over the preview).
+  const valueRow = doc.createElement("label");
+  valueRow.style.cssText =
+    "display:flex;align-items:center;gap:8px;margin-top:6px;color:#475569";
+  valueRow.appendChild(doc.createTextNode("Value-Feld"));
+  const valueSelect = doc.createElement("select");
+  valueSelect.setAttribute(OVERRIDE_REGISTER_VALUE_PARAM_ATTR, "true");
+  valueSelect.style.cssText = "flex:1;min-width:0";
+  const noneOpt = doc.createElement("option");
+  noneOpt.value = "";
+  noneOpt.textContent = "— Kein Value-Param (EasyEDA-Standard) —";
+  valueSelect.appendChild(noneOpt);
+  for (const [k, v] of propEntries) {
+    const opt = doc.createElement("option");
+    opt.value = k;
+    opt.textContent = `${k} — ${v}`;
+    valueSelect.appendChild(opt);
+  }
+  // Preselect: caller's initialValueParam, else auto-detect, else none.
+  const presetValueParam =
+    (typeof opts.initialValueParam === "string" && opts.initialValueParam) ||
+    detectValueParam(pageParams) ||
+    "";
+  const hasValueOpt = Array.from(valueSelect.options).some(
+    (o) => o.value === presetValueParam,
+  );
+  valueSelect.value = hasValueOpt ? presetValueParam : "";
+  valueRow.appendChild(valueSelect);
+  panel.appendChild(valueRow);
 
   const propHeading = doc.createElement("div");
   propHeading.textContent = propEntries.length
@@ -628,21 +660,31 @@ export function buildRegisterImportEditor(doc, opts = {}) {
       "padding:6px 8px",
       "background:#ffffff",
     ].join(";");
-    for (const [k, v] of propEntries) {
-      const propRow = doc.createElement("div");
-      propRow.style.cssText =
-        "display:flex;justify-content:space-between;gap:12px;line-height:1.4";
-      const key = doc.createElement("span");
-      key.textContent = k;
-      key.style.cssText = "color:#475569;flex:0 0 auto";
-      const val = doc.createElement("span");
-      val.textContent = v;
-      val.style.cssText =
-        "color:#0f172a;font-weight:500;text-align:right;word-break:break-word";
-      propRow.appendChild(key);
-      propRow.appendChild(val);
-      propList.appendChild(propRow);
-    }
+    // Re-rendered when the Value-Param changes so the "→ Value" badge follows.
+    const renderPropPreview = () => {
+      propList.innerHTML = "";
+      const chosen = valueSelect.value;
+      for (const [k, v] of propEntries) {
+        const isValue = k === chosen;
+        const propRow = doc.createElement("div");
+        propRow.style.cssText =
+          "display:flex;justify-content:space-between;gap:12px;line-height:1.4";
+        const key = doc.createElement("span");
+        key.textContent = isValue ? `${k} → Value` : k;
+        key.style.cssText = isValue
+          ? "color:#1e3a8a;font-weight:600;flex:0 0 auto"
+          : "color:#475569;flex:0 0 auto";
+        const val = doc.createElement("span");
+        val.textContent = v;
+        val.style.cssText =
+          "color:#0f172a;font-weight:500;text-align:right;word-break:break-word";
+        propRow.appendChild(key);
+        propRow.appendChild(val);
+        propList.appendChild(propRow);
+      }
+    };
+    renderPropPreview();
+    valueSelect.addEventListener("change", renderPropPreview);
     panel.appendChild(propList);
   }
 
@@ -713,6 +755,8 @@ export function collectRegisterEditorRule(panel, categoryPath) {
   const hidePinNames = Boolean(
     panel.querySelector(`[${OVERRIDE_REGISTER_HIDE_PINNAME_ATTR}]`)?.checked,
   );
+  const vp = panel.querySelector(`[${OVERRIDE_REGISTER_VALUE_PARAM_ATTR}]`)?.value;
+  const valueParam = typeof vp === "string" && vp.trim() ? vp.trim() : null;
   return {
     categoryPath: typeof categoryPath === "string" ? categoryPath : "",
     rule: {
@@ -722,6 +766,7 @@ export function collectRegisterEditorRule(panel, categoryPath) {
       labelMapping: {},
       hidePinNumbers,
       hidePinNames,
+      valueParam,
     },
   };
 }

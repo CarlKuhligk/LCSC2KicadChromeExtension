@@ -156,7 +156,37 @@ def _validate_overrides(raw: Any) -> dict[str, dict[str, Any]]:
     return {"symbol": symbol, "footprint": footprint}
 
 
-def _build_symbol_params(page_params: Any) -> dict[str, str] | None:
+def _normalize_symbol_value(value: str, value_param: str) -> str:
+    """Clean a raw LCSC param value for the KiCad Value field.
+
+    Mirrors the V2 background.js ``normalizeSymbolValue``: strip the Ohm symbol
+    from Resistance values ("10kΩ" -> "10k"); every other param passes through
+    verbatim (Capacitance / Inductance / Voltage keep their units). Kept here as
+    the single V3 home for this logic (the JS copy is V2-only and dies with it).
+    """
+    v = value.strip() if isinstance(value, str) else ""
+    if isinstance(value_param, str) and value_param.strip().lower() == "resistance":
+        v = v.replace("Ω", "").strip()
+    return v
+
+
+def _resolve_value_override(value_param: Any, page_params: Any) -> str | None:
+    """Look up ``value_param`` in the scraped params and normalize it into the
+    Value-field string. Returns ``None`` when no param is chosen or the chosen
+    key is absent/blank (mismatch-tolerant — never crashes Phase 2)."""
+    if not isinstance(value_param, str) or not value_param.strip():
+        return None
+    if not isinstance(page_params, dict):
+        return None
+    raw = page_params.get(value_param)
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return _normalize_symbol_value(raw, value_param) or None
+
+
+def _build_symbol_params(
+    page_params: Any, exclude_key: Any = None
+) -> dict[str, str] | None:
     """Project ALL scraped LCSC params into ``symbol_params`` (auto-upsert).
 
     ADR-0006 (refined 2026-06-09): no manual label mapping. Every spec-table
@@ -168,21 +198,31 @@ def _build_symbol_params(page_params: Any) -> dict[str, str] | None:
 
     The template merger upserts these: a Property already on the template gets
     its value replaced; a missing one is injected as a hidden Property. Blank
-    values are skipped so we never write empty fields.
+    values are skipped so we never write empty fields. ``exclude_key`` (the
+    chosen Value-Param) is dropped so it does not land BOTH as the Value field
+    and as a duplicate Property.
 
     Returns ``None`` when there is nothing to write — keeps the default-path
     behavior (no Property injection).
     """
     if not isinstance(page_params, dict) or not page_params:
         return None
+    skip = (
+        exclude_key.strip().lower()
+        if isinstance(exclude_key, str) and exclude_key.strip()
+        else None
+    )
     out: dict[str, str] = {}
     for label, value in page_params.items():
         if not isinstance(label, str) or not isinstance(value, str):
             continue
         k = label.strip()
         v = value.strip()
-        if k and v:
-            out[k] = v
+        if not k or not v:
+            continue
+        if skip and k.lower() == skip:
+            continue  # the Value-Param fills the Value field, not a Property
+        out[k] = v
     return out or None
 
 
@@ -223,11 +263,19 @@ def run_phase2_conversion(
     symbol_override = overrides["symbol"]
     use_template = symbol_override["source"] == "template"
 
+    # Value-Param: the one scraped param whose value fills the KiCad Value field
+    # (e.g. Resistance -> 10k). Resolve + normalize it (Ω-strip for Resistance),
+    # then exclude its key from symbol_params so it doesn't ALSO land as a
+    # duplicate Property. value_override is the engine hook (both symbol paths).
+    page_params = params.get("pageParams")
+    value_param = params.get("valueParam")
+    value_override = _resolve_value_override(value_param, page_params)
+
     # Metadata-as-Properties (ADR-0006, refined 2026-06-09): project ALL
     # scraped LCSC params into symbol_params; the template merger upserts them
     # onto the symbol (existing Property -> value replaced, missing -> injected).
     # No manual label mapping — the part's full spec table flows into the symbol.
-    symbol_params = _build_symbol_params(params.get("pageParams"))
+    symbol_params = _build_symbol_params(page_params, exclude_key=value_param)
 
     # Pin-label visibility (Category Rule / ≤2-pin auto-heuristic): hide pin
     # numbers / names in the written symbol. The SW forwards them off the matched
@@ -255,6 +303,8 @@ def run_phase2_conversion(
         symbol_params=symbol_params,
         hide_pin_numbers=hide_pin_numbers,
         hide_pin_names=hide_pin_names,
+        symbol_value_override=value_override,
+        symbol_value_param_key=value_param if value_override else None,
     )
 
     def _progress_cb(_stage: ConversionStage, pct: int, message: Optional[str]) -> None:

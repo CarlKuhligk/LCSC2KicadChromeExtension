@@ -2040,6 +2040,11 @@ async function nativeHostConvert(payload) {
   // the host's convert verb; the engine hides pin numbers/names in the symbol.
   if (payload?.hidePinNumbers) params.hidePinNumbers = true;
   if (payload?.hidePinNames) params.hidePinNames = true;
+  // Value-Param (Category Rule / auto-detect): the LCSC param whose value fills
+  // the KiCad Value field. Host resolves + normalizes it from pageParams.
+  if (typeof payload?.valueParam === "string" && payload.valueParam.trim()) {
+    params.valueParam = payload.valueParam.trim();
+  }
 
   nativeHostConvertInFlight = true;
   try {
@@ -2937,6 +2942,7 @@ const RUNTIME_MESSAGE_HANDLERS = {
     pageParams: message.pageParams,
     hidePinNumbers: message.hidePinNumbers,
     hidePinNames: message.hidePinNames,
+    valueParam: message.valueParam,
   }),
   /**
    * V3 **Register** (Issue #28). Content script's Import-Editor relays the

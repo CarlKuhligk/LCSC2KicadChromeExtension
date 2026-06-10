@@ -30,6 +30,7 @@ import {
   OVERRIDE_REGISTER_SHOWALL_ATTR,
   OVERRIDE_REGISTER_HIDE_PINNUM_ATTR,
   OVERRIDE_REGISTER_HIDE_PINNAME_ATTR,
+  OVERRIDE_REGISTER_VALUE_PARAM_ATTR,
   OVERRIDE_IMPORT_ATTR,
   OVERRIDE_MODIFY_ATTR,
   OVERRIDE_ONECLICK_PREVIEW_ATTR,
@@ -503,6 +504,37 @@ describe("buildRegisterImportEditor", () => {
     expect(payload.rule.hidePinNumbers).toBe(true);
     expect(payload.rule.hidePinNames).toBe(true);
   });
+
+  it("renders a Value-Param dropdown with 'Name — Wert' options", () => {
+    const panel = buildRegisterImportEditor(document, { pageParams: PAGE_PARAMS });
+    const sel = panel.querySelector(`[${OVERRIDE_REGISTER_VALUE_PARAM_ATTR}]`);
+    expect(sel).toBeTruthy();
+    const labels = Array.from(sel.options).map((o) => o.textContent);
+    expect(labels.some((t) => t.includes("Resistance — 10k"))).toBe(true);
+  });
+
+  it("auto-selects the detected Value-Param (Resistance)", () => {
+    const panel = buildRegisterImportEditor(document, { pageParams: PAGE_PARAMS });
+    expect(
+      panel.querySelector(`[${OVERRIDE_REGISTER_VALUE_PARAM_ATTR}]`).value,
+    ).toBe("Resistance");
+  });
+
+  it("respects initialValueParam (Modify prefill)", () => {
+    const panel = buildRegisterImportEditor(document, {
+      pageParams: PAGE_PARAMS,
+      initialValueParam: "Tolerance",
+    });
+    expect(
+      panel.querySelector(`[${OVERRIDE_REGISTER_VALUE_PARAM_ATTR}]`).value,
+    ).toBe("Tolerance");
+  });
+
+  it("collectRegisterEditorRule returns null valueParam for the 'none' option", () => {
+    const panel = buildRegisterImportEditor(document, { pageParams: PAGE_PARAMS });
+    panel.querySelector(`[${OVERRIDE_REGISTER_VALUE_PARAM_ATTR}]`).value = "";
+    expect(collectRegisterEditorRule(panel, "X").rule.valueParam).toBeNull();
+  });
 });
 
 describe("collectRegisterEditorRule", () => {
@@ -526,6 +558,8 @@ describe("collectRegisterEditorRule", () => {
         labelMapping: {},
         hidePinNumbers: false,
         hidePinNames: false,
+        // Value dropdown auto-selects "Resistance" from PAGE_PARAMS.
+        valueParam: "Resistance",
       },
     });
   });
@@ -588,6 +622,7 @@ describe("renderRegisterImportEditor", () => {
           labelMapping: {},
           hidePinNumbers: false,
           hidePinNames: false,
+          valueParam: "Resistance",
         },
       },
     ]);

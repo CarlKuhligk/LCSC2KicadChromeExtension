@@ -48,6 +48,7 @@ import {
   showCategoryDialog,
 } from "./lcscCategoryDialog.js";
 import { extractPageData, detectLcscLanguage } from "./lcscPageSnapshot.js";
+import { detectValueParam } from "../../shared/valueParam.mjs";
 import { injectAnchorCard, ANCHOR_ROW_ATTR } from "./anchorCard.js";
 import { attachNativeHostStatus } from "./nativeHostStatusButton.js";
 import { wirePhase1Download } from "./phase1Fetch.js";
@@ -4819,6 +4820,15 @@ function attachButton(lcscId) {
         const _pinCount = Number(phase1Result?.pinCount);
         const autoHidePinNumbers =
           Number.isFinite(_pinCount) && _pinCount > 0 && _pinCount <= 2;
+        // Value-Param auto-detect (Resistance/Capacitance/…): preselects the
+        // Value dropdown AND drives the auto-🟢 path so a fast Category-Match
+        // import still fills the Value field. Computed once off the snapshot.
+        let autoValueParam = null;
+        try {
+          autoValueParam = detectValueParam(extractPageData(document)?.params || {});
+        } catch (_e) {
+          autoValueParam = null;
+        }
         const runEasyedaPhase2 = async () => {
           await runPhase2Convert(anchorRow, lcscId, {
             rpc: async (id, libraryPath, ov) => {
@@ -4867,6 +4877,7 @@ function attachButton(lcscId) {
             initialHidePinNumbers:
               initial.initialHidePinNumbers ?? autoHidePinNumbers,
             initialHidePinNames: initial.initialHidePinNames ?? false,
+            initialValueParam: initial.initialValueParam ?? autoValueParam,
             onSave: async ({ categoryPath, rule }) => {
               try {
                 const resp = await contentRpc(
@@ -4896,6 +4907,7 @@ function attachButton(lcscId) {
                       pageParams,
                       hidePinNumbers: rule.hidePinNumbers,
                       hidePinNames: rule.hidePinNames,
+                      valueParam: rule.valueParam,
                     },
                     k2cRpc(2, 200),
                   );
@@ -4942,6 +4954,9 @@ function attachButton(lcscId) {
                   // fall back to the ≤2-pin auto-heuristic so auto-🟢 stays clean.
                   hidePinNumbers: rule.hidePinNumbers ?? autoHidePinNumbers,
                   hidePinNames: rule.hidePinNames ?? false,
+                  // Registered rule's value-param; synth-rule (Category-Match):
+                  // fall back to auto-detect so auto-🟢 still fills Value.
+                  valueParam: rule.valueParam ?? autoValueParam,
                 },
                 k2cRpc(2, 200),
               );
@@ -4971,6 +4986,7 @@ function attachButton(lcscId) {
             initialLabelMapping: rule.labelMapping || null,
             initialHidePinNumbers: rule.hidePinNumbers ?? autoHidePinNumbers,
             initialHidePinNames: rule.hidePinNames ?? false,
+            initialValueParam: rule.valueParam ?? autoValueParam,
           });
         };
         renderOverridePanel(anchorRow, {

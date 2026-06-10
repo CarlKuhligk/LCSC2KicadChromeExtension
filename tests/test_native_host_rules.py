@@ -245,6 +245,7 @@ def test_set_rule_persists_easyeda_symbol_source(tmp_path: Path) -> None:
         "labelMapping": {},
         "hidePinNumbers": False,
         "hidePinNames": False,
+        "valueParam": None,
     }
     assert get_rule("Passives/Resistors", store_path=store) == written
 
@@ -311,6 +312,25 @@ def test_set_rule_pin_visibility_defaults_false(tmp_path: Path) -> None:
     )
     assert written["hidePinNumbers"] is False
     assert written["hidePinNames"] is False
+
+
+def test_set_rule_persists_value_param(tmp_path: Path) -> None:
+    """valueParam (string) survives set/get; blank/whitespace normalizes to None."""
+    store = tmp_path / "rules.json"
+    written = set_rule(
+        "Passives/Resistors",
+        {"symbolSource": {"source": "easyeda"}, "valueParam": "Resistance"},
+        store_path=store,
+    )
+    assert written["valueParam"] == "Resistance"
+    assert get_rule("Passives/Resistors", store_path=store) == written
+
+    blank = set_rule(
+        "Passives/Caps",
+        {"symbolSource": {"source": "easyeda"}, "valueParam": "  "},
+        store_path=store,
+    )
+    assert blank["valueParam"] is None
 
 
 def test_set_rule_normalizes_category_path(tmp_path: Path) -> None:
