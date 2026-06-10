@@ -1,6 +1,7 @@
 "use strict";
 
 import { mountCsModal } from "./dialog.js";
+import { templatesMatchingCategory } from "../../shared/confidenceState.mjs";
 
 /**
  * V3 **Override Panel** — inline UI between Phase 1 Fetch and Phase 2
@@ -46,6 +47,9 @@ export const OVERRIDE_REGISTER_MAPPING_LCSC_ATTR = "data-k2c-register-mapping-lc
 export const OVERRIDE_REGISTER_MAPPING_KICAD_ATTR = "data-k2c-register-mapping-kicad";
 export const OVERRIDE_REGISTER_MAPPING_ADD_ATTR = "data-k2c-register-mapping-add";
 export const OVERRIDE_REGISTER_PROP_PREVIEW_ATTR = "data-k2c-register-prop-preview";
+export const OVERRIDE_REGISTER_TEMPLATE_LIST_ATTR = "data-k2c-register-template-list";
+export const OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR = "data-k2c-register-template-item";
+export const OVERRIDE_REGISTER_SHOWALL_ATTR = "data-k2c-register-showall";
 /** 🟢 One-Click panel controls (Issue #29). */
 export const OVERRIDE_IMPORT_ATTR = "data-k2c-override-import";
 export const OVERRIDE_MODIFY_ATTR = "data-k2c-override-modify";
@@ -450,17 +454,110 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   categoryLine.style.cssText = "color:#64748b";
   panel.appendChild(categoryLine);
 
-  // Symbol-Source dropdown — same shape as the override panel's picker so
-  // the parser ``parseLayer`` can decode the chosen option without a
-  // second code path.
-  const symLabel = doc.createElement("label");
-  symLabel.style.cssText = "display:flex;align-items:center;gap:8px";
-  symLabel.appendChild(doc.createTextNode("Symbol"));
+  // Symbol-Source: a hidden <select> stays the source of truth (parseLayer /
+  // collectRegisterEditorRule read it; prefill sets it). The visible UI is a
+  // selectable TEMPLATE LIST — Category-matched templates shown by default with
+  // a "show all" toggle — that drives the hidden select on click.
   const symSelect = doc.createElement("select");
   symSelect.setAttribute(OVERRIDE_SYMBOL_SELECT_ATTR, "true");
   populateSelect(symSelect, doc, opts.templateLibs);
-  symLabel.appendChild(symSelect);
-  panel.appendChild(symLabel);
+  symSelect.style.cssText = "display:none";
+  panel.appendChild(symSelect);
+
+  const symHeadRow = doc.createElement("div");
+  symHeadRow.style.cssText =
+    "display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:4px";
+  const symHeading = doc.createElement("div");
+  symHeading.textContent = "Symbol-Vorlage";
+  symHeading.style.cssText = "color:#475569";
+  symHeadRow.appendChild(symHeading);
+  const showAllLabel = doc.createElement("label");
+  showAllLabel.style.cssText =
+    "display:flex;align-items:center;gap:4px;font-size:11px;color:#64748b;cursor:pointer";
+  const showAllCb = doc.createElement("input");
+  showAllCb.type = "checkbox";
+  showAllCb.setAttribute(OVERRIDE_REGISTER_SHOWALL_ATTR, "true");
+  showAllLabel.appendChild(showAllCb);
+  showAllLabel.appendChild(doc.createTextNode("alle Templates anzeigen"));
+  symHeadRow.appendChild(showAllLabel);
+  panel.appendChild(symHeadRow);
+
+  const listHost = doc.createElement("div");
+  listHost.setAttribute(OVERRIDE_REGISTER_TEMPLATE_LIST_ATTR, "true");
+  listHost.style.cssText = [
+    "display:flex", "flex-direction:column", "gap:2px",
+    "max-height:200px", "overflow:auto",
+    "border:1px solid #cbd5e1", "border-radius:4px", "padding:4px",
+    "background:#ffffff",
+  ].join(";");
+  panel.appendChild(listHost);
+
+  // Category-matched templates for the current LCSC category (self-describing
+  // templates) — the default shortlist. "show all" reveals every template.
+  const matched = templatesMatchingCategory(categoryPath, opts.templateCategoriesByLib);
+  const matchedKeys = new Set(
+    matched.map((m) => encodeTemplateValue(m.libPath, m.name)),
+  );
+  const allLibs =
+    opts.templateLibs && typeof opts.templateLibs === "object" ? opts.templateLibs : {};
+
+  function renderTemplateList() {
+    listHost.innerHTML = "";
+    const items = [
+      { value: EASYEDA_OPTION_VALUE, label: "EasyEDA (kein Template)", category: "" },
+    ];
+    if (showAllCb.checked) {
+      for (const libPath of Object.keys(allLibs)) {
+        const names = Array.isArray(allLibs[libPath]) ? allLibs[libPath] : [];
+        for (const name of names) {
+          items.push({ value: encodeTemplateValue(libPath, name), label: name, category: "" });
+        }
+      }
+    } else {
+      for (const m of matched) {
+        items.push({
+          value: encodeTemplateValue(m.libPath, m.name),
+          label: m.name,
+          category: m.category,
+        });
+      }
+    }
+    if (!showAllCb.checked && matched.length === 0) {
+      const none = doc.createElement("div");
+      none.style.cssText = "color:#94a3b8;padding:4px 6px;font-style:italic";
+      none.textContent = "Kein passendes Template — „alle Templates anzeigen“ aktivieren";
+      listHost.appendChild(none);
+    }
+    for (const it of items) {
+      const row = doc.createElement("div");
+      row.setAttribute(OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR, "true");
+      row.dataset.value = it.value;
+      const selected = symSelect.value === it.value;
+      row.style.cssText = [
+        "display:flex", "justify-content:space-between", "gap:8px",
+        "padding:4px 6px", "border-radius:3px", "cursor:pointer",
+        selected ? "background:#dbeafe" : "background:transparent",
+      ].join(";");
+      const left = doc.createElement("span");
+      left.textContent = it.label;
+      left.style.cssText = selected
+        ? "font-weight:600;color:#1e3a8a"
+        : "color:#1e293b";
+      row.appendChild(left);
+      if (it.category) {
+        const tag = doc.createElement("span");
+        tag.textContent = it.category;
+        tag.style.cssText = "color:#64748b;font-size:11px";
+        row.appendChild(tag);
+      }
+      row.addEventListener("click", () => {
+        symSelect.value = it.value;
+        renderTemplateList();
+      });
+      listHost.appendChild(row);
+    }
+  }
+  showAllCb.addEventListener("change", renderTemplateList);
 
   // Metadata preview (ADR-0006, refined 2026-06-09): no manual mapping. Every
   // LCSC spec param is auto-upserted as a symbol Property on import. Show a
@@ -536,14 +633,26 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   // won't appear in the populated <option>s, and `renderOverridePanel`
   // won't have routed to 🟢 in that case anyway.
   const initialSym = opts.initialSymbolSource;
-  const candidate =
-    initialSym?.source === "template" && initialSym.libPath && initialSym.name
-      ? encodeTemplateValue(initialSym.libPath, initialSym.name)
-      : EASYEDA_OPTION_VALUE;
+  let candidate = EASYEDA_OPTION_VALUE;
+  if (initialSym?.source === "template" && initialSym.libPath && initialSym.name) {
+    candidate = encodeTemplateValue(initialSym.libPath, initialSym.name);
+  } else if (matched.length === 1) {
+    // Unique category match → preselect it so a self-described part lands ready.
+    candidate = encodeTemplateValue(matched[0].libPath, matched[0].name);
+  }
   const hasOption = Array.from(symSelect.options).some(
     (o) => o.value === candidate,
   );
   symSelect.value = hasOption ? candidate : EASYEDA_OPTION_VALUE;
+  // If the preselected template is not in the matched shortlist, reveal the
+  // full list so the user can see what's selected.
+  if (
+    symSelect.value !== EASYEDA_OPTION_VALUE
+    && !matchedKeys.has(symSelect.value)
+  ) {
+    showAllCb.checked = true;
+  }
+  renderTemplateList();
 
   return panel;
 }

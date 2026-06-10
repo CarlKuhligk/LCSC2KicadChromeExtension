@@ -25,6 +25,9 @@ import {
   OVERRIDE_REGISTER_MAPPING_KICAD_ATTR,
   OVERRIDE_REGISTER_MAPPING_ADD_ATTR,
   OVERRIDE_REGISTER_PROP_PREVIEW_ATTR,
+  OVERRIDE_REGISTER_TEMPLATE_LIST_ATTR,
+  OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR,
+  OVERRIDE_REGISTER_SHOWALL_ATTR,
   OVERRIDE_IMPORT_ATTR,
   OVERRIDE_MODIFY_ATTR,
   OVERRIDE_ONECLICK_PREVIEW_ATTR,
@@ -406,6 +409,66 @@ describe("buildRegisterImportEditor", () => {
     const panel = buildRegisterImportEditor(document, {});
     expect(panel.querySelector(`[${OVERRIDE_REGISTER_SAVE_ATTR}]`)).toBeTruthy();
     expect(panel.querySelector(`[${OVERRIDE_REGISTER_CANCEL_ATTR}]`)).toBeTruthy();
+  });
+
+  const LIB_PATH = "/home/user/templates/MyTemplates.kicad_sym";
+  const ONE_LIB_CATS = { [LIB_PATH]: { R0603: "Resistors" } };
+
+  it("shows only category-matched templates in the list by default", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateCategoriesByLib: ONE_LIB_CATS,
+      categoryPath: "Resistors/Chip Resistor - Surface Mount",
+    });
+    expect(panel.querySelector(`[${OVERRIDE_REGISTER_TEMPLATE_LIST_ATTR}]`)).toBeTruthy();
+    const values = Array.from(
+      panel.querySelectorAll(`[${OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR}]`),
+    ).map((i) => i.dataset.value);
+    expect(values).toContain(EASYEDA_OPTION_VALUE);
+    expect(values).toContain(`template:${LIB_PATH}:R0603`);
+    // C0805 has no matching category → hidden until "show all".
+    expect(values).not.toContain(`template:${LIB_PATH}:C0805`);
+  });
+
+  it("preselects the unique category match (drives the hidden select)", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateCategoriesByLib: ONE_LIB_CATS,
+      categoryPath: "Resistors/Chip Resistor",
+    });
+    const sym = panel.querySelector(`[${OVERRIDE_SYMBOL_SELECT_ATTR}]`);
+    expect(sym.value).toBe(`template:${LIB_PATH}:R0603`);
+  });
+
+  it("'alle Templates anzeigen' reveals every template", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateCategoriesByLib: ONE_LIB_CATS,
+      categoryPath: "Resistors/Chip Resistor",
+    });
+    const cb = panel.querySelector(`[${OVERRIDE_REGISTER_SHOWALL_ATTR}]`);
+    cb.checked = true;
+    cb.dispatchEvent(new Event("change"));
+    const values = Array.from(
+      panel.querySelectorAll(`[${OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR}]`),
+    ).map((i) => i.dataset.value);
+    expect(values).toContain(`template:${LIB_PATH}:C0805`);
+  });
+
+  it("clicking a list item drives the hidden select", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateCategoriesByLib: {},
+    });
+    const cb = panel.querySelector(`[${OVERRIDE_REGISTER_SHOWALL_ATTR}]`);
+    cb.checked = true;
+    cb.dispatchEvent(new Event("change"));
+    const item = Array.from(
+      panel.querySelectorAll(`[${OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR}]`),
+    ).find((i) => i.dataset.value === `template:${LIB_PATH}:C0805`);
+    item.click();
+    const sym = panel.querySelector(`[${OVERRIDE_SYMBOL_SELECT_ATTR}]`);
+    expect(sym.value).toBe(`template:${LIB_PATH}:C0805`);
   });
 });
 

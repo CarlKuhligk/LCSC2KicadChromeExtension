@@ -330,13 +330,13 @@ function resolveDeepestPrefixRule(categoryPath, categorySettings) {
  * @param {string} categoryPath  normalized LCSC Category Path
  * @param {Record<string, Record<string,string>> | null | undefined} categoriesByLib
  *        ``{libPath: {symbolName: category}}``
- * @returns {{libPath: string, name: string, category: string} | {ambiguous: true} | null}
+ * @returns {Array<{libPath: string, name: string, category: string}>}
  */
-function matchTemplateByCategory(categoryPath, categoriesByLib) {
-  if (!categoryPath || typeof categoryPath !== "string") return null;
-  if (!categoriesByLib || typeof categoriesByLib !== "object") return null;
+export function templatesMatchingCategory(categoryPath, categoriesByLib) {
+  if (!categoryPath || typeof categoryPath !== "string") return [];
+  if (!categoriesByLib || typeof categoriesByLib !== "object") return [];
   const pathLower = categoryPath.trim().toLowerCase();
-  if (!pathLower) return null;
+  if (!pathLower) return [];
   const segments = new Set(
     pathLower.split("/").map((s) => s.trim()).filter(Boolean),
   );
@@ -353,6 +353,15 @@ function matchTemplateByCategory(categoryPath, categoriesByLib) {
       if (matches) hits.push({ libPath, name, category: cat.trim() });
     }
   }
+  return hits;
+}
+
+/**
+ * Unique-match wrapper over ``templatesMatchingCategory``: returns the single
+ * hit, ``{ambiguous:true}`` when several match, or ``null`` when none do.
+ */
+function matchTemplateByCategory(categoryPath, categoriesByLib) {
+  const hits = templatesMatchingCategory(categoryPath, categoriesByLib);
   if (hits.length === 0) return null;
   if (hits.length === 1) return hits[0];
   return { ambiguous: true };

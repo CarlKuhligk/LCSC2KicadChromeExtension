@@ -4768,6 +4768,7 @@ function attachButton(lcscId) {
       onPhase1Ok: async (phase1Result) => {
         let templateLibs = {};
         let templateLibsFootprints = {};
+        let templateCategoriesByLib = {};
         // Issue #31 — 🟡 Low-Confidence behaviour persists in popup
         // Settings → ``lowConfidenceBehaviour`` (keepEasyeda | openEditor).
         // Default is openEditor; missing snapshot falls back to it too.
@@ -4780,6 +4781,7 @@ function attachButton(lcscId) {
           if (refreshed?.ok && refreshed.data) {
             templateLibs = refreshed.data.templateSymbolsByLib || {};
             templateLibsFootprints = refreshed.data.templateFootprintsByLib || {};
+            templateCategoriesByLib = refreshed.data.templateCategoriesByLib || {};
             if (typeof refreshed.data.lowConfidenceBehaviour === "string") {
               lowConfidenceBehaviour =
                 refreshed.data.lowConfidenceBehaviour === "keepEasyeda"
@@ -4791,6 +4793,7 @@ function attachButton(lcscId) {
             if (state?.ok && state.data) {
               templateLibs = state.data.templateSymbolsByLib || {};
               templateLibsFootprints = state.data.templateFootprintsByLib || {};
+              templateCategoriesByLib = state.data.templateCategoriesByLib || {};
               if (typeof state.data.lowConfidenceBehaviour === "string") {
                 lowConfidenceBehaviour =
                   state.data.lowConfidenceBehaviour === "keepEasyeda"
@@ -4849,6 +4852,7 @@ function attachButton(lcscId) {
           }
           renderRegisterImportEditor(anchorRow, {
             templateLibs,
+            templateCategoriesByLib,
             pageParams,
             categoryPath: phase1Result?.categoryPath || null,
             initialSymbolSource: initial.initialSymbolSource || null,
