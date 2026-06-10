@@ -28,6 +28,43 @@ export const PAGE_SCRAPE_LABELS = {
   datasheet: ["Datasheet", "Datenblatt", "Fiche technique", "数据手册"],
 };
 
+/**
+ * Non-English category labels seen in the scrape — a fallback signal when the
+ * page sets no ``<html lang>``. If the snapshot's category label is one of
+ * these, the session is clearly localized.
+ */
+const _NON_ENGLISH_CATEGORY_LABELS = new Set(["kategorie", "分类", "catégorie"]);
+
+/**
+ * Detect whether the LCSC page renders in English. The scraped parameter
+ * *values* inherit the page's display language, so a non-English session
+ * produces mixed/localized symbol Properties AND breaks the category match
+ * ("Widerstände" never matches a template tagged "Resistors"). Callers warn
+ * the user — and the docs say so in bold — when this returns ``isEnglish:false``.
+ *
+ * Primary signal: ``<html lang>``. Fallback (when lang is absent): the language
+ * of the scraped category label. ``known:false`` means we could not tell, so
+ * callers should stay silent rather than cry wolf.
+ *
+ * @param {Document} [doc=document]
+ * @param {{ categoryLabel?: string | null }} [hints]
+ * @returns {{ lang: string, isEnglish: boolean, known: boolean }}
+ */
+export function detectLcscLanguage(doc = document, hints = {}) {
+  const raw = (doc?.documentElement?.getAttribute?.("lang") || "")
+    .trim()
+    .toLowerCase();
+  if (raw) {
+    const isEnglish = raw === "en" || raw.startsWith("en-") || raw.startsWith("en_");
+    return { lang: raw, isEnglish, known: true };
+  }
+  const label = (hints?.categoryLabel || "").trim().toLowerCase();
+  if (label && _NON_ENGLISH_CATEGORY_LABELS.has(label)) {
+    return { lang: label, isEnglish: false, known: true };
+  }
+  return { lang: "", isEnglish: true, known: false };
+}
+
 function firstNonEmptyValueFor(params, candidates) {
   for (const key of candidates) {
     const v = params[key];

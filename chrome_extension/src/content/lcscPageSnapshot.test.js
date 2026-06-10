@@ -2,8 +2,13 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   extractPageData,
   looksLikePricingTable,
+  detectLcscLanguage,
   PAGE_SCRAPE_LABELS,
 } from "./lcscPageSnapshot.js";
+
+function _docWithLang(lang) {
+  return { documentElement: { getAttribute: (k) => (k === "lang" ? lang : null) } };
+}
 
 /**
  * Fixture reconstructed from the real DevTools dump on
@@ -243,5 +248,40 @@ describe("PAGE_SCRAPE_LABELS", () => {
     expect(PAGE_SCRAPE_LABELS.packageSize).toContain("Verp.");
     expect(PAGE_SCRAPE_LABELS.datasheet).toContain("Datasheet");
     expect(PAGE_SCRAPE_LABELS.datasheet).toContain("Datenblatt");
+  });
+});
+
+describe("detectLcscLanguage", () => {
+  it("treats <html lang='en'> (and en-US) as English", () => {
+    expect(detectLcscLanguage(_docWithLang("en"))).toEqual({
+      lang: "en",
+      isEnglish: true,
+      known: true,
+    });
+    expect(detectLcscLanguage(_docWithLang("en-US")).isEnglish).toBe(true);
+  });
+
+  it("flags a non-English lang (de) as not English", () => {
+    expect(detectLcscLanguage(_docWithLang("de"))).toEqual({
+      lang: "de",
+      isEnglish: false,
+      known: true,
+    });
+  });
+
+  it("stays silent (known:false) when lang is absent and no hint is given", () => {
+    const r = detectLcscLanguage(_docWithLang(""));
+    expect(r.known).toBe(false);
+    expect(r.isEnglish).toBe(true); // no false alarm
+  });
+
+  it("falls back to a localized category label when lang is absent", () => {
+    const r = detectLcscLanguage(_docWithLang(""), { categoryLabel: "Kategorie" });
+    expect(r).toEqual({ lang: "kategorie", isEnglish: false, known: true });
+  });
+
+  it("an English category label is not a non-English signal", () => {
+    const r = detectLcscLanguage(_docWithLang(""), { categoryLabel: "Category" });
+    expect(r.known).toBe(false);
   });
 });

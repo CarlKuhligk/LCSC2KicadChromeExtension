@@ -5,6 +5,15 @@
 > [!WARNING]
 > EasyEDA source data can contain errors. **Verify pins and footprints** before using converted parts in production.
 
+> [!CAUTION]
+> **Set LCSC to English before importing.** The importer reads each part's metadata
+> from the LCSC product page **in its display language**. On a non-English LCSC
+> session the imported symbol Properties come out mixed/localized **and the
+> automatic template matching breaks** — a page showing "Widerstände" never matches
+> a template tagged `Resistors`. Switch your LCSC language to **English** and reload
+> the page. The extension shows a red banner on the page when it detects a
+> non-English session.
+
 <p align="center">
   <img src="img/store_images/store-card.jpg" alt="KiCad Parts Importer" />
 </p>

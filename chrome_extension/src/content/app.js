@@ -47,7 +47,7 @@ import {
   removeCategoryDialog,
   showCategoryDialog,
 } from "./lcscCategoryDialog.js";
-import { extractPageData } from "./lcscPageSnapshot.js";
+import { extractPageData, detectLcscLanguage } from "./lcscPageSnapshot.js";
 import { injectAnchorCard, ANCHOR_ROW_ATTR } from "./anchorCard.js";
 import { attachNativeHostStatus } from "./nativeHostStatusButton.js";
 import { wirePhase1Download } from "./phase1Fetch.js";
@@ -724,6 +724,57 @@ function extractLcscId() {
 }
 
 // extractPageData → ./lcscPageSnapshot.js
+
+const K2C_LANG_WARN_ATTR = "data-k2c-lang-warning";
+
+/**
+ * Show a prominent red banner beneath the Anchor Card when the LCSC page is not
+ * in English. The scraped metadata values inherit the page language, so a
+ * non-English session yields mixed/localized symbol Properties AND breaks the
+ * category match (a "Widerstände" page never matches a template tagged
+ * "Resistors"). Idempotent — one banner per page. Never throws into injection.
+ */
+function renderLanguageWarning(doc, anchorRow) {
+  try {
+    if (!anchorRow || !anchorRow.parentNode) return;
+    if (anchorRow.parentNode.querySelector(`[${K2C_LANG_WARN_ATTR}]`)) return;
+    const lang = detectLcscLanguage(doc);
+    if (!lang.known || lang.isEnglish) return;
+
+    const banner = doc.createElement("div");
+    banner.setAttribute(K2C_LANG_WARN_ATTR, "true");
+    banner.style.cssText = [
+      "margin:6px 0",
+      "padding:8px 12px",
+      "border:1px solid #f1aeb5",
+      "border-left:4px solid #dc3545",
+      "border-radius:6px",
+      "background:#fdf0f1",
+      "color:#842029",
+      "font-size:12px",
+      "line-height:1.45",
+    ].join(";");
+    banner.textContent =
+      `⚠ LCSC ist nicht auf Englisch (lang="${lang.lang}"). Die importierten ` +
+      "Metadaten werden gemischt/lokalisiert und das automatische " +
+      "Template-Matching kann fehlschlagen. Bitte die LCSC-Sprache auf " +
+      "English umstellen und die Seite neu laden.";
+
+    let mount = banner;
+    if (anchorRow.tagName?.toLowerCase() === "tr") {
+      const tr = doc.createElement("tr");
+      tr.setAttribute(K2C_LANG_WARN_ATTR, "true");
+      const td = doc.createElement("td");
+      td.colSpan = Math.max(1, anchorRow.children.length);
+      td.appendChild(banner);
+      tr.appendChild(td);
+      mount = tr;
+    }
+    anchorRow.parentNode.insertBefore(mount, anchorRow.nextSibling);
+  } catch (_e) {
+    /* a warning must never break Anchor-Card injection */
+  }
+}
 
 /**
  * After user cancels the category dialog, restore buttons + status (pending/spinner otherwise sticks).
@@ -4687,6 +4738,9 @@ function attachButton(lcscId) {
   const anchorRow = injectAnchorCard(document);
   if (anchorRow) {
     anchorRow.dataset.k2cLcscId = lcscId;
+    // Warn (red banner) when LCSC is not in English — localized metadata
+    // corrupts symbol Properties and breaks the category match.
+    renderLanguageWarning(document, anchorRow);
     // V3 Phase 1 Fetch (Issue #3): Download click → Native-Host
     // ``fetchMetadata`` via the SW relay. Renders the result inline in the
     // anchor row's actions cell. Phase 2 and the Override Panel land in
