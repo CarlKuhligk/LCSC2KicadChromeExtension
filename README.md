@@ -1,6 +1,16 @@
 # KiCad Parts Importer
 
-**Version 2.0.0** · Chrome extension for [LCSC](https://www.lcsc.com/) with a **local backend** — import symbols, footprints, and 3D models into KiCad libraries using EasyEDA-sourced data, with optional **custom KiCad symbol templates**.
+**Version 3.0.0** · Chrome extension for [LCSC](https://www.lcsc.com/) with a **local backend** — import symbols, footprints, and 3D models into KiCad libraries using EasyEDA-sourced data, with optional **custom KiCad symbol templates**.
+
+> [!IMPORTANT]
+> **Doc status.** This README still documents the **published V2** UI and setup
+> (WebSocket backend, popup-driven category rules). The **V3 rebuild** (branch
+> `v3/rebuild`, manifest 3.0.0) replaces the backend with a **Native Host**
+> (Chrome Native Messaging — no `run_server.py`, no API-URL setting) and the
+> import flow with an on-page **confidence-driven Import-Editor** (⚪/🟡/🟢).
+> The V3 architecture is documented in `CONTEXT.md`, `V3-SPEC.md`, and
+> `docs/adr/`; this README is rewritten as part of the V3 Web-Store release
+> (issue #14).
 
 > [!WARNING]
 > EasyEDA source data can contain errors. **Verify pins and footprints** before using converted parts in production.

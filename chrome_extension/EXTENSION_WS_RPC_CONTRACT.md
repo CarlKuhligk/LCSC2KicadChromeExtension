@@ -1,5 +1,18 @@
 # Extension WebSocket JSON-RPC contract
 
+> [!CAUTION]
+> **V2 (legacy) — superseded by V3 Native Messaging.** This file documents the
+> **V2 WebSocket** control plane (`ws://…/ws/extension`, job-queue with
+> `task_update` pushes), which no longer reflects the V3 transport. **V3** uses
+> Chrome **Native Messaging** (length-prefixed JSON frames over a single warm
+> port; ADR-0001) with streamed `progress` instead of a job queue (ADR-0004).
+> V3 verbs: `ping`, `fetchMetadata`, `convert`, `getRule`, `setRule`,
+> `listTemplates`, `templatePinCheck`, `scaffoldLibrary`, `validateLibrary`,
+> `fsRoots` / `fsList` / `fsCheck`. Authoritative source: `native_host/host.py`.
+> TODO (V3 release / #14): rewrite as `EXTENSION_NATIVE_MESSAGING_CONTRACT.md`
+> and drop the V2 method table below. (Some extension code still uses the V2
+> job/enqueue style — see ADR-0004 for that pending migration.)
+
 The service worker opens `ws(s)://<api-host>/ws/extension` and sends messages shaped as `{ id, method, params }`. Replies are `{ id, result }` or `{ id, error: { message, code } }`.
 
 Server push (not RPC): `{ type: "task_update", task_id, payload }`.

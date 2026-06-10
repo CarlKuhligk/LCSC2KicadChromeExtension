@@ -3,6 +3,12 @@
 >
 > **Marker:** 🟢 **ENTSCHIEDEN** = vom Agent beschlossen (in §Entscheidungs-Index gelistet) · 🔴 **BRAUCHT DICH** = echte Wert-/Kosten-/Präferenz-Entscheidung (am Ende gesammelt).
 
+> **⚠️ Refinements seit 2026-06-04 (E2E-Tests Juni 2026) — bei Widersprüchen haben diese VORRANG.** Dieses Konzept ist der finalisierte Erst-Stand; mehrere Punkte wurden danach verfeinert. Maßgebliche Quellen: `docs/ENTSCHEIDUNGEN.md` (Runde 3), `docs/adr/0006-confidence-driven-apply-model.md`, `CONTEXT.md` (V3-vocab).
+> - **Metadaten-Auto-Upsert statt Label-Mapping:** ALLE LCSC-Tabellen-Params werden automatisch als Symbol-Properties geschrieben; der editierbare **LabelMapping-Editor entfällt**, der Import-Editor zeigt nur eine **read-only Property-Vorschau**. `ComponentRule` trägt **kein** `labelMapping` mehr. → Die unten als „editierbar" beschriebenen Stellen (§1.2, §12.4, D-RULES-6, Q-RULES-1) sind überholt.
+> - **Category-Property-Auto-Match statt Seed-Rules:** Ein Template-Symbol trägt eine KiCad-`Category`-Property; ein eindeutiger Treffer registriert die Regel **selbst** → 🟢 ohne manuelles Registrieren. Ersetzt die kuratierten Default-/Seed-Rules (§5.3).
+> - **Value-Param** (Dropdown: welcher Param füllt das KiCad-Value-Feld) und **Pin-Visibility** (`hidePinNumbers`/`hidePinNames`, ≤2-Pin-Heuristik) sind implementiert; das 🟢-Ein-Klick-Preview zeigt beide.
+> - **Modal-Overlays:** ⚪ Register-Prompt + Import-Editor sind Modals; 🟢/🟡 bleiben inline.
+
 ## 0. Produktvision
 
 Ein-Klick-Import eines LCSC-Bauteils direkt in die aktive KiCad-Bibliothek — Symbol, Footprint, 3D, Metadaten — mit **Einfluss auf jedes Puzzleteil**:
@@ -67,8 +73,11 @@ type ComponentRule = {
   //   Wenn gesetzt: Rule gilt nur, wenn detektierte Package-Form == packageForm
   //   (case-insensitive auf der normalisierten Taxonomie, s. §2). null = egal.
 
-  // ── NEU: Metadaten-/Label-Mapping (Erweiterung des heutigen impliziten Mappings) ──
-  labelMapping?: LabelMapping | null;      // s. §1.2
+  // ── ÜBERHOLT (Runde 3, s. Refinement-Hinweis am Dokumentanfang): labelMapping
+  //    ENTFÄLLT — Metadaten werden auto-upsertet (alle Params → Properties), kein
+  //    manuelles Mapping. NEU stattdessen: valueParam (Value-Feld-Quelle),
+  //    hidePinNumbers / hidePinNames (Pin-Visibility).
+  // labelMapping?: LabelMapping | null;   // entfernt — read-only Property-Vorschau (§1.2 überholt)
 
   // ── Bookkeeping ──
   notes?: string | null;

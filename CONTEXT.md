@@ -5,9 +5,19 @@ discussions. When a new domain concept shows up, add it here **before** it
 becomes a module or class name. Names in this file are load‑bearing — they
 should be used verbatim in code, not paraphrased.
 
+> **V2 vs V3 (read first).** The **Surfaces**, **Content‑script concepts**,
+> **Backend concepts**, and **Shared utilities** sections below describe the
+> **V2** model (WebSocket backend, Job‑Queue, separate dialogs) and are kept as
+> legacy reference. **V3 (current, on `v3/rebuild`)** supersedes them — see
+> **V3 vocabulary** at the bottom: the **Native Host** (Native Messaging)
+> replaces the WebSocket backend, streamed `progress` replaces the Job‑Queue,
+> and the **Import‑Editor** replaces the separate Category/Value/Pin↔Pad
+> dialogs. (Note: some extension code is still mid‑migration and uses the V2
+> job/enqueue style — see ADR‑0004.)
+
 ---
 
-## Surfaces
+## Surfaces _(V2 legacy — see V3 vocabulary below)_
 
 - **Backend** — local Python process started by `run_server.py`. Imports parts
   from LCSC/EasyEDA and writes KiCad library files. Speaks WebSocket
@@ -106,11 +116,11 @@ should be used verbatim in code, not paraphrased.
 
 ---
 
-## V3 vocabulary (planned — not yet in code)
+## V3 vocabulary (current — implemented on `v3/rebuild`)
 
-Terms locked during V3 grilling (2026-05-29). See `V3-SPEC.md` for the
-broader spec, `docs/adr/` for the load-bearing decisions. Listed here
-so V3 code uses these names verbatim, not paraphrases.
+Terms locked during V3 grilling (2026-05-29), now largely in code on
+`v3/rebuild`. See `V3-SPEC.md` for the broader spec, `docs/adr/` for the
+load-bearing decisions. Use these names verbatim, not paraphrases.
 
 - **Native Host** — Python process Chrome launches on-demand via Chrome
   Native Messaging. Replaces V2's standalone "Backend" / `run_server.py`
@@ -145,15 +155,38 @@ so V3 code uses these names verbatim, not paraphrases.
 - **Confidence State** — `computeConfidenceState(rule, symbol, footprint, factors)`
   → `green | yellow | white`, the driver of the apply UX (ADR-0006; supersedes
   the former "Skip-Panel Flow"). 🟢 green = registered **Category Rule** + all
-  MVP factors (symbol-template resolvable + category recognised + metadata
-  labels mapped) + high confidence → one-click **Import** (+ **Modify**);
+  MVP factors (symbol-template resolvable + category recognised) + high
+  confidence → one-click **Import** (+ **Modify**); metadata is always
+  auto-upserted, so "labels mapped" is not a separate 🟢 factor (ADR-0006 refined);
   🟡 yellow = anything in between → user setting (keep-EasyEDA + hint vs open
   Import-Editor); ⚪ white = no rule / no usable match → active **Register**
   prompt. One-click is derived from confidence, never from a rule flag; there
   is no zero-click write and no countdown.
 - **Register** (de: „Registrieren") — the learning act in the **Import-Editor**:
-  map Category ↔ Symbol ↔ metadata labels (footprint/3D in a later slice),
-  save a **Category Rule**, and raise confidence for future like parts.
+  pick the Symbol source for a Category (+ **Value-Param** + **Pin-Visibility**;
+  footprint/3D in a later slice), save a **Category Rule**, and raise confidence
+  for future like parts. Metadata is auto-upserted (below), not mapped by hand.
+- **Metadata Auto-Upsert** — V3 writes ALL LCSC spec-table params as symbol
+  Properties on import (existing → value replaced, missing → added; stock/price
+  pre-filtered by the scraper). Replaces V2's manual Label-Mapping / Metadata-
+  Mapper UI (ADR-0006 refined): no per-rule editable mapping; the Import-Editor
+  shows a **read-only property preview**. `ComponentRule` carries no `labelMapping`.
+- **Value-Param** — the LCSC spec-table column name (e.g. "Resistance") whose
+  value fills the KiCad symbol **Value** field. Per-rule (`valueParam`), chosen
+  via a dropdown in the Import-Editor; auto-detected by priority
+  (Resistance > Capacitance > Inductance > Voltage; `shared/valueParam.mjs`).
+  The engine sets `symbol_value_override` (Ω-stripped for Resistance) and
+  excludes that key from the auto-upserted Properties (no duplicate).
+- **Category-Property Match** — a template symbol carries a KiCad `Category`
+  property; at import the LCSC **Category Path** is matched against it
+  (segment/prefix, case-insensitive). A UNIQUE hit self-registers a rule → 🟢
+  one-click WITHOUT manual **Register**. Self-describing templates replace the
+  earlier curated/seeded default-rules idea. (`matchTemplateByCategory` in
+  confidenceState.mjs; `list_symbol_categories` in helpers.py.)
+- **Pin-Visibility** — `hidePinNumbers` / `hidePinNames` on the rule hide pin
+  numbers/names in the written symbol (≤2-pin parts R/C/L/D clutter schematics).
+  The Import-Editor auto-pre-checks both for ≤2-pin parts; user can override.
+  Applied on both symbol paths (template merger + EasyEDA exporter).
 - **Anchor Card** — the LCSC product-page header table (the one
   containing "Hersteller", "Herst.-Teilenr.", "LCSC-Nr.") into which V3
   injects its **Download** + **Customize** controls as a new `<tr>`.
