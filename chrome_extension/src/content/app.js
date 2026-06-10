@@ -4812,6 +4812,13 @@ function attachButton(lcscId) {
         // existing default-path import (no regression). 🟢/🟡 states land
         // with #29 and #31.
         const match = phase1Result?.matchResult || null;
+        // ≤2-pin auto-heuristic: parts like R/C/L/D look cluttered with visible
+        // pin numbers, so preselect "hide pin numbers" (user can override). Used
+        // both for the editor prefill and the auto-🟢 (synth-rule) import path,
+        // so a fast Category-Match import of a 2-pin part comes out clean too.
+        const _pinCount = Number(phase1Result?.pinCount);
+        const autoHidePinNumbers =
+          Number.isFinite(_pinCount) && _pinCount > 0 && _pinCount <= 2;
         const runEasyedaPhase2 = async () => {
           await runPhase2Convert(anchorRow, lcscId, {
             rpc: async (id, libraryPath, ov) => {
@@ -4857,6 +4864,9 @@ function attachButton(lcscId) {
             categoryPath: phase1Result?.categoryPath || null,
             initialSymbolSource: initial.initialSymbolSource || null,
             initialLabelMapping: initial.initialLabelMapping || null,
+            initialHidePinNumbers:
+              initial.initialHidePinNumbers ?? autoHidePinNumbers,
+            initialHidePinNames: initial.initialHidePinNames ?? false,
             onSave: async ({ categoryPath, rule }) => {
               try {
                 const resp = await contentRpc(
@@ -4884,6 +4894,8 @@ function attachButton(lcscId) {
                       overrides: ov,
                       labelMapping: rule.labelMapping || {},
                       pageParams,
+                      hidePinNumbers: rule.hidePinNumbers,
+                      hidePinNames: rule.hidePinNames,
                     },
                     k2cRpc(2, 200),
                   );
@@ -4926,6 +4938,10 @@ function attachButton(lcscId) {
                   overrides: ov,
                   labelMapping: rule.labelMapping || {},
                   pageParams,
+                  // Registered rule: its own value; synth-rule (Category-Match):
+                  // fall back to the ≤2-pin auto-heuristic so auto-🟢 stays clean.
+                  hidePinNumbers: rule.hidePinNumbers ?? autoHidePinNumbers,
+                  hidePinNames: rule.hidePinNames ?? false,
                 },
                 k2cRpc(2, 200),
               );
@@ -4953,6 +4969,8 @@ function attachButton(lcscId) {
           openRegisterEditor({
             initialSymbolSource: rule.symbolSource || heuristicSymbol || null,
             initialLabelMapping: rule.labelMapping || null,
+            initialHidePinNumbers: rule.hidePinNumbers ?? autoHidePinNumbers,
+            initialHidePinNames: rule.hidePinNames ?? false,
           });
         };
         renderOverridePanel(anchorRow, {

@@ -700,3 +700,33 @@ def test_handle_convert_template_override_round_trip() -> None:
     assert req.use_template is True
     assert req.template_name == "R0603"
     assert req.template_lib_path == "/home/user/Templates.kicad_sym"
+
+
+def test_pin_visibility_flags_flow_into_conversion_request() -> None:
+    """hidePinNumbers/hidePinNames params reach ConversionRequest — the engine
+    then hides them on both symbol paths (template merger + EasyEDA exporter)."""
+    seen, runner = _capturing_runner()
+    run_phase2_conversion(
+        {
+            "lcscId": "C22548",
+            "libraryPath": "/tmp/MyLib",
+            "hidePinNumbers": True,
+            "hidePinNames": True,
+        },
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    assert seen["req"].hide_pin_numbers is True
+    assert seen["req"].hide_pin_names is True
+
+
+def test_pin_visibility_flags_default_false() -> None:
+    """Omitted pin-visibility params → ConversionRequest defaults to False."""
+    seen, runner = _capturing_runner()
+    run_phase2_conversion(
+        {"lcscId": "C22548", "libraryPath": "/tmp/MyLib"},
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    assert seen["req"].hide_pin_numbers is False
+    assert seen["req"].hide_pin_names is False

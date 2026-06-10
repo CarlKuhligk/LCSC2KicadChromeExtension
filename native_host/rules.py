@@ -128,7 +128,14 @@ def _resolve_deepest_prefix(category_path: str, rules: dict[str, Any]) -> str | 
 
 
 _ALLOWED_RULE_FIELDS: frozenset[str] = frozenset(
-    {"categoryPath", "symbolSource", "footprintSource", "labelMapping"}
+    {
+        "categoryPath",
+        "symbolSource",
+        "footprintSource",
+        "labelMapping",
+        "hidePinNumbers",
+        "hidePinNames",
+    }
 )
 """ADR-0006 ComponentRule fields persisted by the Register slice.
 
@@ -248,6 +255,11 @@ def _normalize_rule(rule: Any, category_path: str) -> dict[str, Any]:
             rule.get("symbolSource"), field="symbolSource"
         ),
         "labelMapping": _normalize_label_mapping(rule.get("labelMapping")),
+        # Pin-label visibility (V2 carry-over): hide pin numbers / names in the
+        # written symbol — typical for 2-pin parts (R/C/L/D) where they clutter
+        # the schematic. Applied by the engine (template_merger + exporter).
+        "hidePinNumbers": bool(rule.get("hidePinNumbers")),
+        "hidePinNames": bool(rule.get("hidePinNames")),
     }
     if "footprintSource" in rule and rule["footprintSource"] is not None:
         # Reserved slot for the footprint follow-up slice. Validate with the

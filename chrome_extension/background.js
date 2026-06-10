@@ -2036,6 +2036,10 @@ async function nativeHostConvert(payload) {
   if (payload && typeof payload.pageParams === "object" && payload.pageParams !== null) {
     params.pageParams = payload.pageParams;
   }
+  // Pin-label visibility (Category Rule / ≤2-pin auto-heuristic) — forwarded to
+  // the host's convert verb; the engine hides pin numbers/names in the symbol.
+  if (payload?.hidePinNumbers) params.hidePinNumbers = true;
+  if (payload?.hidePinNames) params.hidePinNames = true;
 
   nativeHostConvertInFlight = true;
   try {
@@ -2931,6 +2935,8 @@ const RUNTIME_MESSAGE_HANDLERS = {
     overrides: message.overrides,
     labelMapping: message.labelMapping,
     pageParams: message.pageParams,
+    hidePinNumbers: message.hidePinNumbers,
+    hidePinNames: message.hidePinNames,
   }),
   /**
    * V3 **Register** (Issue #28). Content script's Import-Editor relays the

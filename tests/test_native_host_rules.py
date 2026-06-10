@@ -243,6 +243,8 @@ def test_set_rule_persists_easyeda_symbol_source(tmp_path: Path) -> None:
         "categoryPath": "Passives/Resistors",
         "symbolSource": {"source": "easyeda"},
         "labelMapping": {},
+        "hidePinNumbers": False,
+        "hidePinNames": False,
     }
     assert get_rule("Passives/Resistors", store_path=store) == written
 
@@ -280,6 +282,35 @@ def test_set_rule_persists_template_symbol_source_and_label_mapping(
     }
     # And round-trips through get_rule.
     assert get_rule("Passives/Resistors/SMD", store_path=store) == written
+
+
+def test_set_rule_persists_pin_visibility_flags(tmp_path: Path) -> None:
+    """Pin-label visibility flags (hide numbers/names) survive set/get."""
+    store = tmp_path / "rules.json"
+    written = set_rule(
+        "Passives/Resistors",
+        {
+            "symbolSource": {"source": "easyeda"},
+            "hidePinNumbers": True,
+            "hidePinNames": True,
+        },
+        store_path=store,
+    )
+    assert written["hidePinNumbers"] is True
+    assert written["hidePinNames"] is True
+    assert get_rule("Passives/Resistors", store_path=store) == written
+
+
+def test_set_rule_pin_visibility_defaults_false(tmp_path: Path) -> None:
+    """Omitted pin-visibility flags default to False (SW<->host symmetry)."""
+    store = tmp_path / "rules.json"
+    written = set_rule(
+        "Passives/Resistors",
+        {"symbolSource": {"source": "easyeda"}},
+        store_path=store,
+    )
+    assert written["hidePinNumbers"] is False
+    assert written["hidePinNames"] is False
 
 
 def test_set_rule_normalizes_category_path(tmp_path: Path) -> None:

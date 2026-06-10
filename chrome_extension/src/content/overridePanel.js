@@ -50,6 +50,8 @@ export const OVERRIDE_REGISTER_PROP_PREVIEW_ATTR = "data-k2c-register-prop-previ
 export const OVERRIDE_REGISTER_TEMPLATE_LIST_ATTR = "data-k2c-register-template-list";
 export const OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR = "data-k2c-register-template-item";
 export const OVERRIDE_REGISTER_SHOWALL_ATTR = "data-k2c-register-showall";
+export const OVERRIDE_REGISTER_HIDE_PINNUM_ATTR = "data-k2c-register-hide-pinnum";
+export const OVERRIDE_REGISTER_HIDE_PINNAME_ATTR = "data-k2c-register-hide-pinname";
 /** 🟢 One-Click panel controls (Issue #29). */
 export const OVERRIDE_IMPORT_ATTR = "data-k2c-override-import";
 export const OVERRIDE_MODIFY_ATTR = "data-k2c-override-modify";
@@ -559,6 +561,41 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   }
   showAllCb.addEventListener("change", renderTemplateList);
 
+  // Pin-label visibility (V2 carry-over): hide pin numbers / names in the
+  // written symbol — typical for 2-pin parts (R/C/L/D) where they clutter the
+  // schematic. The caller auto-prefills "hide numbers" for ≤2-pin parts via
+  // opts.initialHidePinNumbers; the engine applies it on both symbol paths.
+  const pinHeading = doc.createElement("div");
+  pinHeading.textContent = "Pin-Beschriftung";
+  pinHeading.style.cssText = "margin-top:6px;color:#475569";
+  panel.appendChild(pinHeading);
+
+  const pinRow = doc.createElement("div");
+  pinRow.style.cssText = "display:flex;gap:16px;flex-wrap:wrap";
+  const mkPinCheckbox = (attr, labelText, checked) => {
+    const lbl = doc.createElement("label");
+    lbl.style.cssText =
+      "display:flex;align-items:center;gap:4px;font-size:12px;color:#1e293b;cursor:pointer";
+    const cb = doc.createElement("input");
+    cb.type = "checkbox";
+    cb.setAttribute(attr, "true");
+    cb.checked = Boolean(checked);
+    lbl.appendChild(cb);
+    lbl.appendChild(doc.createTextNode(labelText));
+    pinRow.appendChild(lbl);
+  };
+  mkPinCheckbox(
+    OVERRIDE_REGISTER_HIDE_PINNUM_ATTR,
+    "Pin-Nummern ausblenden",
+    opts.initialHidePinNumbers,
+  );
+  mkPinCheckbox(
+    OVERRIDE_REGISTER_HIDE_PINNAME_ATTR,
+    "Pin-Namen ausblenden",
+    opts.initialHidePinNames,
+  );
+  panel.appendChild(pinRow);
+
   // Metadata preview (ADR-0006, refined 2026-06-09): no manual mapping. Every
   // LCSC spec param is auto-upserted as a symbol Property on import. Show a
   // read-only list so the user sees exactly which Properties will be written
@@ -670,6 +707,12 @@ export function buildRegisterImportEditor(doc, opts = {}) {
 export function collectRegisterEditorRule(panel, categoryPath) {
   const symSelect = panel.querySelector(`[${OVERRIDE_SYMBOL_SELECT_ATTR}]`);
   const symbolSource = parseLayer(symSelect?.value);
+  const hidePinNumbers = Boolean(
+    panel.querySelector(`[${OVERRIDE_REGISTER_HIDE_PINNUM_ATTR}]`)?.checked,
+  );
+  const hidePinNames = Boolean(
+    panel.querySelector(`[${OVERRIDE_REGISTER_HIDE_PINNAME_ATTR}]`)?.checked,
+  );
   return {
     categoryPath: typeof categoryPath === "string" ? categoryPath : "",
     rule: {
@@ -677,6 +720,8 @@ export function collectRegisterEditorRule(panel, categoryPath) {
       // ADR-0006 (refined): metadata is auto-upserted from the page snapshot;
       // the rule no longer carries a manual label mapping.
       labelMapping: {},
+      hidePinNumbers,
+      hidePinNames,
     },
   };
 }

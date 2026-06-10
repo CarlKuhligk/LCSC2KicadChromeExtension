@@ -28,6 +28,8 @@ import {
   OVERRIDE_REGISTER_TEMPLATE_LIST_ATTR,
   OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR,
   OVERRIDE_REGISTER_SHOWALL_ATTR,
+  OVERRIDE_REGISTER_HIDE_PINNUM_ATTR,
+  OVERRIDE_REGISTER_HIDE_PINNAME_ATTR,
   OVERRIDE_IMPORT_ATTR,
   OVERRIDE_MODIFY_ATTR,
   OVERRIDE_ONECLICK_PREVIEW_ATTR,
@@ -470,6 +472,37 @@ describe("buildRegisterImportEditor", () => {
     const sym = panel.querySelector(`[${OVERRIDE_SYMBOL_SELECT_ATTR}]`);
     expect(sym.value).toBe(`template:${LIB_PATH}:C0805`);
   });
+
+  it("renders pin-visibility checkboxes (default unchecked)", () => {
+    const panel = buildRegisterImportEditor(document, {});
+    const num = panel.querySelector(`[${OVERRIDE_REGISTER_HIDE_PINNUM_ATTR}]`);
+    const name = panel.querySelector(`[${OVERRIDE_REGISTER_HIDE_PINNAME_ATTR}]`);
+    expect(num).toBeTruthy();
+    expect(name).toBeTruthy();
+    expect(num.checked).toBe(false);
+    expect(name.checked).toBe(false);
+  });
+
+  it("prefills pin-visibility checkboxes from opts (≤2-pin auto-heuristic)", () => {
+    const panel = buildRegisterImportEditor(document, {
+      initialHidePinNumbers: true,
+      initialHidePinNames: false,
+    });
+    expect(
+      panel.querySelector(`[${OVERRIDE_REGISTER_HIDE_PINNUM_ATTR}]`).checked,
+    ).toBe(true);
+    expect(
+      panel.querySelector(`[${OVERRIDE_REGISTER_HIDE_PINNAME_ATTR}]`).checked,
+    ).toBe(false);
+  });
+
+  it("collectRegisterEditorRule reads the pin-visibility checkboxes", () => {
+    const panel = buildRegisterImportEditor(document, { initialHidePinNumbers: true });
+    panel.querySelector(`[${OVERRIDE_REGISTER_HIDE_PINNAME_ATTR}]`).checked = true;
+    const payload = collectRegisterEditorRule(panel, "Passives");
+    expect(payload.rule.hidePinNumbers).toBe(true);
+    expect(payload.rule.hidePinNames).toBe(true);
+  });
 });
 
 describe("collectRegisterEditorRule", () => {
@@ -491,6 +524,8 @@ describe("collectRegisterEditorRule", () => {
         },
         // ADR-0006 (refined): no manual mapping — all params auto-upserted.
         labelMapping: {},
+        hidePinNumbers: false,
+        hidePinNames: false,
       },
     });
   });
@@ -551,6 +586,8 @@ describe("renderRegisterImportEditor", () => {
             name: "R0603",
           },
           labelMapping: {},
+          hidePinNumbers: false,
+          hidePinNames: false,
         },
       },
     ]);

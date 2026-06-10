@@ -229,6 +229,13 @@ def run_phase2_conversion(
     # No manual label mapping — the part's full spec table flows into the symbol.
     symbol_params = _build_symbol_params(params.get("pageParams"))
 
+    # Pin-label visibility (Category Rule / ≤2-pin auto-heuristic): hide pin
+    # numbers / names in the written symbol. The SW forwards them off the matched
+    # rule (like labelMapping). Both symbol paths apply them — the template
+    # merger and the EasyEDA exporter — via these ConversionRequest fields.
+    hide_pin_numbers = bool(params.get("hidePinNumbers"))
+    hide_pin_names = bool(params.get("hidePinNames"))
+
     request = ConversionRequest(
         lcsc_id=lcsc_id,
         output_prefix=output_prefix,
@@ -246,6 +253,8 @@ def run_phase2_conversion(
         template_lib_path=symbol_override.get("libPath") if use_template else None,
         force_template=use_template,
         symbol_params=symbol_params,
+        hide_pin_numbers=hide_pin_numbers,
+        hide_pin_names=hide_pin_names,
     )
 
     def _progress_cb(_stage: ConversionStage, pct: int, message: Optional[str]) -> None:
