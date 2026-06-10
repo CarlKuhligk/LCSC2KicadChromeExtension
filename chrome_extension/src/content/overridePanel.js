@@ -265,6 +265,34 @@ export function buildOneClickPanel(doc, opts = {}) {
     preview.appendChild(mappingLine);
   }
 
+  // Pin-visibility + Value-Param are part of the resolved result, so they must
+  // be visible BEFORE the one-click [Import] (ADR-0006: "the resolved result is
+  // shown before the click"). Only rendered when set, to keep the green panel
+  // terse for the common default case.
+  const addPreviewLine = (labelText, valueText) => {
+    const line = doc.createElement("div");
+    line.style.cssText = "display:flex;gap:6px;align-items:baseline";
+    const lbl = doc.createElement("span");
+    lbl.textContent = labelText;
+    lbl.style.cssText = "color:#166534;font-weight:500;min-width:64px";
+    const val = doc.createElement("span");
+    val.textContent = valueText;
+    val.style.cssText = "color:#14532d;word-break:break-word";
+    line.appendChild(lbl);
+    line.appendChild(val);
+    preview.appendChild(line);
+  };
+
+  const hiddenPins = [];
+  if (opts.hidePinNumbers) hiddenPins.push("Nummern");
+  if (opts.hidePinNames) hiddenPins.push("Namen");
+  if (hiddenPins.length) {
+    addPreviewLine("Pins:", `${hiddenPins.join(" + ")} ausgeblendet`);
+  }
+  if (typeof opts.valueParam === "string" && opts.valueParam.trim()) {
+    addPreviewLine("Value:", opts.valueParam.trim());
+  }
+
   panel.appendChild(preview);
 
   const actions = doc.createElement("div");
@@ -995,6 +1023,9 @@ export function renderOverridePanel(anchorRow, opts = {}) {
       ruleKey: opts.match?.ruleKey ?? null,
       symbolSource: opts.match?.rule?.symbolSource ?? null,
       labelMapping: opts.match?.rule?.labelMapping ?? null,
+      hidePinNumbers: opts.match?.rule?.hidePinNumbers ?? false,
+      hidePinNames: opts.match?.rule?.hidePinNames ?? false,
+      valueParam: opts.match?.rule?.valueParam ?? null,
     });
   } else if (isYellow) {
     // ``keepEasyeda`` branch — Hinweis + EasyEDA default + editor escape.

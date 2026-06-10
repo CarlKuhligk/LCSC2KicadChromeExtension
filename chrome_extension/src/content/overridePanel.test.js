@@ -737,6 +737,36 @@ describe("buildOneClickPanel (green state)", () => {
     expect(panel.textContent).toContain("Passives/Resistors");
     expect(panel.textContent).toContain("Ein-Klick");
   });
+
+  it("renders pin-visibility + value-param settings in the preview (transparency before one-click)", () => {
+    const panel = buildOneClickPanel(document, {
+      ruleKey: "Passives/Resistors",
+      symbolSource: GREEN_RULE.symbolSource,
+      hidePinNumbers: true,
+      hidePinNames: true,
+      valueParam: "Resistance",
+    });
+    const preview = panel.querySelector(`[${OVERRIDE_ONECLICK_PREVIEW_ATTR}]`);
+    expect(preview.textContent).toContain("Pins:");
+    expect(preview.textContent).toContain("Nummern + Namen ausgeblendet");
+    expect(preview.textContent).toContain("Value:");
+    expect(preview.textContent).toContain("Resistance");
+  });
+
+  it("shows only the pin line that applies (numbers hidden, names shown)", () => {
+    const panel = buildOneClickPanel(document, { hidePinNumbers: true });
+    const preview = panel.querySelector(`[${OVERRIDE_ONECLICK_PREVIEW_ATTR}]`);
+    expect(preview.textContent).toContain("Nummern ausgeblendet");
+    expect(preview.textContent).not.toContain("Namen");
+  });
+
+  it("omits pin/value lines when not configured (terse default)", () => {
+    const panel = buildOneClickPanel(document, { symbolSource: GREEN_RULE.symbolSource });
+    const preview = panel.querySelector(`[${OVERRIDE_ONECLICK_PREVIEW_ATTR}]`);
+    expect(preview.textContent).not.toContain("Pins:");
+    expect(preview.textContent).not.toContain("ausgeblendet");
+    expect(preview.textContent).not.toContain("Value:");
+  });
 });
 
 describe("renderOverridePanel — green state", () => {
