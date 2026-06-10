@@ -347,19 +347,42 @@ def count_pins_in_symbol_string(symbol_str: str) -> int:
 
 
 def extract_symbol_from_lib(lib_path: str, symbol_name: str) -> str | None:
-    """Extract a single symbol block from a .kicad_sym library file by name."""
+    """Extract a single top-level symbol block from a .kicad_sym file by name.
+
+    Paren-balanced rather than indent-anchored: KiCad-saved or hand-edited
+    libraries can carry inconsistent indentation (e.g. a symbol opening at 2
+    spaces but its matching close at 4) and CRLF line endings, which the old
+    ``(?P=indent)\\)`` regex could not match — it silently returned None and the
+    template merge failed. Balancing parens from the ``(symbol "Name"`` token
+    (string-aware, so ``)`` inside quoted text doesn't count) is robust to both.
+    """
     try:
         with open(lib_path, encoding="utf-8") as f:
             content = f.read()
     except OSError:
         return None
-    pattern = sym_lib_regex_kicad_sym.format(
-        component_name=sanitize_for_regex(symbol_name)
-    )
-    # re.findall with a named group returns only the captured text (the indent),
-    # not the full match.  Use re.search + .group(0) to get the whole block.
-    m = re.search(pattern, content, flags=re.DOTALL)
-    return m.group(0).strip() if m else None
+    # Exact opening token — the trailing quote means a sub-symbol "Name_0_1"
+    # does not match the parent "Name", and no regex escaping is needed.
+    needle = f'(symbol "{symbol_name}"'
+    start = content.find(needle)
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    for i in range(start, len(content)):
+        c = content[i]
+        if in_string:
+            if c == '"' and content[i - 1] != "\\":
+                in_string = False
+        elif c == '"':
+            in_string = True
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return content[start : i + 1].strip()
+    return None
 
 
 def id_already_in_symbol_lib(lib_path: str, component_name: str) -> bool:
