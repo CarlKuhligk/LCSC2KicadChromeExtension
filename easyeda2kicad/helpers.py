@@ -437,7 +437,7 @@ def update_component_in_symbol_lib_file(
 
     new_lib = new_lib.replace(
         "(generator kicad_symbol_editor)",
-        "(generator https://github.com/uPesy/easyeda2kicad.py)",
+        "(generator https://github.com/theautomatist/KiCad-Parts-Importer)",
     )
 
     with open(file=lib_path, mode="w", encoding="utf-8") as lib_file:
@@ -477,7 +477,7 @@ def add_component_in_symbol_lib_file(
         lib_file.write(
             new_lib_data.replace(
                 "(generator kicad_symbol_editor)",
-                "(generator https://github.com/uPesy/easyeda2kicad.py)",
+                "(generator https://github.com/theautomatist/KiCad-Parts-Importer)",
             )
         )
 
@@ -542,7 +542,7 @@ def add_sub_components_in_symbol_lib_file(
     new_symbol_block = prefix + "".join(additional_units) + "\n  )" + suffix
     new_lib_data = current_lib.replace(symbol_block, new_symbol_block, 1).replace(
         "(generator kicad_symbol_editor)",
-        "(generator https://github.com/uPesy/easyeda2kicad.py)",
+        "(generator https://github.com/theautomatist/KiCad-Parts-Importer)",
     )
 
     with open(file=lib_path, mode="w", encoding="utf-8") as lib_file:
