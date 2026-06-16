@@ -78,6 +78,75 @@ def _validate_lcsc_id(raw: Any) -> str:
     return candidate
 
 
+def template_gallery_pin_summary(
+    payload: Any,
+    *,
+    cad_fetcher: Callable[[str], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """V3 **TemplateGalleryPinSummary** RPC — batch pin-count compare for the gallery.
+
+    Fetches the EasyEDA pin count ONCE for ``lcscId``, then compares it against
+    each requested template symbol's pin count so the gallery can flag
+    pin-compatible templates. The V3-native replacement for the V2 WebSocket
+    ``templates_gallery_pin_summary`` endpoint.
+
+    Args:
+        payload: ``{"lcscId", "templates": [{"templateName", "templateLibPath"}]}``.
+        cad_fetcher: optional EasyEDA fetch override (tests inject a stub).
+
+    Returns:
+        ``{"easyeda_pin_count", "entries": [{"template_name", "template_lib_path",
+        "template_pin_count", "match"}]}`` — snake_case to match the gallery
+        consumer. ``match`` is True iff both counts are positive and equal.
+
+    Raises:
+        ValueError: on missing/invalid ``lcscId``.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be an object")
+    lcsc_id = _validate_lcsc_id(payload.get("lcscId"))
+    raw_templates = payload.get("templates")
+    templates = raw_templates if isinstance(raw_templates, list) else []
+
+    if cad_fetcher is None:
+        from easyeda2kicad.easyeda.easyeda_api import EasyedaApi
+
+        cad_fetcher = EasyedaApi().get_cad_data_of_component
+    try:
+        cad = cad_fetcher(lcsc_id) or {}
+    except Exception:  # noqa: BLE001 — read-only summary, never crash the gallery
+        cad = {}
+    easyeda_pin_count = _easyeda_pin_count(cad)
+
+    entries: list[dict[str, Any]] = []
+    for t in templates:
+        if not isinstance(t, dict):
+            continue
+        name = t.get("templateName") or t.get("template_name")
+        lib = t.get("templateLibPath") or t.get("template_lib_path")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if not isinstance(lib, str) or not lib.strip():
+            continue
+        name = name.strip()
+        lib = lib.strip()
+        block = extract_symbol_from_lib(lib, name)
+        tpl_count = (
+            count_pins_in_symbol_string(block) if isinstance(block, str) else 0
+        )
+        entries.append(
+            {
+                "template_name": name,
+                "template_lib_path": lib,
+                "template_pin_count": tpl_count,
+                "match": easyeda_pin_count > 0
+                and tpl_count > 0
+                and easyeda_pin_count == tpl_count,
+            }
+        )
+    return {"easyeda_pin_count": easyeda_pin_count, "entries": entries}
+
+
 def template_pin_check(
     payload: Any,
     *,

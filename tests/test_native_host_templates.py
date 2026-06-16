@@ -441,3 +441,77 @@ def test_host_template_symbol_preview_returns_validation_error() -> None:
     })
     assert response["ok"] is False
     assert "templateName" in response["error"]
+
+
+# ---------------------------------------------------------------------------
+# template_gallery_pin_summary — V3 batch pin-count summary (gallery; Gallery→V3)
+# ---------------------------------------------------------------------------
+
+
+def test_gallery_pin_summary_batches_compares(tmp_path: Path) -> None:
+    sym = _write_lib(tmp_path)  # Resistor_SMT_0603 (1 pin), Capacitor_SMT_0402 (1 pin)
+    two_pin = tmp_path / "Two.kicad_sym"
+    two_pin.write_text(
+        '(kicad_symbol_lib (symbol "R2"'
+        ' (pin passive line (at -2.54 0 0) (length 1.27))'
+        ' (pin passive line (at 2.54 0 0) (length 1.27))))',
+        encoding="utf-8",
+    )
+    result = templates.template_gallery_pin_summary(
+        {
+            "lcscId": "C22548",
+            "templates": [
+                {"templateName": "Resistor_SMT_0603", "templateLibPath": str(sym)},
+                {"templateName": "R2", "templateLibPath": str(two_pin)},
+                {"templateName": "Missing", "templateLibPath": str(sym)},
+            ],
+        },
+        cad_fetcher=_stub_cad(_TWO_PIN_CAD),
+    )
+    assert result["easyeda_pin_count"] == 2
+    by_name = {e["template_name"]: e for e in result["entries"]}
+    assert by_name["Resistor_SMT_0603"]["template_pin_count"] == 1
+    assert by_name["Resistor_SMT_0603"]["match"] is False
+    assert by_name["R2"]["template_pin_count"] == 2
+    assert by_name["R2"]["match"] is True  # 2 == 2
+    assert by_name["Missing"]["template_pin_count"] == 0
+    assert by_name["Missing"]["match"] is False
+
+
+def test_gallery_pin_summary_empty_templates(tmp_path: Path) -> None:
+    result = templates.template_gallery_pin_summary(
+        {"lcscId": "C22548", "templates": []},
+        cad_fetcher=_stub_cad(_TWO_PIN_CAD),
+    )
+    assert result == {"easyeda_pin_count": 2, "entries": []}
+
+
+def test_gallery_pin_summary_requires_lcsc_id() -> None:
+    with pytest.raises(ValueError, match="lcscId"):
+        templates.template_gallery_pin_summary(
+            {"templates": []}, cad_fetcher=_stub_cad({})
+        )
+
+
+def test_host_dispatches_gallery_pin_summary(tmp_path: Path, monkeypatch) -> None:
+    sym = _write_lib(tmp_path)
+    from easyeda2kicad.easyeda import easyeda_api
+
+    monkeypatch.setattr(
+        easyeda_api.EasyedaApi,
+        "get_cad_data_of_component",
+        lambda _self, _lcsc: _TWO_PIN_CAD,
+    )
+    response = host.handle({
+        "id": 12,
+        "verb": "templateGalleryPinSummary",
+        "params": {
+            "lcscId": "C22548",
+            "templates": [
+                {"templateName": "Resistor_SMT_0603", "templateLibPath": str(sym)},
+            ],
+        },
+    })
+    assert response["ok"] is True
+    assert response["result"]["easyeda_pin_count"] == 2
+    assert response["result"]["entries"][0]["template_pin_count"] == 1

@@ -986,6 +986,30 @@ async function nativeHostLcscFootprintPreview(lcscId) {
 }
 
 /**
+ * V3 — batch pin-count summary for the template gallery via the Native Host's
+ * ``templateGalleryPinSummary`` verb (replaces the V2 WebSocket
+ * ``templates_gallery_pin_summary``). One EasyEDA fetch, N template compares;
+ * network-bound, so a long timeout. Resolves ``{ ok, result | error }`` where
+ * ``result`` is ``{ easyeda_pin_count, entries }``.
+ */
+async function nativeHostTemplateGalleryPinSummary(lcscId, templates) {
+  let envelope;
+  try {
+    envelope = await getWarmNativePort().send(
+      "templateGalleryPinSummary",
+      { lcscId, templates },
+      { timeoutMs: 30000 },
+    );
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+  if (envelope && envelope.ok === true && envelope.result && typeof envelope.result === "object") {
+    return { ok: true, result: envelope.result };
+  }
+  return { ok: false, error: envelope?.error || "no result" };
+}
+
+/**
  * V3 Issue #24 — generic Native-Host RPC bridge for the FS picker verbs
  * (`fsRoots`, `fsList`, `fsCheck`, `validateLibrary`). Mirrors the
  * connect-postMessage-await-disconnect pattern in `nativeHostListTemplates`
@@ -2563,26 +2587,6 @@ const RUNTIME_MESSAGE_HANDLERS = {
       lowConfidenceBehaviour: state.lowConfidenceBehaviour,
     };
   },
-  templatesPinCheck: async (message) => {
-    const lcscId = (message.lcscId || "").trim().toUpperCase();
-    const templateName = typeof message.templateName === "string" ? message.templateName.trim() : "";
-    const templateLibPath = typeof message.templateLibPath === "string" ? message.templateLibPath.trim() : "";
-    if (!lcscId || !lcscId.startsWith("C") || !templateName || !templateLibPath) {
-      throw new Error("templatesPinCheck requires lcscId, templateName, and templateLibPath.");
-    }
-    if (!isKnownTemplateLibraryPath(templateLibPath)) {
-      throw new Error("Template library path is not registered in extension settings.");
-    }
-    return sendExtensionRpc(
-      "templates_pin_check",
-      {
-        lcsc_id: lcscId,
-        template_name: templateName,
-        template_lib_path: templateLibPath,
-      },
-      120000,
-    );
-  },
   templatesGalleryPinSummary: async (message) => {
     const lcscId = (message.lcscId || "").trim().toUpperCase();
     if (!lcscId || !lcscId.startsWith("C")) {
@@ -2591,20 +2595,22 @@ const RUNTIME_MESSAGE_HANDLERS = {
     const raw = Array.isArray(message.templates) ? message.templates : [];
     const templates = raw
       .map((t) => ({
-        template_name: String(t.templateName || t.template_name || "").trim(),
-        template_lib_path: String(t.templateLibPath || t.template_lib_path || "").trim(),
+        templateName: String(t.templateName || t.template_name || "").trim(),
+        templateLibPath: String(t.templateLibPath || t.template_lib_path || "").trim(),
       }))
       .filter(
         (t) =>
-          t.template_name
-          && t.template_lib_path
-          && isKnownTemplateLibraryPath(t.template_lib_path),
+          t.templateName
+          && t.templateLibPath
+          && isKnownTemplateLibraryPath(t.templateLibPath),
       );
-    return sendExtensionRpc(
-      "templates_gallery_pin_summary",
-      { lcsc_id: lcscId, templates },
-      180000,
-    );
+    // V3: batch pin-summary via the Native Host (was the V2 WebSocket
+    // ``templates_gallery_pin_summary``). Returns { easyeda_pin_count, entries }.
+    const res = await nativeHostTemplateGalleryPinSummary(lcscId, templates);
+    if (!res.ok) {
+      return { easyeda_pin_count: 0, entries: [] };
+    }
+    return res.result;
   },
   templatesPreviewSvg: async (message) => {
     const templateName = typeof message.templateName === "string" ? message.templateName.trim() : "";
@@ -2637,26 +2643,6 @@ const RUNTIME_MESSAGE_HANDLERS = {
       error: result.error,
       meta: result.meta,
     };
-  },
-  templatesPinMapContext: async (message) => {
-    const lcscId = (message.lcscId || "").trim().toUpperCase();
-    const templateName = typeof message.templateName === "string" ? message.templateName.trim() : "";
-    const templateLibPath = typeof message.templateLibPath === "string" ? message.templateLibPath.trim() : "";
-    if (!lcscId || !lcscId.startsWith("C") || !templateName || !templateLibPath) {
-      throw new Error("templatesPinMapContext requires lcscId, templateName, and templateLibPath.");
-    }
-    if (!isKnownTemplateLibraryPath(templateLibPath)) {
-      throw new Error("Template library path is not registered in extension settings.");
-    }
-    return sendExtensionRpc(
-      "templates_pin_map_context",
-      {
-        lcsc_id: lcscId,
-        template_name: templateName,
-        template_lib_path: templateLibPath,
-      },
-      120000,
-    );
   },
   lcscFootprintPreview: async (message) => {
     const lcscId = (message.lcscId || "").trim().toUpperCase();
