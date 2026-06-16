@@ -284,6 +284,20 @@ def run_phase2_conversion(
     hide_pin_numbers = bool(params.get("hidePinNumbers"))
     hide_pin_names = bool(params.get("hidePinNames"))
 
+    # Pin↔Pad map (gallery / template pin remap): rename the merged symbol's pin
+    # NUMBERS so they line up with the EasyEDA footprint's pad numbers. Only
+    # meaningful for a template symbol; the engine (conversion._coerce_template_pin_map
+    # + symbol_pin_remap.apply_pin_number_map) coerces + applies it. Footprint pads
+    # are never renamed. Lets the gallery's footprint flow run over V3 convert.
+    template_pin_map_raw = params.get("templatePinMap")
+    template_pin_map = (
+        template_pin_map_raw
+        if use_template
+        and isinstance(template_pin_map_raw, dict)
+        and template_pin_map_raw
+        else None
+    )
+
     request = ConversionRequest(
         lcsc_id=lcsc_id,
         output_prefix=output_prefix,
@@ -300,6 +314,7 @@ def run_phase2_conversion(
         template_name=symbol_override.get("name") if use_template else None,
         template_lib_path=symbol_override.get("libPath") if use_template else None,
         force_template=use_template,
+        template_pin_map=template_pin_map,
         symbol_params=symbol_params,
         hide_pin_numbers=hide_pin_numbers,
         hide_pin_names=hide_pin_names,

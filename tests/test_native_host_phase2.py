@@ -262,6 +262,49 @@ def test_all_page_params_become_symbol_properties() -> None:
     }
 
 
+def test_template_pin_map_flows_into_conversion_request() -> None:
+    """Gallery/template Pin↔Pad map reaches ConversionRequest.template_pin_map so
+    V3 convert can run the gallery's symbol-pin remap (footprint stays EasyEDA)."""
+    seen, runner = _capturing_runner()
+    run_phase2_conversion(
+        {
+            "lcscId": "C22548",
+            "libraryPath": "/tmp/MyLib",
+            "overrides": {
+                "symbol": {
+                    "source": "template",
+                    "libPath": "/tmp/MyTemplates.kicad_sym",
+                    "name": "R0603",
+                },
+                "footprint": {"source": "easyeda"},
+            },
+            "templatePinMap": {"1": "A", "2": "K"},
+        },
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    assert seen["req"].template_pin_map == {"1": "A", "2": "K"}
+
+
+def test_template_pin_map_ignored_without_template_symbol() -> None:
+    """A pin map only applies to a template symbol; EasyEDA symbol → ignored."""
+    seen, runner = _capturing_runner()
+    run_phase2_conversion(
+        {
+            "lcscId": "C22548",
+            "libraryPath": "/tmp/MyLib",
+            "overrides": {
+                "symbol": {"source": "easyeda"},
+                "footprint": {"source": "easyeda"},
+            },
+            "templatePinMap": {"1": "A"},
+        },
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    assert seen["req"].template_pin_map is None
+
+
 def test_missing_page_params_skips_symbol_params_injection() -> None:
     """A registered rule with mapping but no page snapshot → no symbol_params."""
     seen, runner = _capturing_runner()

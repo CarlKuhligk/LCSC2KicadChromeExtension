@@ -2129,6 +2129,16 @@ async function nativeHostConvert(payload) {
   if (typeof payload?.valueParam === "string" && payload.valueParam.trim()) {
     params.valueParam = payload.valueParam.trim();
   }
+  // Pin↔Pad map (template symbol pin remap, e.g. from the gallery): rename the
+  // merged symbol's pin numbers to match the EasyEDA footprint pads. Engine-only
+  // when a template symbol is used. Lets the gallery import run over V3 convert.
+  if (
+    payload?.templatePinMap
+    && typeof payload.templatePinMap === "object"
+    && Object.keys(payload.templatePinMap).length > 0
+  ) {
+    params.templatePinMap = payload.templatePinMap;
+  }
 
   nativeHostConvertInFlight = true;
   try {
@@ -3049,6 +3059,7 @@ const RUNTIME_MESSAGE_HANDLERS = {
     hidePinNumbers: message.hidePinNumbers,
     hidePinNames: message.hidePinNames,
     valueParam: message.valueParam,
+    templatePinMap: message.templatePinMap,
   }),
   /**
    * V3 **Register** (Issue #28). Content script's Import-Editor relays the
