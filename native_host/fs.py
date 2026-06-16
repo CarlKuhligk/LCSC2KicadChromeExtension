@@ -360,6 +360,73 @@ def _count_library_assets(
     return {"symbol": symbol, "footprint": footprint, "model": model}
 
 
+def library_component(
+    path: Any, lcsc_id: Any, extra_roots: Any = None
+) -> dict[str, Any]:
+    """V3 component-presence check (replaces the V2 WS ``libraries_component``).
+
+    Offline: scans the symbol library for a top-level symbol carrying
+    ``(property "LCSC Part" "<lcscId>")`` — the LCSC id every imported symbol
+    records — so "does this part already exist here?" needs no EasyEDA fetch.
+
+    ``path`` may be a bare prefix or the ``.kicad_sym`` file. Returns
+    ``{symbol_path, footprint_path, model_paths, messages}`` matching the shape
+    ``buildComponentStatus`` consumes (``symbol_path`` set ⇒ present). When the
+    matched symbol names a footprint that exists in the sibling ``.pretty``,
+    ``footprint_path`` is filled too.
+
+    Raises:
+        ValueError: on missing/invalid ``lcsc_id`` or a path outside the roots.
+    """
+    target = _require_path(path)
+    symbol_path = (
+        target if target.suffix == ".kicad_sym" else target.with_suffix(".kicad_sym")
+    )
+    allowed = _allowed_paths(extra_roots)
+    _assert_inside(symbol_path.parent, allowed)
+    lcsc = lcsc_id.strip().upper() if isinstance(lcsc_id, str) else ""
+    if not lcsc:
+        raise ValueError("lcscId is required")
+
+    empty = {
+        "symbol_path": None,
+        "footprint_path": None,
+        "model_paths": {},
+        "messages": [],
+    }
+    if not symbol_path.is_file():
+        return empty
+
+    sp = str(symbol_path)
+    matched_block: str | None = None
+    for name in list_symbols_in_lib(sp):
+        block = extract_symbol_from_lib(sp, name)
+        if not block:
+            continue
+        m = re.search(r'\(property\s+"LCSC Part"\s+"([^"]*)"', block)
+        if m and m.group(1).strip().upper() == lcsc:
+            matched_block = block
+            break
+    if matched_block is None:
+        return empty
+
+    footprint_path = None
+    fpm = re.search(r'\(property\s+"Footprint"\s+"([^"]*)"', matched_block)
+    if fpm:
+        fp_ref = fpm.group(1).strip()
+        fp_name = fp_ref.split(":", 1)[1] if ":" in fp_ref else fp_ref
+        if fp_name:
+            candidate = symbol_path.with_suffix(".pretty") / f"{fp_name}.kicad_mod"
+            if candidate.is_file():
+                footprint_path = str(candidate)
+    return {
+        "symbol_path": sp,
+        "footprint_path": footprint_path,
+        "model_paths": {},
+        "messages": [],
+    }
+
+
 def _top_level_symbol_names(content: str) -> list[str]:
     """Top-level symbol names from raw library text (mirrors
     ``helpers.list_symbols_in_lib`` but works on an in-memory string so the

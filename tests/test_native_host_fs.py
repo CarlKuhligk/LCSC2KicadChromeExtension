@@ -447,3 +447,70 @@ def test_validate_library_counts_zero_when_absent(tmp_path: Path) -> None:
     res = fs.validate_library(str(tmp_path / "Missing"), [str(tmp_path)])
     assert res["counts"] == {"symbol": 0, "footprint": 0, "model": 0}
     assert res["assets"] == {"symbol": False, "footprint": False, "model": False}
+
+
+_LIB_WITH_LCSC = (
+    "(kicad_symbol_lib\n"
+    '  (symbol "RC0603"\n'
+    '    (property "Reference" "R")\n'
+    '    (property "Footprint" "LCSC:R_0603")\n'
+    '    (property "LCSC Part" "C25804")\n'
+    '    (symbol "RC0603_0_1" (pin passive line (at 0 0 0) (length 1)))\n'
+    "  )\n"
+    ")\n"
+)
+
+
+def _write_lcsc_lib(tmp_path: Path) -> Path:
+    sym = tmp_path / "Lib.kicad_sym"
+    sym.write_text(_LIB_WITH_LCSC, encoding="utf-8")
+    pretty = tmp_path / "Lib.pretty"
+    pretty.mkdir()
+    (pretty / "R_0603.kicad_mod").write_text("(module)", encoding="utf-8")
+    return sym
+
+
+def test_library_component_found_returns_paths(tmp_path: Path) -> None:
+    sym = _write_lcsc_lib(tmp_path)
+    res = fs.library_component(str(tmp_path / "Lib"), "C25804", [str(tmp_path)])
+    assert res["symbol_path"] == str(sym)
+    assert res["footprint_path"] == str(tmp_path / "Lib.pretty" / "R_0603.kicad_mod")
+
+
+def test_library_component_match_is_case_insensitive(tmp_path: Path) -> None:
+    _write_lcsc_lib(tmp_path)
+    res = fs.library_component(str(tmp_path / "Lib"), "c25804", [str(tmp_path)])
+    assert res["symbol_path"] is not None
+
+
+def test_library_component_absent_returns_none(tmp_path: Path) -> None:
+    _write_lcsc_lib(tmp_path)
+    res = fs.library_component(str(tmp_path / "Lib"), "C99999", [str(tmp_path)])
+    assert res["symbol_path"] is None
+    assert res["footprint_path"] is None
+
+
+def test_library_component_missing_file_is_empty(tmp_path: Path) -> None:
+    res = fs.library_component(str(tmp_path / "Nope"), "C25804", [str(tmp_path)])
+    assert res["symbol_path"] is None
+
+
+def test_library_component_requires_lcsc_id(tmp_path: Path) -> None:
+    _write_lcsc_lib(tmp_path)
+    with pytest.raises(ValueError, match="lcscId"):
+        fs.library_component(str(tmp_path / "Lib"), "", [str(tmp_path)])
+
+
+def test_host_dispatches_library_component_verb(tmp_path: Path) -> None:
+    _write_lcsc_lib(tmp_path)
+    response = host.handle({
+        "id": 13,
+        "verb": "libraryComponent",
+        "params": {
+            "path": str(tmp_path / "Lib"),
+            "lcscId": "C25804",
+            "extraRoots": [str(tmp_path)],
+        },
+    })
+    assert response["ok"] is True
+    assert response["result"]["symbol_path"] is not None

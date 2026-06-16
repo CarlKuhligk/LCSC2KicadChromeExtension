@@ -73,6 +73,7 @@ if _REPO_ROOT not in sys.path:
 from native_host.fs import (  # noqa: E402
     check_path,
     clean_library,
+    library_component,
     list_directory,
     list_roots,
     scaffold_library,
@@ -374,6 +375,7 @@ def handle(
         "validateLibrary",
         "scaffoldLibrary",
         "cleanLibrary",
+        "libraryComponent",
     ):
         raw_params = request.get("params")
         params = raw_params if isinstance(raw_params, dict) else {}
@@ -396,6 +398,10 @@ def handle(
                 )
             elif verb == "cleanLibrary":
                 result = clean_library(params.get("path"), extra_roots)
+            elif verb == "libraryComponent":
+                result = library_component(
+                    params.get("path"), params.get("lcscId"), extra_roots
+                )
             else:
                 result = validate_library(params.get("path"), extra_roots)
         except ValueError as exc:

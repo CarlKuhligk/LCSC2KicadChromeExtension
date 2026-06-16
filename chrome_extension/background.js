@@ -748,11 +748,18 @@ async function validateLibraryOnServer(path) {
 }
 
 async function checkComponentOnServer(path, lcscId) {
-  return sendExtensionRpc(
-    "libraries_component",
-    { path, lcsc_id: lcscId },
-    60000,
+  // V3: offline component-presence check via the Native Host (was the V2
+  // WebSocket ``libraries_component``). Returns { symbol_path, footprint_path,
+  // model_paths, messages } — symbol_path set ⇒ the part is already in the lib.
+  const res = await nativeHostFsRpc(
+    "libraryComponent",
+    { path, lcscId, extraRoots: getUserAddedRoots() },
+    15000,
   );
+  if (!res.ok) {
+    throw new Error(res.error || "Failed to check component.");
+  }
+  return res.result;
 }
 
 async function refreshLibraryCountsForPrefix(prefix) {
@@ -2467,12 +2474,8 @@ const RUNTIME_MESSAGE_HANDLERS = {
     };
   },
   checkComponentExists: async (message) => {
-    if (!state.connected) {
-      const connected = await checkHealth();
-      if (!connected) {
-        throw new Error("Backend not reachable. Start the backend.");
-      }
-    }
+    // V3: presence is checked offline via the Native Host (validateLibrary +
+    // libraryComponent below); no V2 WebSocket health gate.
     const lcscId = (message.lcscId || "").trim().toUpperCase();
     if (!lcscId || !lcscId.startsWith("C")) {
       throw new Error("Invalid LCSC ID.");
