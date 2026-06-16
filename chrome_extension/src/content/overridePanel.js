@@ -50,6 +50,7 @@ export const OVERRIDE_REGISTER_MAPPING_ADD_ATTR = "data-k2c-register-mapping-add
 export const OVERRIDE_REGISTER_PROP_PREVIEW_ATTR = "data-k2c-register-prop-preview";
 export const OVERRIDE_REGISTER_TEMPLATE_LIST_ATTR = "data-k2c-register-template-list";
 export const OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR = "data-k2c-register-template-item";
+export const OVERRIDE_REGISTER_SYMBOL_PREVIEW_ATTR = "data-k2c-register-symbol-preview";
 export const OVERRIDE_REGISTER_SHOWALL_ATTR = "data-k2c-register-showall";
 export const OVERRIDE_REGISTER_HIDE_PINNUM_ATTR = "data-k2c-register-hide-pinnum";
 export const OVERRIDE_REGISTER_HIDE_PINNAME_ATTR = "data-k2c-register-hide-pinname";
@@ -524,6 +525,66 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   ].join(";");
   panel.appendChild(listHost);
 
+  // Symbol PREVIEW pane (UI Etappe B): renders the selected template symbol as
+  // an SVG so the user sees what they are assigning — the symbol-side analogue
+  // of the footprint preview. The actual render is fetched via the injected
+  // ``opts.fetchSymbolPreview`` callback (keeps this module chrome-free and
+  // unit-testable); a stale-request token guards against out-of-order replies.
+  const previewPane = doc.createElement("div");
+  previewPane.setAttribute(OVERRIDE_REGISTER_SYMBOL_PREVIEW_ATTR, "true");
+  previewPane.style.cssText = [
+    "display:flex", "align-items:center", "justify-content:center",
+    "min-height:120px", "max-height:240px", "padding:6px",
+    "border:1px solid #cbd5e1", "border-radius:4px", "background:#ffffff",
+    "overflow:hidden",
+  ].join(";");
+  panel.appendChild(previewPane);
+
+  function setPreviewText(text) {
+    previewPane.innerHTML = "";
+    const t = doc.createElement("div");
+    t.textContent = text;
+    t.style.cssText = "color:#94a3b8;font-size:11px;font-style:italic;text-align:center";
+    previewPane.appendChild(t);
+  }
+
+  function setPreviewImage(svg) {
+    previewPane.innerHTML = "";
+    const img = doc.createElement("img");
+    img.alt = "Symbol-Vorschau";
+    img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+    img.style.cssText = "display:block;max-width:100%;max-height:228px;width:auto;height:auto";
+    previewPane.appendChild(img);
+  }
+
+  let previewReq = 0;
+  function updateSymbolPreview() {
+    const layer = parseLayer(symSelect.value);
+    if (layer.source !== "template") {
+      setPreviewText("EasyEDA-Standardsymbol — keine Vorschau");
+      return;
+    }
+    if (typeof opts.fetchSymbolPreview !== "function") {
+      setPreviewText("Vorschau nicht verfügbar");
+      return;
+    }
+    const reqId = ++previewReq;
+    setPreviewText("Lade Vorschau …");
+    Promise.resolve(opts.fetchSymbolPreview({ libPath: layer.libPath, name: layer.name }))
+      .then((res) => {
+        if (reqId !== previewReq) return; // a newer selection superseded this one
+        if (res && typeof res.svg === "string" && res.svg) {
+          setPreviewImage(res.svg);
+        } else {
+          setPreviewText((res && res.error) || "Keine Vorschau verfügbar");
+        }
+      })
+      .catch((err) => {
+        if (reqId !== previewReq) return;
+        setPreviewText((err && err.message) || "Vorschau fehlgeschlagen");
+      });
+  }
+
   // Category-matched templates for the current LCSC category (self-describing
   // templates) — the default shortlist. "show all" reveals every template.
   const matched = templatesMatchingCategory(categoryPath, opts.templateCategoriesByLib);
@@ -588,6 +649,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
       });
       listHost.appendChild(row);
     }
+    updateSymbolPreview();
   }
   showAllCb.addEventListener("change", renderTemplateList);
 

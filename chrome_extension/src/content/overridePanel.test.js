@@ -27,6 +27,7 @@ import {
   OVERRIDE_REGISTER_PROP_PREVIEW_ATTR,
   OVERRIDE_REGISTER_TEMPLATE_LIST_ATTR,
   OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR,
+  OVERRIDE_REGISTER_SYMBOL_PREVIEW_ATTR,
   OVERRIDE_REGISTER_SHOWALL_ATTR,
   OVERRIDE_REGISTER_HIDE_PINNUM_ATTR,
   OVERRIDE_REGISTER_HIDE_PINNAME_ATTR,
@@ -961,5 +962,81 @@ describe("renderOverridePanel — 🟡 yellow dispatch (Issue #31)", () => {
     expect(
       row.parentNode.querySelector(`[${OVERRIDE_PANEL_ATTR}="true"]`),
     ).toBeNull();
+  });
+});
+
+describe("buildRegisterImportEditor — symbol preview (Etappe B)", () => {
+  const TPL = "/home/user/templates/MyTemplates.kicad_sym";
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  it("renders a preview pane; EasyEDA default shows a placeholder and does not fetch", () => {
+    let calls = 0;
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      fetchSymbolPreview: () => {
+        calls += 1;
+        return Promise.resolve({ svg: "<svg></svg>" });
+      },
+    });
+    const pane = panel.querySelector(`[${OVERRIDE_REGISTER_SYMBOL_PREVIEW_ATTR}]`);
+    expect(pane).toBeTruthy();
+    // Default selection is EasyEDA → placeholder text, fetcher untouched.
+    expect(pane.querySelector("img")).toBeNull();
+    expect(pane.textContent).toContain("EasyEDA");
+    expect(calls).toBe(0);
+  });
+
+  it("fetches and renders the SVG for a preselected template symbol", async () => {
+    const seen = [];
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      initialSymbolSource: { source: "template", libPath: TPL, name: "R0603" },
+      fetchSymbolPreview: (arg) => {
+        seen.push(arg);
+        return Promise.resolve({ svg: "<svg id='x'></svg>" });
+      },
+    });
+    const pane = panel.querySelector(`[${OVERRIDE_REGISTER_SYMBOL_PREVIEW_ATTR}]`);
+    // Synchronously shows a loading hint before the promise resolves.
+    expect(pane.textContent).toContain("Lade");
+    await flush();
+    expect(seen).toEqual([{ libPath: TPL, name: "R0603" }]);
+    const img = pane.querySelector("img");
+    expect(img).toBeTruthy();
+    expect(decodeURIComponent(img.getAttribute("src"))).toContain("<svg id='x'>");
+  });
+
+  it("fetches when the user clicks a template row", async () => {
+    let calls = 0;
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      fetchSymbolPreview: () => {
+        calls += 1;
+        return Promise.resolve({ svg: "<svg></svg>" });
+      },
+    });
+    // Reveal all templates, then click the first template row.
+    const cb = panel.querySelector(`[${OVERRIDE_REGISTER_SHOWALL_ATTR}]`);
+    cb.checked = true;
+    cb.dispatchEvent(new Event("change"));
+    const row = panel.querySelector(
+      `[${OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR}][data-value^="template:"]`,
+    );
+    row.click();
+    await flush();
+    expect(calls).toBeGreaterThan(0);
+    expect(panel.querySelector(`[${OVERRIDE_REGISTER_SYMBOL_PREVIEW_ATTR}] img`)).toBeTruthy();
+  });
+
+  it("shows the error text on a soft preview miss", async () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      initialSymbolSource: { source: "template", libPath: TPL, name: "R0603" },
+      fetchSymbolPreview: () => Promise.resolve({ svg: null, error: "symbol_not_found" }),
+    });
+    await flush();
+    const pane = panel.querySelector(`[${OVERRIDE_REGISTER_SYMBOL_PREVIEW_ATTR}]`);
+    expect(pane.querySelector("img")).toBeNull();
+    expect(pane.textContent).toContain("symbol_not_found");
   });
 });

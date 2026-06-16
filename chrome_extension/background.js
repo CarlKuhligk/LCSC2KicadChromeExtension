@@ -921,6 +921,36 @@ async function nativeHostTemplatePinCheck(payload) {
 }
 
 /**
+ * V3 UI Etappe B — render a Template-Library symbol as an inline SVG via the
+ * Native Host's ``templateSymbolPreview`` verb (the symbol-side analogue of the
+ * footprint preview). Same Warm-Port routing as the other read-only Override
+ * Panel verbs. Resolves ``{ ok, result | error }``; ``result`` is
+ * ``{ svg, meta }`` or ``{ svg: null, error }`` for a soft (unrenderable) miss.
+ */
+async function nativeHostTemplateSymbolPreview(payload) {
+  let envelope;
+  try {
+    envelope = await getWarmNativePort().send(
+      "templateSymbolPreview",
+      {
+        templateLibPath: payload?.templateLibPath,
+        templateName: payload?.templateName,
+        theme: payload?.theme,
+        labelPins: payload?.labelPins,
+        drawPinNames: payload?.drawPinNames,
+      },
+      { timeoutMs: 8000 },
+    );
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+  if (envelope && envelope.ok === true && envelope.result && typeof envelope.result === "object") {
+    return { ok: true, result: envelope.result };
+  }
+  return { ok: false, error: envelope?.error || "no result" };
+}
+
+/**
  * V3 Issue #24 — generic Native-Host RPC bridge for the FS picker verbs
  * (`fsRoots`, `fsList`, `fsCheck`, `validateLibrary`). Mirrors the
  * connect-postMessage-await-disconnect pattern in `nativeHostListTemplates`
@@ -2543,17 +2573,25 @@ const RUNTIME_MESSAGE_HANDLERS = {
     if (!isKnownTemplateLibraryPath(templateLibPath)) {
       throw new Error("Template library path is not registered in extension settings.");
     }
-    return sendExtensionRpc(
-      "templates_preview_svg",
-      {
-        template_name: templateName,
-        template_lib_path: templateLibPath,
-        label_pins: labelPins,
-        draw_pin_names: drawPinNames,
-        preview_theme: previewTheme,
-      },
-      60000,
-    );
+    // V3: render via the Native Host (was the V2 WebSocket ``templates_preview_svg``).
+    // Adapt to the ``{ ok, svg, error }`` shape app.js already consumes.
+    const res = await nativeHostTemplateSymbolPreview({
+      templateLibPath,
+      templateName,
+      theme: previewTheme,
+      labelPins,
+      drawPinNames,
+    });
+    if (!res.ok) {
+      return { ok: false, svg: null, error: res.error || "Preview unavailable" };
+    }
+    const result = res.result || {};
+    return {
+      ok: typeof result.svg === "string",
+      svg: typeof result.svg === "string" ? result.svg : null,
+      error: result.error,
+      meta: result.meta,
+    };
   },
   templatesPinMapContext: async (message) => {
     const lcscId = (message.lcscId || "").trim().toUpperCase();

@@ -4878,6 +4878,33 @@ function attachButton(lcscId) {
               initial.initialHidePinNumbers ?? autoHidePinNumbers,
             initialHidePinNames: initial.initialHidePinNames ?? false,
             initialValueParam: initial.initialValueParam ?? autoValueParam,
+            // UI Etappe B — render the selected template symbol as SVG so the
+            // user sees what they assign. Mirrors the gallery hover preview RPC;
+            // returns { svg } | { svg: null, error } (editor falls back to text).
+            fetchSymbolPreview: async ({ libPath, name }) => {
+              try {
+                const resp = await contentRpc(
+                  "templatesPreviewSvg",
+                  {
+                    templateName: name,
+                    templateLibPath: libPath,
+                    labelPins: true,
+                    previewTheme: "light",
+                  },
+                  k2cRpc(1, 400),
+                );
+                if (resp?.ok && resp.data?.ok && typeof resp.data.svg === "string") {
+                  return { svg: resp.data.svg };
+                }
+                const detail =
+                  (resp?.data && (resp.data.error || resp.data.message))
+                  || resp?.error
+                  || "Vorschau nicht verfügbar";
+                return { svg: null, error: String(detail) };
+              } catch (err) {
+                return { svg: null, error: err?.message || "Vorschau fehlgeschlagen" };
+              }
+            },
             onSave: async ({ categoryPath, rule }) => {
               try {
                 const resp = await contentRpc(
