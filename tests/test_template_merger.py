@@ -4,7 +4,6 @@ import unittest
 from easyeda2kicad.kicad.kicad_text_normalize import (
     normalize_for_kicad_text,
     normalize_property_key_for_match,
-    normalized_match_keys_for_lcsc_param,
 )
 from easyeda2kicad.kicad.parameters_kicad_symbol import (
     KiPinStyle,
@@ -33,14 +32,6 @@ def _make_pin(number: str, name: str = "", x: float = 0, y: float = 0) -> KiSymb
 
 
 class TestKicadTextNormalize(unittest.TestCase):
-    def test_lcsc_canonical_matches_page_label_alias(self) -> None:
-        """Extension maps 'Temperature Coefficient' → 'Temp. Coefficient' in symbol_params."""
-        canon_norm = normalize_property_key_for_match("Temp. Coefficient")
-        page_norm = normalize_property_key_for_match("Temperature Coefficient")
-        keys = normalized_match_keys_for_lcsc_param("Temp. Coefficient")
-        self.assertIn(canon_norm, keys)
-        self.assertIn(page_norm, keys)
-
     def test_celsius_aliases_match(self) -> None:
         """℃ (U+2103) vs °C (U+00B0 + C) must compare equal for template merge."""
         tpl = "B Constant (25\u2103/50\u2103)"
@@ -213,8 +204,9 @@ class TestMergePropertyFuzzyKeys(unittest.TestCase):
         self.assertIn('(property "Resistance" "10k"', out)
         self.assertNotIn("PLACE_", out)
 
-    def test_merge_maps_temp_coefficient_canonical_to_page_label_field(self) -> None:
-        """symbol_params key 'Temp. Coefficient' fills a template field 'Temperature Coefficient'."""
+    def test_merge_fills_exact_match_template_field(self) -> None:
+        """A template field whose label matches the LCSC page wording verbatim is
+        filled from symbol_params (no synonym/alias layer)."""
         tpl = '''
 (symbol "TplTC"
   (property "Value" "x"
@@ -236,7 +228,7 @@ class TestMergePropertyFuzzyKeys(unittest.TestCase):
             datasheet="https://example.com/d.pdf",
             lcsc_id="C1",
             jlc_id="",
-            symbol_params={"Temp. Coefficient": "±100ppm/°C"},
+            symbol_params={"Temperature Coefficient": "±100ppm/°C"},
         )
         merger = TemplateMerger()
         out = merger.merge(tpl, "TplTC", info, source_pins=[_make_pin("1")])
