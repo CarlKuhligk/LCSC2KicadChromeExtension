@@ -52,7 +52,7 @@ import { detectValueParam } from "../../shared/valueParam.mjs";
 import { injectAnchorCard, ANCHOR_ROW_ATTR } from "./anchorCard.js";
 import { attachNativeHostStatus } from "./nativeHostStatusButton.js";
 import { wirePhase1Download } from "./phase1Fetch.js";
-import { runPhase2Convert } from "./phase2Convert.js";
+import { runPhase2Convert, subscribeConvertProgress } from "./phase2Convert.js";
 import {
   renderOverridePanel,
   renderRegisterImportEditor,
@@ -5368,10 +5368,8 @@ async function handleDownloadClick(button, lcscId, overrides = {}) {
     if (!status?.ok || !status.data) {
       throw new Error(status?.error || "Unable to reach extension backend.");
     }
-    if (!status.data.connected) {
-      setButtonOfflineNoBackend(button);
-      return;
-    }
+    // V3: no V2-WebSocket health gate — the import runs over the Native Host
+    // convert below, which surfaces its own unavailability as a button error.
     if (!status.data.importDestReady) {
       const group = document.getElementById(BTN_GROUP_ID);
       if (group && button && btnGroupHostContains(group, button)) {
@@ -5440,73 +5438,58 @@ async function handleDownloadClick(button, lcscId, overrides = {}) {
 
   const pendingMsg = useTemplate
     ? formatStatusColon("KiCad import", "creating part from template…")
-    : formatStatusColon("Conversion", "submitting job");
+    : formatStatusColon("Conversion", "starting…");
   updateButtonState(button, "pending", { progress: 0, message: pendingMsg });
+
+  // V3: import via the Native-Host convert (was the V2-WebSocket quickDownload →
+  // submitJob → enqueue_task job queue). Map the gallery/fallback overrides to
+  // the v3Convert override grammar and stream progress onto the button via
+  // v3ConvertProgress. The footprint stays EasyEDA (Symbol-MVP); a template
+  // symbol + Pin↔Pad map flow through exactly like the Confidence path.
+  const symbolSource =
+    useTemplate && overrides.templateName && overrides.templateLibPath
+      ? { source: "template", libPath: overrides.templateLibPath, name: overrides.templateName }
+      : { source: "easyeda" };
+  const convertParams = {
+    lcscId,
+    overrides: { symbol: symbolSource, footprint: { source: "easyeda" } },
+    pageParams: pageData.params,
+  };
+  if (
+    useTemplate
+    && overrides.templatePinMap
+    && typeof overrides.templatePinMap === "object"
+    && Object.keys(overrides.templatePinMap).length > 0
+  ) {
+    convertParams.templatePinMap = overrides.templatePinMap;
+  }
+
+  const unsubscribe = subscribeConvertProgress(lcscId, (frame) => {
+    updateButtonState(button, "progress", {
+      progress: typeof frame.progress === "number" ? frame.progress : undefined,
+      phase: "convert",
+      message: formatStatusColon("Conversion", frame.message || "working…"),
+    });
+  });
   try {
-    const response = await contentRpc(
-      "quickDownload",
-      {
-        lcscId,
-        source: "contentScript",
-        category: pageData.category,
-        componentPackage: pageData.package,
-        params: pageData.params,
-        description: pageData.description,
-        datasheetUrl: pageData.datasheetUrl,
-        useTemplate,
-        templateName: overrides.templateName || null,
-        templateLibPath: overrides.templateLibPath || null,
-        forceTemplate: overrides.forceTemplate || false,
-        ...(useTemplate
-          && overrides.templatePinMap
-          && typeof overrides.templatePinMap === "object"
-          && Object.keys(overrides.templatePinMap).length > 0
-          ? { templatePinMap: overrides.templatePinMap }
-          : {}),
-        overwrite: overrides.overwrite,
-        overwrite_model: overrides.overwrite_model,
-        categoryConfigOverride: catCfg.value != null ? catCfg.value : null,
-      },
-      k2cRpc(4, 300),
-    );
-    if (!response?.ok) {
-      dbg("handleDownloadClick: backend returned error", response);
-      throw new Error(response?.error || "Unknown error");
-    }
-    const data = response.data || {};
-    const jobId = data.jobId;
-    if (jobId) {
-      const prevWatch = button.dataset.k2cWatchJobId;
-      if (prevWatch && prevWatch !== jobId) {
-        jobState.clearWatcher(prevWatch);
-        jobState.forgetUi(prevWatch);
-      }
-      jobState.forgetUi(jobId);
-      button.dataset.k2cWatchJobId = jobId;
-      applyJobStatusToButton(button, jobId, {
-        status: data.status || "queued",
-        progress: data.progress,
-        message: data.message,
-        queue_position: data.queue_position,
+    const response = await contentRpc("v3Convert", convertParams, k2cRpc(2, 200));
+    const data = response?.ok ? response.data : null;
+    if (data && data.ok) {
+      updateButtonState(button, "ok", {
+        message: formatStatusColon("Import done", "symbol + footprint written"),
       });
-      startJobWatcher(button, jobId);
     } else {
-      updateButtonState(button, "progress", {
-        progress: 0,
-        phase: "queued",
-        message: formatStatusColon(
-          "Conversion",
-          "job submitted — open extension popup if this stays stuck",
-        ),
-      });
+      throw new Error((data && data.error) || response?.error || "unknown error");
     }
   } catch (error) {
-    console.error("easyeda2kicad quick download failed", error);
+    console.error("easyeda2kicad import failed", error);
     updateButtonState(button, "error", {
       message: formatStatusColon("Conversion failed", error.message || "unknown error"),
       copyText: `Error: ${error.message || "Unknown error"}\n\nLCSC: ${lcscId}\n${error.stack || ""}`.trim(),
     });
     dbg("handleDownloadClick: failed", lcscId, error);
+  } finally {
+    try { unsubscribe(); } catch (_e) { /* ignore */ }
   }
 }
 
