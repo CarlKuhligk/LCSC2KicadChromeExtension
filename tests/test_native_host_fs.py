@@ -421,3 +421,29 @@ def test_host_fs_list_rejects_missing_path(tmp_path: Path) -> None:
     )
     assert response["ok"] is False
     assert "path is required" in response["error"]
+
+
+def test_validate_library_reports_counts_and_assets(tmp_path: Path) -> None:
+    # Replaces the V2 libraries_validate counts the popup inventory shows.
+    sym = tmp_path / "Lib.kicad_sym"
+    sym.write_text(
+        '(kicad_symbol_lib (symbol "R" (symbol "R_0_1")) (symbol "C" (symbol "C_0_1")))',
+        encoding="utf-8",
+    )
+    pretty = tmp_path / "Lib.pretty"
+    pretty.mkdir()
+    (pretty / "R_0603.kicad_mod").write_text("(module)", encoding="utf-8")
+    shapes = tmp_path / "Lib.3dshapes"
+    shapes.mkdir()
+    (shapes / "R_0603.wrl").write_text("#VRML", encoding="utf-8")
+
+    res = fs.validate_library(str(tmp_path / "Lib"), [str(tmp_path)])
+    assert res["counts"] == {"symbol": 2, "footprint": 1, "model": 1}
+    assert res["assets"] == {"symbol": True, "footprint": True, "model": True}
+    assert res["exists"] is True
+
+
+def test_validate_library_counts_zero_when_absent(tmp_path: Path) -> None:
+    res = fs.validate_library(str(tmp_path / "Missing"), [str(tmp_path)])
+    assert res["counts"] == {"symbol": 0, "footprint": 0, "model": 0}
+    assert res["assets"] == {"symbol": False, "footprint": False, "model": False}

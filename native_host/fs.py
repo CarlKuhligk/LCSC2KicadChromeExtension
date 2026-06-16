@@ -292,6 +292,7 @@ def validate_library(path: Any, extra_roots: Any = None) -> dict[str, Any]:
     _assert_inside(prefix.parent, allowed)
     symbol_path = prefix.with_suffix(".kicad_sym")
     pretty_dir = prefix.with_suffix(".pretty")
+    model_dir = prefix.with_suffix(".3dshapes")
     parent_dir = prefix.parent
     parent_exists = parent_dir.is_dir()
     # Read-only whitespace report (only when the symbol file exists; the popup
@@ -300,13 +301,21 @@ def validate_library(path: Any, extra_roots: Any = None) -> dict[str, Any]:
     whitespace_symbols = (
         _scan_symbol_whitespace(symbol_path) if symbol_path.is_file() else []
     )
+    counts = _count_library_assets(symbol_path, pretty_dir, model_dir)
     return {
         "path": str(prefix),
         "symbolPath": str(symbol_path),
         "prettyPath": str(pretty_dir),
+        "modelDir": str(model_dir),
         "exists": symbol_path.exists(),
         "symbol": {"exists": symbol_path.is_file()},
         "footprintDir": {"exists": pretty_dir.is_dir()},
+        "counts": counts,
+        "assets": {
+            "symbol": counts["symbol"] > 0,
+            "footprint": counts["footprint"] > 0,
+            "model": counts["model"] > 0,
+        },
         "writable": os.access(str(parent_dir), os.W_OK) if parent_exists else False,
         "parentExists": parent_exists,
         "whitespace": {
@@ -314,6 +323,41 @@ def validate_library(path: Any, extra_roots: Any = None) -> dict[str, Any]:
             "symbols": whitespace_symbols,
         },
     }
+
+
+def _count_library_assets(
+    symbol_path: Path, pretty_dir: Path, model_dir: Path
+) -> dict[str, int]:
+    """Count symbols / footprints / 3D models for the popup inventory display.
+
+    Replaces the per-library counts the V2 ``libraries_validate`` WS endpoint
+    used to return. Quiet on read errors (a layer that can't be read counts 0).
+    """
+    symbol = 0
+    if symbol_path.is_file():
+        try:
+            symbol = len(list_symbols_in_lib(str(symbol_path)))
+        except OSError:
+            symbol = 0
+    footprint = 0
+    if pretty_dir.is_dir():
+        try:
+            footprint = sum(
+                1 for p in pretty_dir.iterdir()
+                if p.suffix == ".kicad_mod" and p.is_file()
+            )
+        except OSError:
+            footprint = 0
+    model = 0
+    if model_dir.is_dir():
+        try:
+            model = sum(
+                1 for p in model_dir.iterdir()
+                if p.is_file() and p.suffix.lower() in (".wrl", ".step", ".stp")
+            )
+        except OSError:
+            model = 0
+    return {"symbol": symbol, "footprint": footprint, "model": model}
 
 
 def _top_level_symbol_names(content: str) -> list[str]:
