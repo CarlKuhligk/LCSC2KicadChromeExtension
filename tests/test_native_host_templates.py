@@ -358,3 +358,86 @@ def test_list_templates_includes_symbol_categories(tmp_path: Path) -> None:
     # symbolCategories maps only the tagged subset; symbols lists them all.
     assert result["symbolCategories"] == {"R": "Resistors", "C": "Capacitors"}
     assert set(result["symbols"]) == {"R", "C", "NoCat"}
+
+
+# ---------------------------------------------------------------------------
+# template_symbol_preview — V3 symbol SVG preview (UI Etappe B)
+# ---------------------------------------------------------------------------
+
+SAMPLE_KICAD_SYM_RENDERABLE = """(kicad_symbol_lib (version 20240618) (generator kicad_symbol_editor)
+  (symbol "R"
+    (property "Reference" "R" (at 0 0 0))
+    (symbol "R_0_1"
+      (rectangle (start -2.54 -2.54) (end 2.54 2.54) (stroke (width 0)) (fill (type none)))
+      (pin passive line (at 0 -5.08 90) (length 2.54)
+        (name "~" (effects (font (size 1.27 1.27))))
+        (number "1" (effects (font (size 1.27 1.27)))))
+    )
+  )
+)
+"""
+
+
+def test_template_symbol_preview_returns_svg(tmp_path: Path) -> None:
+    sym = tmp_path / "Tpl.kicad_sym"
+    sym.write_text(SAMPLE_KICAD_SYM_RENDERABLE, encoding="utf-8")
+    result = templates.template_symbol_preview(
+        {"templateLibPath": str(sym), "templateName": "R"}
+    )
+    assert result["svg"] and "<svg" in result["svg"]
+    assert "viewBox" in result["svg"]
+    assert isinstance(result["meta"], dict)
+
+
+def test_template_symbol_preview_dark_theme(tmp_path: Path) -> None:
+    sym = tmp_path / "Tpl.kicad_sym"
+    sym.write_text(SAMPLE_KICAD_SYM_RENDERABLE, encoding="utf-8")
+    result = templates.template_symbol_preview(
+        {"templateLibPath": str(sym), "templateName": "R", "theme": "dark"}
+    )
+    assert result["svg"] and "#ffffff" in result["svg"]
+
+
+def test_template_symbol_preview_missing_symbol_is_soft_error(tmp_path: Path) -> None:
+    sym = tmp_path / "Tpl.kicad_sym"
+    sym.write_text(SAMPLE_KICAD_SYM_RENDERABLE, encoding="utf-8")
+    result = templates.template_symbol_preview(
+        {"templateLibPath": str(sym), "templateName": "DoesNotExist"}
+    )
+    assert result["svg"] is None
+    assert result["error"] == "symbol_not_found"
+
+
+@pytest.mark.parametrize(
+    "payload, message_substr",
+    [
+        ({"templateName": "R"}, "templateLibPath"),
+        ({"templateLibPath": "x"}, "templateName"),
+    ],
+)
+def test_template_symbol_preview_validation_errors(payload, message_substr) -> None:
+    with pytest.raises(ValueError, match=message_substr):
+        templates.template_symbol_preview(payload)
+
+
+def test_host_dispatches_template_symbol_preview_verb(tmp_path: Path) -> None:
+    sym = tmp_path / "Tpl.kicad_sym"
+    sym.write_text(SAMPLE_KICAD_SYM_RENDERABLE, encoding="utf-8")
+    response = host.handle({
+        "id": 9,
+        "verb": "templateSymbolPreview",
+        "params": {"templateLibPath": str(sym), "templateName": "R"},
+    })
+    assert response["id"] == 9
+    assert response["ok"] is True
+    assert "<svg" in response["result"]["svg"]
+
+
+def test_host_template_symbol_preview_returns_validation_error() -> None:
+    response = host.handle({
+        "id": "p",
+        "verb": "templateSymbolPreview",
+        "params": {"templateLibPath": "x"},
+    })
+    assert response["ok"] is False
+    assert "templateName" in response["error"]

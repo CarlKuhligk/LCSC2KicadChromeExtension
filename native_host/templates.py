@@ -146,6 +146,68 @@ def template_pin_check(
     }
 
 
+def _coerce_preview_dim(value: Any, default: int) -> int:
+    """Clamp a requested SVG dimension to a sane px range (defends the renderer)."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(60, min(1200, n))
+
+
+def template_symbol_preview(payload: Any) -> dict[str, Any]:
+    """V3 **TemplateSymbolPreview** RPC (UI Etappe B).
+
+    Render a Template-Library symbol as an inline SVG so the Import-Editor can
+    show the user the symbol they are about to assign — the symbol-side analogue
+    of the footprint preview. Read-only.
+
+    Args:
+        payload: dict with ``templateLibPath``, ``templateName`` and optional
+            ``theme`` ("light"|"dark"), ``labelPins`` / ``drawPinNames`` (bool),
+            ``width`` / ``height`` (px).
+
+    Returns:
+        ``{"svg": str, "meta": {...}}`` on success, or ``{"svg": None,
+        "error": str}`` when the symbol is missing or unrenderable — the editor
+        falls back to a text label, so a preview never hard-fails an import.
+
+    Raises:
+        ValueError: on missing/invalid ``templateLibPath`` or ``templateName``.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be an object")
+    template_lib_raw = payload.get("templateLibPath")
+    if not isinstance(template_lib_raw, str) or not template_lib_raw.strip():
+        raise ValueError("templateLibPath is required")
+    template_name_raw = payload.get("templateName")
+    if not isinstance(template_name_raw, str) or not template_name_raw.strip():
+        raise ValueError("templateName is required")
+    template_lib_path = template_lib_raw.strip()
+    template_name = template_name_raw.strip()
+    theme = "dark" if str(payload.get("theme") or "").strip().lower() == "dark" else "light"
+
+    symbol_block = extract_symbol_from_lib(template_lib_path, template_name)
+    if not isinstance(symbol_block, str) or not symbol_block:
+        return {"svg": None, "error": "symbol_not_found"}
+
+    # Lazy import: the heavy renderer only loads when a preview is actually
+    # requested, keeping the common listTemplates / pin-check paths light.
+    from easyeda2kicad.kicad.symbol_preview_svg import symbol_block_to_svg
+
+    svg, meta = symbol_block_to_svg(
+        symbol_block,
+        label_pins=bool(payload.get("labelPins", True)),
+        draw_pin_names=bool(payload.get("drawPinNames", True)),
+        width_px=_coerce_preview_dim(payload.get("width"), 300),
+        height_px=_coerce_preview_dim(payload.get("height"), 225),
+        preview_theme=theme,
+    )
+    if svg is None:
+        return {"svg": None, "error": str(meta.get("error", "render_failed"))}
+    return {"svg": svg, "meta": meta}
+
+
 def list_templates(lib_path: Any) -> dict[str, Any]:
     """List symbols + footprints belonging to a Template Library.
 
