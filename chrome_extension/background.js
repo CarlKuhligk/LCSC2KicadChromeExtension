@@ -1028,6 +1028,25 @@ async function nativeHostValidateLibrary(path) {
 }
 
 /**
+ * Opt-in whitespace cleanup (Native Host ``cleanLibrary``): trims leading/
+ * trailing spaces in symbol property keys/values (KiCad warns on those),
+ * backing the file up to ``<file>.kicad_sym.bak`` first. Idempotent.
+ *
+ * @returns {Promise<{symbolPath, changed, symbols, backup}>}
+ */
+async function nativeHostCleanLibrary(path) {
+  const response = await nativeHostFsRpc(
+    "cleanLibrary",
+    { path, extraRoots: getUserAddedRoots() },
+    30000,
+  );
+  if (!response.ok) {
+    throw new Error(response.error || "Failed to clean library.");
+  }
+  return response.result;
+}
+
+/**
  * V3 **Create Library** (Native Host ``scaffoldLibrary``). Writes an empty
  * ``<base>/<name>.kicad_sym`` + ``.pretty``/``.3dshapes`` siblings inside an
  * allowed root. Replaces the V2 WebSocket ``libraries_scaffold`` path.
@@ -2147,6 +2166,7 @@ const RUNTIME_MESSAGE_HANDLERS = {
     return handleImportLibrary(rest);
   },
   validateLibrary: async (message) => handleValidateLibrary(message),
+  cleanLibrary: async (message) => nativeHostCleanLibrary(message.path),
   updateSettings: async (message) => {
     const previousServerUrl = state.serverUrl;
     if (typeof message.serverUrl === "string") {

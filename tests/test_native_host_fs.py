@@ -378,6 +378,27 @@ def test_host_dispatches_validate_library_verb(tmp_path: Path) -> None:
     assert response["result"]["symbol"]["exists"] is True
 
 
+def test_host_dispatches_clean_library_verb(tmp_path: Path) -> None:
+    sym = tmp_path / "Lib.kicad_sym"
+    sym.write_text(
+        '(kicad_symbol_lib (symbol "R" (property "Value" " 10k ")))',
+        encoding="utf-8",
+    )
+    response = host.handle(
+        {
+            "id": 8,
+            "verb": "cleanLibrary",
+            "params": {
+                "path": str(tmp_path / "Lib"),
+                "extraRoots": [str(tmp_path)],
+            },
+        }
+    )
+    assert response["ok"] is True
+    assert response["result"]["changed"] == 1
+    assert '(property "Value" "10k")' in sym.read_text(encoding="utf-8")
+
+
 def test_host_fs_verbs_surface_validation_errors(tmp_path: Path) -> None:
     inside = tmp_path / "allowed"
     inside.mkdir()

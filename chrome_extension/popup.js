@@ -989,6 +989,23 @@ function buildLibraryDetailsPanel(library) {
     wrap.appendChild(ul);
   }
 
+  // Opt-in whitespace cleanup. Trims leading/trailing spaces KiCad warns about
+  // from symbol property keys/values, with a .bak backup (Native Host
+  // ``cleanLibrary``). Self-contained — does not depend on the inventory path.
+  if (sym && !library.isTemplateLibrary) {
+    const actions = document.createElement("div");
+    actions.className = "library-details-actions";
+    const cleanBtn = document.createElement("button");
+    cleanBtn.type = "button";
+    cleanBtn.className = "library-cleanup";
+    cleanBtn.dataset.id = library.id;
+    cleanBtn.textContent = "Clean up whitespace";
+    cleanBtn.title =
+      "Trim leading/trailing spaces in symbol property fields (KiCad warns on those). A .bak backup is written first.";
+    actions.appendChild(cleanBtn);
+    wrap.appendChild(actions);
+  }
+
   return wrap;
 }
 
@@ -1500,6 +1517,35 @@ function handleLibraryListClick(event) {
   if (!id) return;
   const library = state.libraries.find((item) => item.id === id);
   if (!library) return;
+  if (button.classList.contains("library-cleanup")) {
+    event.preventDefault();
+    const sym = (library.symbolPath || "").trim() || libraryStoragePrefix(library);
+    if (!sym) {
+      showToast("No symbol file for this library.", "danger");
+      return;
+    }
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = "Cleaning…";
+    sendMessage("cleanLibrary", { path: sym })
+      .then((res) => {
+        const n = Number(res?.changed) || 0;
+        if (n === 0) {
+          showToast("No whitespace to clean — library is already tidy.", "success");
+        } else {
+          showToast(
+            `Cleaned ${n} field${n === 1 ? "" : "s"}; backup saved as .bak.`,
+            "success",
+          );
+        }
+      })
+      .catch((error) => showToast(error.message || "Cleanup failed.", "danger"))
+      .finally(() => {
+        button.disabled = false;
+        button.textContent = original;
+      });
+    return;
+  }
   if (button.classList.contains("library-remove")) {
     event.preventDefault();
     const libId = id;

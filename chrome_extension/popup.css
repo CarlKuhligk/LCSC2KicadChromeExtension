@@ -1266,6 +1266,38 @@ html[data-theme="light"] .library-status-pill--active .badge-online {
   color: var(--library-warning);
 }
 
+.library-details-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.15rem;
+}
+
+.library-cleanup {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.25rem 0.6rem;
+  border-radius: 0.35rem;
+  border: 1px solid var(--text-muted);
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.library-cleanup:hover:not(:disabled) {
+  border-color: var(--text-primary);
+}
+
+.library-cleanup:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.library-cleanup:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 1px;
+}
+
 .library-meta {
   font-family: "JetBrains Mono", Monaco, "Courier New", monospace;
   font-size: 0.62rem;
