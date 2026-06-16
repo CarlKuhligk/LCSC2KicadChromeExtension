@@ -3,7 +3,6 @@
 importScripts("categoryPath.js");
 importScripts("confidenceState.js");
 importScripts("shared/extensionDefaults.js");
-importScripts("extensionWsClient.js");
 importScripts("nativeHostPort.js");
 
 // Normalize common LCSC parameter label variations to consistent KiCad field names
@@ -156,13 +155,6 @@ let state = {
 
 let healthTimer = null;
 let initialized = false;
-
-// WebSocket transport: {@link ./extensionWsClient.js} + {@link globalThis.k2cExtensionWsHooks} (assigned in init).
-
-let extConnectIntent = true;
-
-/** Avoid duplicate finalize when multiple terminal pushes arrive. */
-const extensionTerminalHandled = new Set();
 
 /**
  * When false, `[KPI jobs]` logs only run if Settings → Debug logs is enabled.
@@ -401,17 +393,6 @@ function hasModelOutput(result) {
     return Object.values(modelPaths).some(Boolean);
   }
   return Boolean(modelPaths);
-}
-
-/** Some serializers use PascalCase; normalize onto `result` for the rest of the extension. */
-function normalizeWsTaskRow(row) {
-  if (!row || typeof row !== "object") {
-    return row;
-  }
-  if (row.result == null && row.Result != null) {
-    row.result = row.Result;
-  }
-  return row;
 }
 
 /** Normalize API/WS result shape (snake_case, camelCase, or JSON string). */
@@ -654,27 +635,10 @@ async function init() {
     console.warn("Failed to load stored state", error);
   }
 
-  extConnectIntent = true;
-  globalThis.k2cExtensionWsHooks = {
-    extConnectIntent: () => extConnectIntent,
-    getServerUrl: () => state.serverUrl || DEFAULT_STATE.serverUrl,
-    getDebugLogs: () => state.debugLogs,
-    kpiJobLog,
-    kpiJobVerbose,
-    inventoryLibraries,
-    refreshTemplateStatus,
-    syncExistingTasks,
-    broadcastState,
-    updateBadge,
-    handleExtensionTaskPush,
-    setConnected: (v) => {
-      state.connected = v;
-    },
-    setConnectionHint: (h) => {
-      state.connectionHint = h;
-    },
-  };
-  connectExtensionSocket();
+  // V3: no WebSocket. "connected" tracks the Native Host; checkHealth() pings it
+  // and loads the initial library/template inventory, then the monitor keeps it
+  // fresh.
+  void checkHealth();
   startHealthMonitor();
   broadcastState();
 }
@@ -690,54 +654,6 @@ function buildUrl(path) {
   const normalized = base.endsWith("/") ? base : `${base}/`;
   const cleanedPath = path.startsWith("/") ? path.slice(1) : path;
   return new URL(cleanedPath, normalized).toString();
-}
-
-function extensionWsUrl() {
-  const base = state.serverUrl || DEFAULT_STATE.serverUrl;
-  return globalThis.k2cExtensionWsUrlFromBase(base);
-}
-
-/** Same key ⇒ same extension WS endpoint — used to avoid reconnect when only other settings changed. */
-function extensionSocketEndpointKey(baseUrl) {
-  return globalThis.k2cExtensionSocketEndpointKey(
-    typeof baseUrl === "string" && baseUrl.trim()
-      ? baseUrl.trim()
-      : DEFAULT_STATE.serverUrl,
-  );
-}
-
-/** JSON-RPC WebSocket client from {@link ./extensionWsClient.js} (always load before this script). */
-function extensionWsApi() {
-  return globalThis.k2cExtensionWs;
-}
-
-function extensionWsIsOpen() {
-  return Boolean(extensionWsApi()?.isOpen?.());
-}
-
-function closeExtensionSocket() {
-  extensionWsApi()?.closeExtensionSocket?.();
-}
-
-function scheduleExtensionReconnect() {
-  extensionWsApi()?.scheduleExtensionReconnect?.();
-}
-
-/** Schedule reconnect only if idle (not already connecting and no timer). Avoids piling new sockets on the 3s health tick. */
-function scheduleExtensionReconnectIfIdle() {
-  extensionWsApi()?.scheduleExtensionReconnectIfIdle?.();
-}
-
-function connectExtensionSocket() {
-  extensionWsApi()?.connectExtensionSocket?.();
-}
-
-function sendExtensionRpc(method, params, timeoutMs = 45000) {
-  const api = extensionWsApi();
-  if (!api || typeof api.sendExtensionRpc !== "function") {
-    return Promise.reject(new Error("Backend transport not ready."));
-  }
-  return api.sendExtensionRpc(method, params, timeoutMs);
 }
 
 async function validateLibraryOnServer(path) {
@@ -1199,37 +1115,22 @@ async function refreshTemplateStatus() {
 }
 
 async function checkHealth() {
+  // V3: "connected" = the Native Host answers a ping (was the V2 WebSocket).
   try {
-    if (!extensionWsIsOpen()) {
-      connectExtensionSocket();
-      await new Promise((resolve, reject) => {
-        const deadline = Date.now() + 8000;
-        const tick = () => {
-          if (extensionWsIsOpen()) {
-            resolve();
-            return;
-          }
-          if (Date.now() > deadline) {
-            reject(new Error("WebSocket connect timeout"));
-            return;
-          }
-          setTimeout(tick, 80);
-        };
-        tick();
-      });
-    }
-    await sendExtensionRpc("health", {}, 5000);
-    state.connected = true;
-    try {
-      await inventoryLibraries();
-    } catch (error) {
-      console.warn("Library inventory failed during health check", error);
-    }
-    try {
-      await refreshTemplateStatus();
-    } catch (error) {
-      if (state.debugLogs) {
-        console.warn("Template status refresh failed during health check", error);
+    const ping = await pingNativeHostOnce();
+    state.connected = Boolean(ping.online);
+    if (state.connected) {
+      try {
+        await inventoryLibraries();
+      } catch (error) {
+        console.warn("Library inventory failed during health check", error);
+      }
+      try {
+        await refreshTemplateStatus();
+      } catch (error) {
+        if (state.debugLogs) {
+          console.warn("Template status refresh failed during health check", error);
+        }
       }
     }
   } catch (error) {
@@ -1253,192 +1154,17 @@ function startHealthMonitor() {
   }
   healthTimer = setInterval(() => {
     (async () => {
-      try {
-        if (extensionWsIsOpen()) {
-          await sendExtensionRpc("ping", {}, 5000);
-          if (!state.connected) {
-            state.connected = true;
-            updateBadge();
-            broadcastState();
-          }
-        } else {
-          state.connected = false;
-          updateBadge();
-          broadcastState();
-          scheduleExtensionReconnectIfIdle();
-        }
-      } catch {
-        state.connected = false;
+      // V3: poll the Native Host (was a WebSocket ping). Flip the badge + status
+      // only on change so the popup/content reflect host availability.
+      const ping = await pingNativeHostOnce();
+      const online = Boolean(ping.online);
+      if (online !== state.connected) {
+        state.connected = online;
         updateBadge();
         broadcastState();
-        scheduleExtensionReconnectIfIdle();
       }
     })();
   }, globalThis.K2C_HEALTH_INTERVAL_MS || 3000);
-}
-
-async function syncExistingTasks() {
-  if (!extensionWsIsOpen()) {
-    kpiJobVerbose("syncExistingTasks: skip (socket not open)");
-    return;
-  }
-  try {
-    const tasks = await sendExtensionRpc("list_tasks", {}, 30000);
-    if (!Array.isArray(tasks)) {
-      kpiJobLog("syncExistingTasks: list_tasks not an array", typeof tasks);
-      return;
-    }
-    const preservedBefore = { ...state.jobs };
-    const active = {};
-
-    for (const task of tasks) {
-      const meta = state.jobMeta[task.id] || {};
-      const merged = { ...meta, ...task };
-      if (task.status === "completed" || task.status === "failed") {
-        addHistoryEntry({ ...merged, log: task.log || [] });
-      } else {
-        try {
-          await sendExtensionRpc("subscribe_task", { task_id: task.id }, 15000);
-        } catch (e) {
-          console.warn("subscribe_task failed", task.id, e);
-        }
-        active[task.id] = merged;
-      }
-    }
-
-    const dropped = Object.keys(preservedBefore).filter((id) => !active[id]);
-    if (dropped.length) {
-      kpiJobLog("syncExistingTasks: replacing jobs; dropped ids (were in UI, not in list_tasks)", dropped);
-    }
-    kpiJobVerbose("syncExistingTasks: active job ids", Object.keys(active), "count=", tasks.length);
-
-    state.jobs = active;
-    broadcastState();
-  } catch (error) {
-    console.warn("syncExistingTasks failed", error);
-    kpiJobLog("syncExistingTasks failed (detail)", error?.message || error);
-  }
-}
-
-function conversionResultLooksEmpty(coerced) {
-  if (!coerced || typeof coerced !== "object") {
-    return true;
-  }
-  return (
-    !coerced.symbol_path
-    && !coerced.footprint_path
-    && !hasModelOutput(coerced)
-  );
-}
-
-async function finalizeTerminalJob(id, merged, log) {
-  if (extensionTerminalHandled.has(id)) {
-    kpiJobVerbose("finalizeTerminalJob skip (duplicate push)", id);
-    return;
-  }
-  extensionTerminalHandled.add(id);
-  kpiJobLog("job finalized", id, merged.status);
-  setTimeout(() => extensionTerminalHandled.delete(id), 300000);
-  normalizeWsTaskRow(merged);
-  let coercedResult = coerceConversionResult(
-    merged.result != null ? merged.result : merged.Result,
-  );
-  if (
-    merged.status === "completed"
-    && conversionResultLooksEmpty(coercedResult)
-    && extensionWsIsOpen()
-  ) {
-    try {
-      const detail = await sendExtensionRpc("get_task_detail", { task_id: id }, 30000);
-      normalizeWsTaskRow(detail);
-      const fromDetail = coerceConversionResult(detail?.result ?? detail?.Result);
-      if (fromDetail && !conversionResultLooksEmpty(fromDetail)) {
-        coercedResult = fromDetail;
-        merged.result = fromDetail;
-      }
-    } catch (e) {
-      kpiJobVerbose("get_task_detail fallback after empty result", e);
-    }
-  }
-  const terminalJob = {
-    ...merged,
-    result: coercedResult,
-    log: log || [],
-    outputAnalysis: analyzeJobOutputs({
-      ...merged,
-      result: coercedResult,
-    }),
-  };
-  let terminalPlain = terminalJob;
-  try {
-    terminalPlain = JSON.parse(JSON.stringify(terminalJob));
-  } catch (_) {
-    /* keep reference if log/result is not serializable */
-  }
-  delete state.jobs[id];
-  addHistoryEntry(terminalPlain);
-  if (state.jobMeta[id]) {
-    delete state.jobMeta[id];
-    await persistState(["jobMeta"]);
-  }
-  broadcastToLcscContentTabs({
-    type: "jobTerminal",
-    jobId: id,
-    job: terminalPlain,
-  });
-  if (merged.status === "completed") {
-    const targetPrefix = merged.libraryPath
-      || merged.libraryPrefix
-      || stripLibrarySuffix(normalizePath(coercedResult?.symbol_path || ""));
-    if (targetPrefix) {
-      try {
-        await refreshLibraryCountsForPrefix(targetPrefix);
-      } catch (error) {
-        console.warn("Failed to update library inventory", error);
-      }
-    }
-  }
-  broadcastState();
-}
-
-async function handleExtensionTaskPush(taskId, payload) {
-  const meta = state.jobMeta[taskId] || {};
-  /* meta first so server payload wins (avoids jobMeta accidentally shadowing result/status). */
-  const merged = normalizeWsTaskRow({ ...meta, ...payload });
-  if (merged.progress != null) {
-    const np = Number(merged.progress);
-    if (Number.isFinite(np)) merged.progress = np;
-  }
-  const st = String(payload.status || "").toLowerCase();
-  kpiJobLog("task_update", {
-    taskId,
-    status: payload.status,
-    progress: payload.progress,
-    message: payload.message,
-    queue_position: payload.queue_position,
-    hasMeta: Boolean(meta.lcscId),
-  });
-  if (st === "completed" || st === "failed") {
-    await finalizeTerminalJob(taskId, merged, payload.log || []);
-    return;
-  }
-  const prev = state.jobs[taskId];
-  const dSt = st;
-  const pSt = prev ? String(prev.status || "").toLowerCase() : "";
-  if (prev && pSt === "running" && dSt === "queued") {
-    kpiJobLog("task_update ignored (would downgrade running→queued)", taskId);
-    broadcastState();
-    return;
-  }
-  state.jobs[taskId] = merged;
-  broadcastState();
-}
-
-function addHistoryEntry(entry) {
-  const clone = JSON.parse(JSON.stringify(entry));
-  const filtered = state.jobHistory.filter((item) => item.id !== clone.id);
-  state.jobHistory = [clone, ...filtered].slice(0, HISTORY_LIMIT);
-  persistState(["jobHistory"]);
 }
 
 /** True when a non-template, non-missing library is selected as the EasyEDA import destination. */
@@ -1527,38 +1253,6 @@ async function persistState(keys) {
   });
   await storageSet(payload);
 }
-
-function jobLifecycleRank(status) {
-  const s = String(status || "").toLowerCase();
-  if (s === "queued") return 1;
-  if (s === "running") return 2;
-  if (s === "completed" || s === "failed") return 3;
-  return 0;
-}
-
-/** Return value for submitJob callers: latest row from state.jobs (task_update may have advanced past RPC summary). */
-function jobSummaryForSubmitReturn(jobId, rpcFallback) {
-  const j = state.jobs[jobId];
-  if (!j) {
-    return rpcFallback;
-  }
-  return {
-    id: j.id ?? jobId,
-    status: j.status,
-    progress: j.progress,
-    message: j.message,
-    queue_position: j.queue_position,
-    error: j.error,
-    result: j.result,
-    created_at: j.created_at,
-    started_at: j.started_at,
-    finished_at: j.finished_at,
-  };
-}
-
-// =============================================================================
-// Job pipeline (submitJob, task_update merge, history)
-// =============================================================================
 
 function normalizePathKeyForCompare(p) {
   return String(p || "").trim().replace(/\\/g, "/").toLowerCase();
@@ -2069,11 +1763,9 @@ const RUNTIME_MESSAGE_HANDLERS = {
     return { ...snap, uiTheme };
   },
   setServerUrl: async (message) => {
+    // V3: serverUrl is a vestigial setting (no WebSocket to reconnect).
     state.serverUrl = message.url || DEFAULT_STATE.serverUrl;
     await persistState(["serverUrl"]);
-    closeExtensionSocket();
-    extensionWsApi()?.resetReconnectDelay?.();
-    connectExtensionSocket();
     return snapshotState();
   },
   createLibrary: async (message) => {
@@ -2087,7 +1779,6 @@ const RUNTIME_MESSAGE_HANDLERS = {
   validateLibrary: async (message) => handleValidateLibrary(message),
   cleanLibrary: async (message) => nativeHostCleanLibrary(message.path),
   updateSettings: async (message) => {
-    const previousServerUrl = state.serverUrl;
     if (typeof message.serverUrl === "string") {
       state.serverUrl = message.serverUrl.trim() || DEFAULT_STATE.serverUrl;
     }
@@ -2122,14 +1813,6 @@ const RUNTIME_MESSAGE_HANDLERS = {
       "lowConfidenceBehaviour",
       "categorySettings",
     ]);
-    if (
-      typeof message.serverUrl === "string"
-      && extensionSocketEndpointKey(previousServerUrl) !== extensionSocketEndpointKey(state.serverUrl)
-    ) {
-      closeExtensionSocket();
-      extensionWsApi()?.resetReconnectDelay?.();
-      connectExtensionSocket();
-    }
     return snapshotState();
   },
   updateLibraries: async (message) => {
