@@ -989,6 +989,24 @@ function buildLibraryDetailsPanel(library) {
     wrap.appendChild(ul);
   }
 
+  // Whitespace report (from the V3 validateLibrary inventory). When the symbol
+  // library has property fields with leading/trailing spaces, flag it here so
+  // the user knows the cleanup button has something to do.
+  const ws = library.whitespace;
+  if (ws && ws.clean === false && Array.isArray(ws.symbols)) {
+    const fieldCount = ws.symbols.reduce(
+      (n, s) => n + (Array.isArray(s.fields) ? s.fields.length : 0),
+      0,
+    );
+    const symCount = ws.symbols.length;
+    const note = document.createElement("p");
+    note.className = "library-detail-whitespace-note";
+    note.textContent =
+      `⚠ Whitespace in ${fieldCount} field${fieldCount === 1 ? "" : "s"}`
+      + ` across ${symCount} symbol${symCount === 1 ? "" : "s"} — clean up below.`;
+    wrap.appendChild(note);
+  }
+
   // Opt-in whitespace cleanup. Trims leading/trailing spaces KiCad warns about
   // from symbol property keys/values, with a .bak backup (Native Host
   // ``cleanLibrary``). Self-contained — does not depend on the inventory path.

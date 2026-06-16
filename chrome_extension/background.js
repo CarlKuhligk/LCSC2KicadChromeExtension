@@ -338,9 +338,11 @@ function buildLibraryStatus(library, validation) {
   }
 
   const exists = Boolean(validation.exists);
-  const modelPath = typeof validation.model_path === "string" && validation.model_path.trim()
-    ? validation.model_path.trim()
-    : (library.modelPath || "");
+  // V3 ``validateLibrary`` shape (camelCase): counts/assets identical to the old
+  // V2 ``libraries_validate``; ``symbolPath`` replaces ``resolved_path``; there
+  // are no server ``warnings`` (we derive the missing-on-disk one); ``whitespace``
+  // is new and carried onto the status so the popup can flag padded fields.
+  const modelPath = library.modelPath || "";
   const counts = exists
     ? {
         symbol: Number(validation.counts?.symbol) || (validation.assets?.symbol ? 1 : 0),
@@ -355,17 +357,27 @@ function buildLibraryStatus(library, validation) {
         model: Boolean(validation.assets?.model),
       }
     : { symbol: false, footprint: false, model: false };
-  const warnings = Array.isArray(validation.warnings) ? validation.warnings.slice() : [];
+  const warnings = [];
   if (!exists) {
     warnings.push("Library path missing on disk.");
   }
+  const whitespace =
+    validation.whitespace && typeof validation.whitespace === "object"
+      ? {
+          clean: validation.whitespace.clean !== false,
+          symbols: Array.isArray(validation.whitespace.symbols)
+            ? validation.whitespace.symbols
+            : [],
+        }
+      : { clean: true, symbols: [] };
 
   return {
     ...library,
-    symbolPath: normalizePath(validation.resolved_path || library.symbolPath || ""),
+    symbolPath: normalizePath(validation.symbolPath || library.symbolPath || ""),
     assets,
     counts,
     warnings,
+    whitespace,
     missing: !exists,
     modelPath,
     active: exists ? library.active : false,
@@ -733,7 +745,10 @@ async function scaffoldLibraryOnServer(payload) {
 }
 
 async function validateLibraryOnServer(path) {
-  return sendExtensionRpc("libraries_validate", { path }, 60000);
+  // V3: validate via the Native Host (was the V2 WebSocket ``libraries_validate``).
+  // Returns the V3 camelCase shape incl. counts + the whitespace report; throws
+  // on failure (callers catch per-library so the inventory degrades gracefully).
+  return nativeHostValidateLibrary(path);
 }
 
 async function checkComponentOnServer(path, lcscId) {
@@ -1813,14 +1828,14 @@ async function handleImportLibrary(payload = {}) {
     assets: {
       symbol: Boolean(validation.symbol?.exists),
       footprint: Boolean(validation.footprintDir?.exists),
-      model: false,
+      model: Boolean(validation.assets?.model),
     },
     counts: {
-      // V3 validateLibrary reports existence only, not element counts; the
-      // inventory refresh (still V2-WS) backfills real counts in a follow-up.
-      symbol: validation.symbol?.exists ? 1 : 0,
-      footprint: 0,
-      model: 0,
+      // V3 validateLibrary now reports real element counts; the inventory
+      // refresh re-validates (also V3) and keeps these current.
+      symbol: Number(validation.counts?.symbol) || (validation.symbol?.exists ? 1 : 0),
+      footprint: Number(validation.counts?.footprint) || 0,
+      model: Number(validation.counts?.model) || 0,
     },
     warnings: [],
     projectId: payload.projectId || existing?.projectId || "default",
@@ -3118,14 +3133,18 @@ chrome.runtime.onStartup.addListener(() => {
 async function validateLibraryDirectory(path) {
   try {
     const validation = await handleValidateLibrary({ path });
-    const name = sanitizeLibraryName(deriveLibraryNameFromPath(validation.resolved_path));
+    // V3 ``validateLibrary`` shape: ``symbolPath`` (was V2 ``resolved_path``),
+    // and ``assets``/``counts`` now populated by the Native Host.
+    const resolved = validation.symbolPath || validation.path || "";
+    const name = sanitizeLibraryName(deriveLibraryNameFromPath(resolved));
     return {
-      valid: validation.exists && Boolean(validation.assets?.symbol),
+      valid: validation.exists
+        && Boolean(validation.assets?.symbol || validation.symbol?.exists),
       name: name || "Imported Library",
-      path: validation.resolved_path,
+      path: resolved,
       assets: validation.assets,
       counts: validation.counts || { symbol: 0, footprint: 0, model: 0 },
-      warnings: validation.warnings,
+      warnings: validation.warnings || [],
     };
   } catch (error) {
     return { valid: false, error: error.message };

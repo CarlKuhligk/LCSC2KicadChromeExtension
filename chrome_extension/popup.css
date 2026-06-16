@@ -1266,6 +1266,14 @@ html[data-theme="light"] .library-status-pill--active .badge-online {
   color: var(--library-warning);
 }
 
+.library-detail-whitespace-note {
+  margin: 0.15rem 0 0;
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--library-warning);
+}
+
 .library-details-actions {
   display: flex;
   flex-wrap: wrap;
