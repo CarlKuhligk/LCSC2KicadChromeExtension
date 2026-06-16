@@ -4905,6 +4905,27 @@ function attachButton(lcscId) {
                 return { svg: null, error: err?.message || "Vorschau fehlgeschlagen" };
               }
             },
+            // Footprint preview = the EasyEDA footprint of this LCSC part (the
+            // one the Symbol-MVP imports). One-shot; reuses the gallery RPC.
+            fetchFootprintPreview: async () => {
+              try {
+                const resp = await contentRpc(
+                  "lcscFootprintPreview",
+                  { lcscId },
+                  k2cRpc(2, 400),
+                );
+                if (resp?.ok && resp.data?.footprint_svg) {
+                  return { svg: resp.data.footprint_svg };
+                }
+                const detail =
+                  (resp?.data && (resp.data.error || resp.data.message))
+                  || resp?.error
+                  || "Footprint-Vorschau nicht verfügbar";
+                return { svg: null, error: String(detail) };
+              } catch (err) {
+                return { svg: null, error: err?.message || "Footprint-Vorschau fehlgeschlagen" };
+              }
+            },
             onSave: async ({ categoryPath, rule }) => {
               try {
                 const resp = await contentRpc(

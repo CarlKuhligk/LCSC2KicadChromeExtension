@@ -28,6 +28,7 @@ import {
   OVERRIDE_REGISTER_TEMPLATE_LIST_ATTR,
   OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR,
   OVERRIDE_REGISTER_SYMBOL_PREVIEW_ATTR,
+  OVERRIDE_REGISTER_FOOTPRINT_PREVIEW_ATTR,
   OVERRIDE_REGISTER_SHOWALL_ATTR,
   OVERRIDE_REGISTER_HIDE_PINNUM_ATTR,
   OVERRIDE_REGISTER_HIDE_PINNAME_ATTR,
@@ -1038,5 +1039,45 @@ describe("buildRegisterImportEditor — symbol preview (Etappe B)", () => {
     const pane = panel.querySelector(`[${OVERRIDE_REGISTER_SYMBOL_PREVIEW_ATTR}]`);
     expect(pane.querySelector("img")).toBeNull();
     expect(pane.textContent).toContain("symbol_not_found");
+  });
+});
+
+describe("buildRegisterImportEditor — footprint preview (3-column layout)", () => {
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  it("renders a footprint pane and fetches it once on build", async () => {
+    let calls = 0;
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      fetchFootprintPreview: () => {
+        calls += 1;
+        return Promise.resolve({ svg: "<svg id='fp'></svg>" });
+      },
+    });
+    const pane = panel.querySelector(`[${OVERRIDE_REGISTER_FOOTPRINT_PREVIEW_ATTR}]`);
+    expect(pane).toBeTruthy();
+    await flush();
+    expect(calls).toBe(1); // one-shot — independent of template selection
+    const img = pane.querySelector("img");
+    expect(img).toBeTruthy();
+    expect(decodeURIComponent(img.getAttribute("src"))).toContain("<svg id='fp'>");
+  });
+
+  it("shows a placeholder when no footprint fetcher is provided", () => {
+    const panel = buildRegisterImportEditor(document, { templateLibs: ONE_LIB });
+    const pane = panel.querySelector(`[${OVERRIDE_REGISTER_FOOTPRINT_PREVIEW_ATTR}]`);
+    expect(pane.querySelector("img")).toBeNull();
+    expect(pane.textContent).toContain("nicht verfügbar");
+  });
+
+  it("shows the error text on a soft footprint miss", async () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      fetchFootprintPreview: () => Promise.resolve({ svg: null, error: "footprint_unavailable" }),
+    });
+    await flush();
+    const pane = panel.querySelector(`[${OVERRIDE_REGISTER_FOOTPRINT_PREVIEW_ATTR}]`);
+    expect(pane.querySelector("img")).toBeNull();
+    expect(pane.textContent).toContain("footprint_unavailable");
   });
 });

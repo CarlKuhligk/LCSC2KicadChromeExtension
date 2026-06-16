@@ -51,6 +51,7 @@ export const OVERRIDE_REGISTER_PROP_PREVIEW_ATTR = "data-k2c-register-prop-previ
 export const OVERRIDE_REGISTER_TEMPLATE_LIST_ATTR = "data-k2c-register-template-list";
 export const OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR = "data-k2c-register-template-item";
 export const OVERRIDE_REGISTER_SYMBOL_PREVIEW_ATTR = "data-k2c-register-symbol-preview";
+export const OVERRIDE_REGISTER_FOOTPRINT_PREVIEW_ATTR = "data-k2c-register-footprint-preview";
 export const OVERRIDE_REGISTER_SHOWALL_ATTR = "data-k2c-register-showall";
 export const OVERRIDE_REGISTER_HIDE_PINNUM_ATTR = "data-k2c-register-hide-pinnum";
 export const OVERRIDE_REGISTER_HIDE_PINNAME_ATTR = "data-k2c-register-hide-pinname";
@@ -473,11 +474,45 @@ export function buildRegisterImportEditor(doc, opts = {}) {
     "color:#1e293b",
   ].join(";");
 
+  // 3-column layout: left = template navigation, center = symbol (top) +
+  // footprint (below) previews, right = pin/value controls + the read-only
+  // property list. Columns wrap on narrow widths so the on-page editor stays
+  // usable in tight layouts. Heading/category span the top; actions the bottom.
+  const topBar = doc.createElement("div");
+  topBar.style.cssText = "display:flex;flex-direction:column;gap:4px";
+  panel.appendChild(topBar);
+
+  const body = doc.createElement("div");
+  body.style.cssText = "display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start";
+  panel.appendChild(body);
+
+  const navCol = doc.createElement("div");
+  navCol.style.cssText =
+    "display:flex;flex-direction:column;gap:4px;flex:1 1 180px;min-width:160px;max-width:280px";
+  body.appendChild(navCol);
+
+  const centerCol = doc.createElement("div");
+  centerCol.style.cssText =
+    "display:flex;flex-direction:column;gap:6px;flex:1 1 280px;min-width:220px";
+  body.appendChild(centerCol);
+
+  const rightCol = doc.createElement("div");
+  rightCol.style.cssText =
+    "display:flex;flex-direction:column;gap:4px;flex:1 1 220px;min-width:200px";
+  body.appendChild(rightCol);
+
+  const mkColLabel = (text) => {
+    const el = doc.createElement("div");
+    el.textContent = text;
+    el.style.cssText = "color:#475569;font-weight:600;font-size:11px";
+    return el;
+  };
+
   const heading = doc.createElement("div");
   heading.textContent = "Registrieren";
   heading.style.cssText =
     "font-weight:600;font-size:11px;letter-spacing:0.04em;text-transform:uppercase;color:#475569";
-  panel.appendChild(heading);
+  topBar.appendChild(heading);
 
   const categoryLine = doc.createElement("div");
   const categoryPath = typeof opts.categoryPath === "string" ? opts.categoryPath : "";
@@ -485,7 +520,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
     ? `Kategorie: ${categoryPath}`
     : "Kategorie: (unbekannt)";
   categoryLine.style.cssText = "color:#64748b";
-  panel.appendChild(categoryLine);
+  topBar.appendChild(categoryLine);
 
   // Symbol-Source: a hidden <select> stays the source of truth (parseLayer /
   // collectRegisterEditorRule read it; prefill sets it). The visible UI is a
@@ -495,7 +530,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   symSelect.setAttribute(OVERRIDE_SYMBOL_SELECT_ATTR, "true");
   populateSelect(symSelect, doc, opts.templateLibs);
   symSelect.style.cssText = "display:none";
-  panel.appendChild(symSelect);
+  navCol.appendChild(symSelect);
 
   const symHeadRow = doc.createElement("div");
   symHeadRow.style.cssText =
@@ -513,7 +548,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   showAllLabel.appendChild(showAllCb);
   showAllLabel.appendChild(doc.createTextNode("alle Templates anzeigen"));
   symHeadRow.appendChild(showAllLabel);
-  panel.appendChild(symHeadRow);
+  navCol.appendChild(symHeadRow);
 
   const listHost = doc.createElement("div");
   listHost.setAttribute(OVERRIDE_REGISTER_TEMPLATE_LIST_ATTR, "true");
@@ -523,65 +558,98 @@ export function buildRegisterImportEditor(doc, opts = {}) {
     "border:1px solid #cbd5e1", "border-radius:4px", "padding:4px",
     "background:#ffffff",
   ].join(";");
-  panel.appendChild(listHost);
+  navCol.appendChild(listHost);
 
   // Symbol PREVIEW pane (UI Etappe B): renders the selected template symbol as
   // an SVG so the user sees what they are assigning — the symbol-side analogue
   // of the footprint preview. The actual render is fetched via the injected
   // ``opts.fetchSymbolPreview`` callback (keeps this module chrome-free and
   // unit-testable); a stale-request token guards against out-of-order replies.
-  const previewPane = doc.createElement("div");
-  previewPane.setAttribute(OVERRIDE_REGISTER_SYMBOL_PREVIEW_ATTR, "true");
-  previewPane.style.cssText = [
+  const paneStyle = [
     "display:flex", "align-items:center", "justify-content:center",
     "min-height:120px", "max-height:240px", "padding:6px",
     "border:1px solid #cbd5e1", "border-radius:4px", "background:#ffffff",
     "overflow:hidden",
   ].join(";");
-  panel.appendChild(previewPane);
 
-  function setPreviewText(text) {
-    previewPane.innerHTML = "";
+  const previewPane = doc.createElement("div");
+  previewPane.setAttribute(OVERRIDE_REGISTER_SYMBOL_PREVIEW_ATTR, "true");
+  previewPane.style.cssText = paneStyle;
+  centerCol.appendChild(mkColLabel("Symbol"));
+  centerCol.appendChild(previewPane);
+
+  // Footprint preview (the EasyEDA footprint that will be imported in the
+  // Symbol-MVP). Independent of the selected template symbol, so it is fetched
+  // once via the injected ``opts.fetchFootprintPreview`` callback.
+  const footprintPane = doc.createElement("div");
+  footprintPane.setAttribute(OVERRIDE_REGISTER_FOOTPRINT_PREVIEW_ATTR, "true");
+  footprintPane.style.cssText = paneStyle;
+  centerCol.appendChild(mkColLabel("Footprint"));
+  centerCol.appendChild(footprintPane);
+
+  function setPaneText(pane, text) {
+    pane.innerHTML = "";
     const t = doc.createElement("div");
     t.textContent = text;
     t.style.cssText = "color:#94a3b8;font-size:11px;font-style:italic;text-align:center";
-    previewPane.appendChild(t);
+    pane.appendChild(t);
   }
 
-  function setPreviewImage(svg) {
-    previewPane.innerHTML = "";
+  function setPaneImage(pane, svg, alt) {
+    pane.innerHTML = "";
     const img = doc.createElement("img");
-    img.alt = "Symbol-Vorschau";
+    img.alt = alt;
     img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
     img.style.cssText = "display:block;max-width:100%;max-height:228px;width:auto;height:auto";
-    previewPane.appendChild(img);
+    pane.appendChild(img);
   }
 
   let previewReq = 0;
   function updateSymbolPreview() {
     const layer = parseLayer(symSelect.value);
     if (layer.source !== "template") {
-      setPreviewText("EasyEDA-Standardsymbol — keine Vorschau");
+      setPaneText(previewPane, "EasyEDA-Standardsymbol — keine Vorschau");
       return;
     }
     if (typeof opts.fetchSymbolPreview !== "function") {
-      setPreviewText("Vorschau nicht verfügbar");
+      setPaneText(previewPane, "Vorschau nicht verfügbar");
       return;
     }
     const reqId = ++previewReq;
-    setPreviewText("Lade Vorschau …");
+    setPaneText(previewPane, "Lade Vorschau …");
     Promise.resolve(opts.fetchSymbolPreview({ libPath: layer.libPath, name: layer.name }))
       .then((res) => {
         if (reqId !== previewReq) return; // a newer selection superseded this one
         if (res && typeof res.svg === "string" && res.svg) {
-          setPreviewImage(res.svg);
+          setPaneImage(previewPane, res.svg, "Symbol-Vorschau");
         } else {
-          setPreviewText((res && res.error) || "Keine Vorschau verfügbar");
+          setPaneText(previewPane, (res && res.error) || "Keine Vorschau verfügbar");
         }
       })
       .catch((err) => {
         if (reqId !== previewReq) return;
-        setPreviewText((err && err.message) || "Vorschau fehlgeschlagen");
+        setPaneText(previewPane, (err && err.message) || "Vorschau fehlgeschlagen");
+      });
+  }
+
+  // Footprint: a one-shot fetch — the EasyEDA footprint does not depend on the
+  // chosen template symbol (Symbol-MVP always imports the EasyEDA footprint).
+  function loadFootprintPreview() {
+    if (typeof opts.fetchFootprintPreview !== "function") {
+      setPaneText(footprintPane, "Footprint-Vorschau nicht verfügbar");
+      return;
+    }
+    setPaneText(footprintPane, "Lade Footprint …");
+    Promise.resolve(opts.fetchFootprintPreview())
+      .then((res) => {
+        if (res && typeof res.svg === "string" && res.svg) {
+          setPaneImage(footprintPane, res.svg, "Footprint-Vorschau");
+        } else {
+          setPaneText(footprintPane, (res && res.error) || "Keine Footprint-Vorschau");
+        }
+      })
+      .catch((err) => {
+        setPaneText(footprintPane, (err && err.message) || "Footprint-Vorschau fehlgeschlagen");
       });
   }
 
@@ -659,8 +727,8 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   // opts.initialHidePinNumbers; the engine applies it on both symbol paths.
   const pinHeading = doc.createElement("div");
   pinHeading.textContent = "Pin-Beschriftung";
-  pinHeading.style.cssText = "margin-top:6px;color:#475569";
-  panel.appendChild(pinHeading);
+  pinHeading.style.cssText = "color:#475569;font-weight:600;font-size:11px";
+  rightCol.appendChild(pinHeading);
 
   const pinRow = doc.createElement("div");
   pinRow.style.cssText = "display:flex;gap:16px;flex-wrap:wrap";
@@ -686,7 +754,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
     "Pin-Namen ausblenden",
     opts.initialHidePinNames,
   );
-  panel.appendChild(pinRow);
+  rightCol.appendChild(pinRow);
 
   // Value-Param + Metadata preview (ADR-0006 refined). The Value dropdown picks
   // the one param whose value fills the KiCad Value field; the read-only preview
@@ -727,14 +795,14 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   );
   valueSelect.value = hasValueOpt ? presetValueParam : "";
   valueRow.appendChild(valueSelect);
-  panel.appendChild(valueRow);
+  rightCol.appendChild(valueRow);
 
   const propHeading = doc.createElement("div");
   propHeading.textContent = propEntries.length
     ? `Eigenschaften, die ins Symbol übernommen werden (${propEntries.length})`
     : "Keine Metadaten auf der Produktseite gefunden";
-  propHeading.style.cssText = "margin-top:4px;color:#475569";
-  panel.appendChild(propHeading);
+  propHeading.style.cssText = "margin-top:4px;color:#475569;font-weight:600;font-size:11px";
+  rightCol.appendChild(propHeading);
 
   if (propEntries.length) {
     const propList = doc.createElement("div");
@@ -775,7 +843,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
     };
     renderPropPreview();
     valueSelect.addEventListener("change", renderPropPreview);
-    panel.appendChild(propList);
+    rightCol.appendChild(propList);
   }
 
   const actions = doc.createElement("div");
@@ -822,6 +890,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
     showAllCb.checked = true;
   }
   renderTemplateList();
+  loadFootprintPreview();
 
   return panel;
 }

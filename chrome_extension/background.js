@@ -951,6 +951,30 @@ async function nativeHostTemplateSymbolPreview(payload) {
 }
 
 /**
+ * V3 UI Etappe B — render an LCSC part's EasyEDA footprint as SVG via the
+ * Native Host's ``lcscFootprintPreview`` verb (replaces the V2 WebSocket
+ * ``lcsc_footprint_preview``). Network-bound (EasyEDA fetch), so a longer
+ * timeout than the symbol preview. Resolves ``{ ok, result | error }`` where
+ * ``result`` is ``{ svg, name, pads }`` or a soft ``{ svg: null, error }``.
+ */
+async function nativeHostLcscFootprintPreview(lcscId) {
+  let envelope;
+  try {
+    envelope = await getWarmNativePort().send(
+      "lcscFootprintPreview",
+      { lcscId },
+      { timeoutMs: 30000 },
+    );
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+  if (envelope && envelope.ok === true && envelope.result && typeof envelope.result === "object") {
+    return { ok: true, result: envelope.result };
+  }
+  return { ok: false, error: envelope?.error || "no result" };
+}
+
+/**
  * V3 Issue #24 — generic Native-Host RPC bridge for the FS picker verbs
  * (`fsRoots`, `fsList`, `fsCheck`, `validateLibrary`). Mirrors the
  * connect-postMessage-await-disconnect pattern in `nativeHostListTemplates`
@@ -2618,7 +2642,20 @@ const RUNTIME_MESSAGE_HANDLERS = {
     if (!lcscId || !lcscId.startsWith("C")) {
       throw new Error("lcscFootprintPreview requires a valid lcscId.");
     }
-    return sendExtensionRpc("lcsc_footprint_preview", { lcsc_id: lcscId }, 120000);
+    // V3: render via the Native Host (was the V2 WebSocket lcsc_footprint_preview).
+    // Map to the snake_case bundle shape the gallery + editor already consume.
+    const res = await nativeHostLcscFootprintPreview(lcscId);
+    if (!res.ok) {
+      return { ok: false, footprint_svg: null, error: res.error || "Footprint preview unavailable" };
+    }
+    const result = res.result || {};
+    return {
+      ok: typeof result.svg === "string",
+      footprint_svg: typeof result.svg === "string" ? result.svg : null,
+      footprint_name: result.name || "",
+      pads: Array.isArray(result.pads) ? result.pads : [],
+      error: result.error,
+    };
   },
   /**
    * Fetch datasheet bytes in the service worker (bypasses page CORS / broken PDF.js-in-iframe).
