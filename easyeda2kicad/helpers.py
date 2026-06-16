@@ -5,6 +5,8 @@ import textwrap
 import unicodedata
 from typing import TYPE_CHECKING, Any, List, Tuple
 
+from easyeda2kicad.kicad.kicad_text_normalize import strip_property_whitespace
+
 if TYPE_CHECKING:
     from easyeda2kicad.easyeda.parameters_easyeda import EeSymbol
 
@@ -452,6 +454,11 @@ def update_component_in_symbol_lib_file(
 def add_component_in_symbol_lib_file(
     lib_path: str, component_content: str
 ) -> None:
+    # Single convergence point for every symbol write (EasyEDA + template, fresh
+    # + update). Strip leading/trailing whitespace from all property key/values
+    # so KiCad never warns about padded fields — covers our own fields *and*
+    # any whitespace inherited verbatim from a template symbol.
+    component_content = strip_property_whitespace(component_content)
     with open(file=lib_path, encoding="utf-8") as lib_file:
         current_lib_data = lib_file.read()
 

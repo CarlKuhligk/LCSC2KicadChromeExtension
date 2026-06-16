@@ -72,6 +72,7 @@ if _REPO_ROOT not in sys.path:
 
 from native_host.fs import (  # noqa: E402
     check_path,
+    clean_library,
     list_directory,
     list_roots,
     scaffold_library,
@@ -315,7 +316,14 @@ def handle(
     # extension (it persists the user-added folders client-side and forwards
     # them on every call). All four verbs share the same fast-path try/except
     # so a path-outside-whitelist surfaces as a validation error, not a crash.
-    if verb in ("fsRoots", "fsList", "fsCheck", "validateLibrary", "scaffoldLibrary"):
+    if verb in (
+        "fsRoots",
+        "fsList",
+        "fsCheck",
+        "validateLibrary",
+        "scaffoldLibrary",
+        "cleanLibrary",
+    ):
         raw_params = request.get("params")
         params = raw_params if isinstance(raw_params, dict) else {}
         extra_roots = params.get("extraRoots")
@@ -335,6 +343,8 @@ def handle(
                     model=params.get("model", False),
                     extra_roots=extra_roots,
                 )
+            elif verb == "cleanLibrary":
+                result = clean_library(params.get("path"), extra_roots)
             else:
                 result = validate_library(params.get("path"), extra_roots)
         except ValueError as exc:

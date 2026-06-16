@@ -22,9 +22,16 @@ widens this to a full hierarchical file explorer.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
+
+from easyeda2kicad.helpers import extract_symbol_from_lib, list_symbols_in_lib
+from easyeda2kicad.kicad.kicad_text_normalize import (
+    find_property_whitespace,
+    strip_property_whitespace,
+)
 
 
 def _expand(path: str | Path) -> Path:
@@ -287,6 +294,12 @@ def validate_library(path: Any, extra_roots: Any = None) -> dict[str, Any]:
     pretty_dir = prefix.with_suffix(".pretty")
     parent_dir = prefix.parent
     parent_exists = parent_dir.is_dir()
+    # Read-only whitespace report (only when the symbol file exists; the popup
+    # also calls this verb to greenlight a not-yet-created prefix). ``cleanLibrary``
+    # is the opt-in fix that acts on what this surfaces.
+    whitespace_symbols = (
+        _scan_symbol_whitespace(symbol_path) if symbol_path.is_file() else []
+    )
     return {
         "path": str(prefix),
         "symbolPath": str(symbol_path),
@@ -296,6 +309,98 @@ def validate_library(path: Any, extra_roots: Any = None) -> dict[str, Any]:
         "footprintDir": {"exists": pretty_dir.is_dir()},
         "writable": os.access(str(parent_dir), os.W_OK) if parent_exists else False,
         "parentExists": parent_exists,
+        "whitespace": {
+            "clean": not whitespace_symbols,
+            "symbols": whitespace_symbols,
+        },
+    }
+
+
+def _top_level_symbol_names(content: str) -> list[str]:
+    """Top-level symbol names from raw library text (mirrors
+    ``helpers.list_symbols_in_lib`` but works on an in-memory string so the
+    cleanup safety check can compare before/after without disk round-trips)."""
+    names = re.findall(r'\(symbol\s+"([^"]+)"', content)
+    return [n for n in names if not re.search(r"_\d+_\d+$", n)]
+
+
+def _scan_symbol_whitespace(symbol_path: Path) -> list[dict[str, Any]]:
+    """Per-symbol report of property fields with leading/trailing whitespace.
+
+    Read-only: walks each top-level symbol and collects the property fields
+    :func:`find_property_whitespace` flags. Quiet on read errors (empty report)
+    so it can ride along in ``validate_library`` without ever raising.
+    """
+    sp = str(symbol_path)
+    out: list[dict[str, Any]] = []
+    for name in list_symbols_in_lib(sp):
+        block = extract_symbol_from_lib(sp, name)
+        if not block:
+            continue
+        fields = find_property_whitespace(block)
+        if fields:
+            out.append({"symbol": name, "fields": fields})
+    return out
+
+
+def clean_library(path: Any, extra_roots: Any = None) -> dict[str, Any]:
+    """Trim leading/trailing whitespace from every symbol property in a library.
+
+    Opt-in counterpart to ``validate_library``'s read-only ``whitespace`` report.
+    ``path`` may be a bare prefix or the ``.kicad_sym`` file. Flow:
+
+    1. Resolve + whitelist-check the symbol file's parent (same boundary as the
+       other FS verbs).
+    2. Strip the whole file with :func:`strip_property_whitespace`.
+    3. No-op fast path when nothing changes.
+    4. Safety re-validation — trimming only removes whitespace *inside* quoted
+       property text, so the parenthesis balance and the top-level symbol set
+       must be invariant; if either changed the regex misfired on an unexpected
+       file shape, so we refuse to write and raise (nothing on disk is touched).
+    5. Back the original up to ``<file>.bak`` then write the cleaned content.
+
+    Returns ``{"symbolPath", "changed", "symbols", "backup"}`` where ``changed``
+    is the number of property fields trimmed.
+    """
+    target = _require_path(path)
+    symbol_path = (
+        target if target.suffix == ".kicad_sym" else target.with_suffix(".kicad_sym")
+    )
+    allowed = _allowed_paths(extra_roots)
+    _assert_inside(symbol_path.parent, allowed)
+    if not symbol_path.is_file():
+        raise ValueError(f"symbol library not found: {symbol_path!s}")
+
+    before = symbol_path.read_text(encoding="utf-8")
+    after = strip_property_whitespace(before)
+    changed = len(find_property_whitespace(before))
+    affected = _scan_symbol_whitespace(symbol_path)
+
+    if after == before:
+        return {
+            "symbolPath": str(symbol_path),
+            "changed": 0,
+            "symbols": [],
+            "backup": None,
+        }
+
+    if before.count("(") != after.count("(") or before.count(")") != after.count(")"):
+        raise ValueError(
+            "whitespace cleanup changed the parenthesis balance; aborted, file untouched"
+        )
+    if _top_level_symbol_names(before) != _top_level_symbol_names(after):
+        raise ValueError(
+            "whitespace cleanup altered the symbol set; aborted, file untouched"
+        )
+
+    backup_path = symbol_path.parent / (symbol_path.name + ".bak")
+    backup_path.write_text(before, encoding="utf-8")
+    symbol_path.write_text(after, encoding="utf-8")
+    return {
+        "symbolPath": str(symbol_path),
+        "changed": changed,
+        "symbols": affected,
+        "backup": str(backup_path),
     }
 
 
