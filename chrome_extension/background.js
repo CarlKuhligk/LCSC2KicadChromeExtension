@@ -740,10 +740,6 @@ function sendExtensionRpc(method, params, timeoutMs = 45000) {
   return api.sendExtensionRpc(method, params, timeoutMs);
 }
 
-async function scaffoldLibraryOnServer(payload) {
-  return sendExtensionRpc("libraries_scaffold", payload, 120000);
-}
-
 async function validateLibraryOnServer(path) {
   // V3: validate via the Native Host (was the V2 WebSocket ``libraries_validate``).
   // Returns the V3 camelCase shape incl. counts + the whitespace report; throws
