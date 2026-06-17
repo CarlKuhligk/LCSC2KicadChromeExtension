@@ -10,9 +10,10 @@ import { detectValueParam } from "../../shared/valueParam.mjs";
  * surface attached to the Anchor Card.
  *
  * Scope of this slice: Symbol-source and Footprint-source selection only.
- * Category Rules (#8), Pin↔Pad Map (#9), Overwrite confirm (#10), Datasheet
- * preview (#11) and the Customize Button (#12) dock onto this same panel
- * in later slices.
+ * Category Rules (#8), Pin↔Pad Map (#9), Overwrite confirm (#10) and Datasheet
+ * preview (#11) dock onto this same panel in later slices. This panel — via
+ * "registrieren" / "Modifizieren" → the Import-Editor — is also the Customize
+ * surface (the standalone Anchor-Card Customize button was dropped).
  *
  * The selection is encoded as a flat ``"<source>:<libPath>:<name>"`` option
  * value so a single ``<select>`` works for both "EasyEDA" and "Template-X".

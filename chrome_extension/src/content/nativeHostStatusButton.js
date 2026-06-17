@@ -85,7 +85,10 @@ export function applyNativeHostStatusToButton(btn, status) {
   const { state, version, error } = normalizeNativeHostStatus(status);
   const style = STATE_STYLES[state];
   btn.setAttribute(NATIVE_HOST_STATUS_BUTTON_ATTR, state);
-  btn.textContent = style.label;
+  // A caller (e.g. the "already imported" exists check) may pin a different
+  // label via the `k2cLabelOverride` dataset hook — honor it so the heartbeat
+  // re-paint does not reset "Re-Import" back to "Download".
+  btn.textContent = btn.dataset.k2cLabelOverride || style.label;
   btn.disabled = style.disabled;
   btn.style.opacity = style.opacity;
   btn.style.cursor = style.cursor;

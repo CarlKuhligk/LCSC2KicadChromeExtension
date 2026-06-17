@@ -10,8 +10,8 @@ import { extractPageData } from "./lcscPageSnapshot.js";
 /**
  * Reuses the same C22548 anchor-row scaffold the V3 Anchor Card injects
  * (`anchorCard.js#buildAnchorCardRow`) — the Phase 1 wiring targets the
- * Download/Customize buttons inside that row, so building it here keeps the
- * test surface aligned with what runs on the LCSC page.
+ * Download button inside that row, so building it here keeps the test surface
+ * aligned with what runs on the LCSC page.
  */
 function mountAnchorRow() {
   const row = buildAnchorCardRow(document, { colSpan: 1 });

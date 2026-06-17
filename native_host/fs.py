@@ -397,14 +397,23 @@ def library_component(
     if not symbol_path.is_file():
         return empty
 
-    sp = str(symbol_path)
+    # Single pass: read the symbol file once and walk its top-level symbol
+    # blocks (mirrors ``helpers.list_symbol_categories``). The old code re-read
+    # the whole file once per symbol via ``extract_symbol_from_lib`` — O(N²) on
+    # bytes, which made the "already in Library" badge slow on big libraries.
+    try:
+        content = symbol_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return empty
     matched_block: str | None = None
-    for name in list_symbols_in_lib(sp):
-        block = extract_symbol_from_lib(sp, name)
-        if not block:
-            continue
-        m = re.search(r'\(property\s+"LCSC Part"\s+"([^"]*)"', block)
-        if m and m.group(1).strip().upper() == lcsc:
+    matches = list(re.finditer(r'\(symbol\s+"([^"]+)"', content))
+    for i, m in enumerate(matches):
+        if re.search(r"_\d+_\d+$", m.group(1)):
+            continue  # sub-symbol (e.g. MyPart_0_1)
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
+        block = content[m.start() : end]
+        pm = re.search(r'\(property\s+"LCSC Part"\s+"([^"]*)"', block)
+        if pm and pm.group(1).strip().upper() == lcsc:
             matched_block = block
             break
     if matched_block is None:
@@ -420,7 +429,7 @@ def library_component(
             if candidate.is_file():
                 footprint_path = str(candidate)
     return {
-        "symbol_path": sp,
+        "symbol_path": str(symbol_path),
         "footprint_path": footprint_path,
         "model_paths": {},
         "messages": [],

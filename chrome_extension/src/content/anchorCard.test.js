@@ -3,8 +3,10 @@ import {
   findAnchorRow,
   buildAnchorCardRow,
   injectAnchorCard,
+  markAnchorCardImported,
   LCSC_ID_LABELS,
   ANCHOR_ROW_ATTR,
+  ANCHOR_EXISTS_CHIP_ATTR,
 } from "./anchorCard.js";
 
 /**
@@ -146,17 +148,18 @@ describe("findAnchorRow", () => {
 });
 
 describe("buildAnchorCardRow", () => {
-  it("builds a <tr> with the KiCad label and Download + Customize buttons", () => {
+  it("builds a <tr> with the KiCad label and a single Download button", () => {
     const tr = buildAnchorCardRow(document);
     expect(tr.tagName).toBe("TR");
     expect(tr.getAttribute(ANCHOR_ROW_ATTR)).toBe("true");
     expect(tr.querySelector('[data-k2c-anchor-label="true"]').textContent).toBe("KiCad");
     const buttons = tr.querySelectorAll("button");
-    expect(buttons).toHaveLength(2);
+    expect(buttons).toHaveLength(1);
     expect(buttons[0].getAttribute("data-k2c-action")).toBe("download");
     expect(buttons[0].textContent).toBe("Download");
-    expect(buttons[1].getAttribute("data-k2c-action")).toBe("customize");
-    expect(buttons[1].textContent).toBe("Customize");
+    // Customize (Issue #12 scaffold) was removed — the editor is reachable via
+    // Download → Override Panel → registrieren/Modifizieren.
+    expect(tr.querySelector('[data-k2c-action="customize"]')).toBeNull();
   });
 
   it("applies colSpan on the actions cell when the anchor row is wider than 2 columns", () => {
@@ -170,6 +173,35 @@ describe("buildAnchorCardRow", () => {
     const actions = tr.querySelector('[data-k2c-anchor-actions="true"]');
     // jsdom reports the default colSpan of 1 — we only set it explicitly when > 1.
     expect(actions.hasAttribute("colspan")).toBe(false);
+  });
+});
+
+describe("markAnchorCardImported", () => {
+  it("adds a green chip and relabels Download → Re-Import with a persist override", () => {
+    const tr = buildAnchorCardRow(document);
+    expect(markAnchorCardImported(tr)).toBe(true);
+
+    const dl = tr.querySelector('button[data-k2c-action="download"]');
+    expect(dl.textContent).toBe("Re-Import");
+    // The dataset hook makes the label survive the Native-Host status re-paint.
+    expect(dl.dataset.k2cLabelOverride).toBe("Re-Import");
+
+    const chip = tr.querySelector(`[${ANCHOR_EXISTS_CHIP_ATTR}]`);
+    expect(chip).toBeTruthy();
+    expect(chip.textContent).toContain("Library");
+  });
+
+  it("is idempotent — a second call does not add a second chip", () => {
+    const tr = buildAnchorCardRow(document);
+    markAnchorCardImported(tr);
+    markAnchorCardImported(tr);
+    expect(tr.querySelectorAll(`[${ANCHOR_EXISTS_CHIP_ATTR}]`)).toHaveLength(1);
+  });
+
+  it("returns false for a row without an actions cell", () => {
+    const tr = document.createElement("tr");
+    expect(markAnchorCardImported(tr)).toBe(false);
+    expect(markAnchorCardImported(null)).toBe(false);
   });
 });
 
@@ -190,7 +222,7 @@ describe("injectAnchorCard", () => {
     );
     expect(lcscRow.nextElementSibling.children[0]?.textContent.trim()).toBe("Verp.");
     expect(inserted.querySelector('[data-k2c-action="download"]')).toBeTruthy();
-    expect(inserted.querySelector('[data-k2c-action="customize"]')).toBeTruthy();
+    expect(inserted.querySelector('[data-k2c-action="customize"]')).toBeNull();
   });
 
   it("inserts as the LAST row of the anchor table on the EN fixture", () => {

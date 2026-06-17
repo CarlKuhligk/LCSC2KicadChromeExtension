@@ -77,9 +77,10 @@ export function findAnchorRow(doc = document) {
 
 /**
  * Build the V3 anchor `<tr>`: a "KiCad" label cell + an actions cell holding
- * the **Download** and **Customize** buttons. **Visual scaffold only** —
- * click handlers belong to #4 (Phase 2 Conversion) and #12 (Customize). The
- * `data-k2c-action` hooks let those slices wire behavior without re-walking.
+ * the **Download** button. The `data-k2c-action="download"` hook lets the
+ * Phase-1/Phase-2 slice (#4) wire behavior without re-walking the DOM.
+ * `markAnchorCardImported` later badges the row + relabels Download → Re-Import
+ * when the part is already present in the active library.
  *
  * @param {Document} [doc=document]
  * @param {{ colSpan?: number }} [opts]
@@ -110,15 +111,61 @@ export function buildAnchorCardRow(doc = document, opts = {}) {
   downloadBtn.setAttribute("data-k2c-action", "download");
   wrap.appendChild(downloadBtn);
 
-  const customizeBtn = doc.createElement("button");
-  customizeBtn.type = "button";
-  customizeBtn.textContent = "Customize";
-  customizeBtn.setAttribute("data-k2c-action", "customize");
-  wrap.appendChild(customizeBtn);
-
   actions.appendChild(wrap);
   tr.appendChild(actions);
   return tr;
+}
+
+/** Marker on the green "already imported" chip so re-checks stay idempotent. */
+export const ANCHOR_EXISTS_CHIP_ATTR = "data-k2c-exists-chip";
+
+/**
+ * Badge the anchor row as **already imported**: drop a green chip into the
+ * actions cell and relabel the Download button to "Re-Import". The label is
+ * written via the `k2cLabelOverride` dataset hook so the Native-Host status
+ * presenter — which re-paints the button text on every heartbeat — keeps it
+ * instead of resetting to "Download".
+ *
+ * Re-import is an intentional overwrite: V3 Phase 2 always converts with
+ * ``overwrite=True``, so a second Download replaces the existing symbol +
+ * footprint. Idempotent — safe to call repeatedly (e.g. on every route check).
+ *
+ * @param {HTMLTableRowElement | null | undefined} anchorRow
+ * @returns {boolean} true when the row is (or already was) badged.
+ */
+export function markAnchorCardImported(anchorRow) {
+  if (!anchorRow?.querySelector) return false;
+  const actions = anchorRow.querySelector('[data-k2c-anchor-actions="true"]');
+  const wrap = actions?.querySelector("span") || actions;
+  if (!wrap) return false;
+
+  const downloadBtn = anchorRow.querySelector('button[data-k2c-action="download"]');
+  if (downloadBtn) {
+    downloadBtn.dataset.k2cLabelOverride = "Re-Import";
+    downloadBtn.textContent = "Re-Import";
+  }
+
+  if (wrap.querySelector(`[${ANCHOR_EXISTS_CHIP_ATTR}]`)) return true;
+  const doc = anchorRow.ownerDocument || document;
+  const chip = doc.createElement("span");
+  chip.setAttribute(ANCHOR_EXISTS_CHIP_ATTR, "true");
+  chip.textContent = "✓ schon in Library";
+  chip.title =
+    "Bereits in der aktiven Library — erneuter Import überschreibt Symbol + Footprint.";
+  chip.style.cssText = [
+    "display:inline-flex",
+    "align-items:center",
+    "gap:4px",
+    "padding:2px 8px",
+    "border-radius:999px",
+    "background:#e6f4ea",
+    "color:#137333",
+    "font-size:12px",
+    "font-weight:600",
+    "white-space:nowrap",
+  ].join(";");
+  wrap.appendChild(chip);
+  return true;
 }
 
 /**

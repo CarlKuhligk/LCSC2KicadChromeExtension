@@ -108,8 +108,6 @@ const DEFAULT_STATE = {
       ? globalThis.K2C_DEFAULT_SERVER_URL
       : "http://localhost:8087",
   libraries: [],
-  jobHistory: [],
-  jobMeta: {},
   overwriteFootprints: false,
   overwriteModels: false,
   debugLogs: false,
@@ -143,7 +141,6 @@ let state = {
   connected: false,
   /** Short message for popup when the API WebSocket is down; cleared on connect. */
   connectionHint: null,
-  jobs: {},
   selectedLibraryPath: "",
   selectedLibraryName: "",
   templateLibraryPath: null,
@@ -610,8 +607,6 @@ async function init() {
       ...state,
       ...stored,
       libraries: storedLibraries,
-      jobHistory: stored.jobHistory || [],
-      jobMeta: stored.jobMeta || {},
       selectedLibraryPath: stored.selectedLibraryPath || "",
       selectedLibraryName: stored.selectedLibraryName || "",
       overwriteFootprints: normalizeBoolean(stored.overwriteFootprints),
@@ -1180,8 +1175,6 @@ function computeImportDestinationReady() {
 }
 
 function snapshotState() {
-  const jobsArray = Object.values(state.jobs || {}).map((job) => ({ ...job }));
-  const historyArray = (state.jobHistory || []).map((item) => ({ ...item }));
   return {
     connected: state.connected,
     connectionHint: state.connectionHint || null,
@@ -1203,8 +1196,6 @@ function snapshotState() {
     templateFootprintsByLib: state.templateFootprintsByLib ? { ...state.templateFootprintsByLib } : {},
     templateCategoriesByLib: state.templateCategoriesByLib ? { ...state.templateCategoriesByLib } : {},
     templateLibraryPath: state.templateLibraryPath || null,
-    jobs: jobsArray,
-    jobHistory: historyArray,
   };
 }
 
@@ -1878,27 +1869,6 @@ const RUNTIME_MESSAGE_HANDLERS = {
     if (!lcscId || !lcscId.startsWith("C")) {
       throw new Error("Invalid LCSC ID.");
     }
-    const activeJob = Object.values(state.jobs || {}).find((job) => job.lcscId === lcscId);
-    if (activeJob) {
-      return {
-        inProgress: true,
-        jobId: activeJob.id,
-        status: activeJob.status,
-        progress: activeJob.progress,
-        message: activeJob.message,
-        queue_position: activeJob.queue_position,
-        libraryName: activeJob.libraryName,
-        libraryPath: activeJob.libraryPath,
-        completed: false,
-        outputAnalysis: analyzeJobOutputs(activeJob),
-        partial: false,
-        missing: [],
-        outputs: activeJob.outputs,
-        result: activeJob.result,
-        messages: activeJob.result?.messages || activeJob.messages || [],
-      };
-    }
-
     const selectedLibrary = getSelectedLibraryRecord();
     const libraryPrefix = normalizePath(
       deriveLibraryPrefix(selectedLibrary) || state.selectedLibraryPath || ""
@@ -1907,34 +1877,14 @@ const RUNTIME_MESSAGE_HANDLERS = {
       throw new Error("Please select a library in the extension.");
     }
 
-    const validation = await validateLibraryOnServer(libraryPrefix);
-    const index = state.libraries.findIndex(
-      (library) => normalizePath(library.path || library.resolvedPrefix || "") === libraryPrefix
-    );
-    if (index >= 0) {
-      state.libraries[index] = buildLibraryStatus(state.libraries[index], validation);
-      recalcLibraryTotals();
-      await persistState(["libraries", "libraryTotals"]);
-      broadcastState();
-    }
-    if (!validation.exists) {
-      return {
-        inProgress: false,
-        jobId: null,
-        status: null,
-        libraryName: selectedLibrary?.name || null,
-        libraryPath: libraryPrefix,
-        completed: false,
-        outputAnalysis: null,
-        partial: false,
-        missing: ["library"],
-        outputs: null,
-        result: null,
-        messages: ["Library path is missing on disk."],
-      };
-    }
-
+    // Fast path: the offline component scan (one symbol-file read) is all the
+    // presence badge needs. Do NOT block on a full validateLibrary (counts +
+    // whitespace over every symbol) — that turned "already in Library" into a
+    // multi-second wait. Refresh the popup inventory in the background instead.
     const check = await checkComponentOnServer(libraryPrefix, lcscId);
+    void refreshLibraryCountsForPrefix(libraryPrefix)
+      .then(() => broadcastState())
+      .catch((e) => console.warn("checkComponentExists: background refresh failed", e));
     return buildComponentStatus({
       lcscId,
       check,
@@ -2370,12 +2320,6 @@ const RUNTIME_MESSAGE_HANDLERS = {
   "fs:listRoots": async () => fetchRoots(),
   "fs:listDirectory": async (message) => fetchDirectory(message.path),
   "fs:check": async (message) => checkPath(message.path),
-  clearHistory: async () => {
-    state.jobHistory = [];
-    await persistState(["jobHistory"]);
-    broadcastState();
-    return { cleared: true };
-  },
   pingNativeHost: async () => pingNativeHostOnce(),
   /**
    * V3 Pre-Warm trigger (V3-SPEC.md §3). Content scripts call this on LCSC

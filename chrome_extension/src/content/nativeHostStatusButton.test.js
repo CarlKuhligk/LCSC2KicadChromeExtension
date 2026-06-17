@@ -83,6 +83,18 @@ describe("applyNativeHostStatusToButton", () => {
     applyNativeHostStatusToButton(btn, { state: "online", version: "1" });
     expect(btn.outerHTML).toBe(before);
   });
+
+  it("honors a k2cLabelOverride dataset hook across state re-paints", () => {
+    const btn = makeButton();
+    btn.dataset.k2cLabelOverride = "Re-Import";
+    // Every heartbeat re-applies; the override must win over the default label.
+    applyNativeHostStatusToButton(btn, { state: "online", version: "1.2.3" });
+    expect(btn.textContent).toBe("Re-Import");
+    applyNativeHostStatusToButton(btn, { state: "offline", error: "x" });
+    expect(btn.textContent).toBe("Re-Import");
+    applyNativeHostStatusToButton(btn, { state: "checking" });
+    expect(btn.textContent).toBe("Re-Import");
+  });
 });
 
 describe("prewarmNativeHost", () => {

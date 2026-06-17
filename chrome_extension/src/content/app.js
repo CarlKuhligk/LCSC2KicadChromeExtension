@@ -32,8 +32,6 @@ import { DatasheetPanel } from "./datasheetPanel.js";
 import {
   JobStateStore,
   formatStatusColon,
-  formatJobStatusMessage,
-  progressBarFieldsFromJob,
 } from "./jobStateStore.js";
 import {
   needsValueParamFromPage,
@@ -49,7 +47,11 @@ import {
 } from "./lcscCategoryDialog.js";
 import { extractPageData, detectLcscLanguage } from "./lcscPageSnapshot.js";
 import { detectValueParam } from "../../shared/valueParam.mjs";
-import { injectAnchorCard, ANCHOR_ROW_ATTR } from "./anchorCard.js";
+import {
+  injectAnchorCard,
+  ANCHOR_ROW_ATTR,
+  markAnchorCardImported,
+} from "./anchorCard.js";
 import { attachNativeHostStatus } from "./nativeHostStatusButton.js";
 import { wirePhase1Download } from "./phase1Fetch.js";
 import { runPhase2Convert, subscribeConvertProgress } from "./phase2Convert.js";
@@ -542,17 +544,6 @@ async function initDebug() {
   } catch (_error) {
     // ignore
   }
-}
-
-function applyJobStatusToButton(button, jobId, job) {
-  if (!jobState.shouldApplyUpdate(jobId, job)) {
-    return false;
-  }
-  const { progress } = progressBarFieldsFromJob(job);
-  const message = formatJobStatusMessage(job);
-  const phase = String(job?.status || "").toLowerCase();
-  updateButtonState(button, "progress", { progress, message, phase });
-  return true;
 }
 
 function extractLcscIdFromString(str = "") {
@@ -1382,19 +1373,6 @@ function applyComponentState(button, data) {
     return;
   }
 
-  if (data.inProgress && data.jobId) {
-    button.dataset.k2cWatchJobId = data.jobId;
-    applyJobStatusToButton(button, data.jobId, {
-      status: data.status,
-      progress: data.progress,
-      message: data.message,
-      queue_position: data.queue_position,
-    });
-    startJobWatcher(button, data.jobId);
-    button.dataset[INIT_ATTR] = "true";
-    return;
-  }
-
   updateButtonState(button, "idle");
   button.dataset[INIT_ATTR] = "true";
 }
@@ -1677,10 +1655,7 @@ async function refreshButtonGroup(lcscId, groupDiv, options = {}) {
       return;
     }
 
-    const anyJobWatch =
-      Boolean(easyBtn.dataset.k2cWatchJobId)
-      || Boolean(templateBtn && templateBtn.dataset.k2cWatchJobId);
-    if (!skipIdleReset && !anyJobWatch) {
+    if (!skipIdleReset) {
       updateButtonState(easyBtn, "idle");
       if (templateBtn && templateBtn.style.display !== "none") {
         updateButtonState(templateBtn, "idle");
@@ -1712,15 +1687,6 @@ async function refreshButtonGroup(lcscId, groupDiv, options = {}) {
               message: formatPartialImportMessage(msgs, analysis.missing),
               iconType: "download",
             });
-          } else if (d.inProgress && d.jobId) {
-            easyBtn.dataset.k2cWatchJobId = d.jobId;
-            applyJobStatusToButton(easyBtn, d.jobId, {
-              status: d.status,
-              progress: d.progress,
-              message: d.message,
-              queue_position: d.queue_position,
-            });
-            startJobWatcher(easyBtn, d.jobId);
           } else {
             updateButtonState(easyBtn, "idle");
           }
@@ -4716,6 +4682,51 @@ function wireAnchorCardDownloadStatus(anchorRow) {
   }).catch((e) => dbg("wireAnchorCardDownloadStatus failed", e?.message || e));
 }
 
+/**
+ * V3 Anchor Card: flag a part that is already in the active library. Async and
+ * non-blocking — mirrors the float panel's exists check. On a hit we badge the
+ * row green and relabel Download → "Re-Import". Phase 2 always converts with
+ * ``overwrite=True``, so a second Download intentionally overwrites.
+ *
+ * @param {HTMLTableRowElement} anchorRow
+ * @param {string} lcscId
+ */
+function wireAnchorCardExistsBadge(anchorRow, lcscId) {
+  if (!anchorRow || !lcscId) return;
+  void (async () => {
+    try {
+      const resp = await contentRpc("checkComponentExists", { lcscId }, k2cRpc(2, 300));
+      if (!resp?.ok || !resp.data) return;
+      // V3 default imports ship symbol + footprint but intentionally no 3D
+      // model (generate_model=False). `completed` already means "symbol is in
+      // the active library", so gate on that alone — requiring a non-partial
+      // analysis would reject every V3 part for its (expected) missing model.
+      if (!resp.data.completed) return;
+      if (!anchorRow.isConnected) return;
+      markAnchorCardImported(anchorRow);
+    } catch (e) {
+      dbg("wireAnchorCardExistsBadge failed", e?.message || e);
+    }
+  })();
+}
+
+/**
+ * Run Phase 2 and, on success, badge the Anchor Card as imported (green chip +
+ * Download → Re-Import) immediately — no page reload needed. Mirrors what
+ * `wireAnchorCardExistsBadge` does at mount time for already-present parts.
+ *
+ * @param {HTMLTableRowElement} anchorRow
+ * @param {string} lcscId
+ * @param {object} deps  forwarded verbatim to runPhase2Convert
+ */
+async function runPhase2ConvertAndBadge(anchorRow, lcscId, deps) {
+  const envelope = await runPhase2Convert(anchorRow, lcscId, deps);
+  if (envelope && envelope.ok === true && anchorRow?.isConnected) {
+    markAnchorCardImported(anchorRow);
+  }
+  return envelope;
+}
+
 function attachButton(lcscId) {
   if (document.getElementById(BTN_GROUP_ID)) {
     dbg("attachButton: product button group already present");
@@ -4733,9 +4744,10 @@ function attachButton(lcscId) {
   // there — best UX, mirrors V2's in-table integration. If no anchor is
   // found we drop through to the Float Fallback below.
   //
-  // Visual scaffold only in this slice: the Download / Customize buttons are
-  // wired to no-op handlers. Real click behavior lands with #4 (Phase 2
-  // Conversion) and #12 (Customize Button).
+  // The Download button drives Phase 1 → Override Panel → Phase 2 (#4/#5);
+  // `wireAnchorCardExistsBadge` flags already-imported parts (green chip +
+  // Download → Re-Import). The Customize entry point lives inside the Override
+  // Panel (registrieren / Modifizieren), not as a separate button.
   const anchorRow = injectAnchorCard(document);
   if (anchorRow) {
     anchorRow.dataset.k2cLcscId = lcscId;
@@ -4830,7 +4842,7 @@ function attachButton(lcscId) {
           autoValueParam = null;
         }
         const runEasyedaPhase2 = async () => {
-          await runPhase2Convert(anchorRow, lcscId, {
+          await runPhase2ConvertAndBadge(anchorRow, lcscId, {
             rpc: async (id, libraryPath, ov) => {
               const resp = await contentRpc(
                 "v3Convert",
@@ -4943,7 +4955,7 @@ function attachButton(lcscId) {
               // the user sees Phase 2 run with the Template + Properties
               // they just configured (the next click for the same Category
               // will be one-click via #29).
-              await runPhase2Convert(anchorRow, lcscId, {
+              await runPhase2ConvertAndBadge(anchorRow, lcscId, {
                 rpc: async (id, libraryPath, ov) => {
                   const resp = await contentRpc(
                     "v3Convert",
@@ -4988,7 +5000,7 @@ function attachButton(lcscId) {
             dbg("[phase2 green] snapshot failed", e);
           }
           const rule = match?.rule || {};
-          await runPhase2Convert(anchorRow, lcscId, {
+          await runPhase2ConvertAndBadge(anchorRow, lcscId, {
             rpc: async (id, libraryPath, ov) => {
               const resp = await contentRpc(
                 "v3Convert",
@@ -5047,7 +5059,7 @@ function attachButton(lcscId) {
           onImport: runRulePhase2,
           onModify: openModifyEditor,
           onConfirm: async (overrides) => {
-            await runPhase2Convert(anchorRow, lcscId, {
+            await runPhase2ConvertAndBadge(anchorRow, lcscId, {
               rpc: async (id, libraryPath, ov) => {
                 const resp = await contentRpc(
                   "v3Convert",
@@ -5067,6 +5079,7 @@ function attachButton(lcscId) {
     });
     dbg("attachButton: anchored row injected", lcscId);
     wireAnchorCardDownloadStatus(anchorRow);
+    wireAnchorCardExistsBadge(anchorRow, lcscId);
     return true;
   }
 
@@ -5493,55 +5506,6 @@ async function handleDownloadClick(button, lcscId, overrides = {}) {
   }
 }
 
-/** Terminal UI from WebSocket-driven state (no getJobStatus polling). */
-function applyTerminalJobUI(button, jobId, job) {
-  if (!button || !jobId || !job) return;
-  if (jobState.isTerminalHandled(jobId)) return;
-  jobState.markTerminal(jobId);
-  setTimeout(() => jobState.forgetTerminal(jobId), 180000);
-  jobState.forgetUi(jobId);
-  jobState.clearWatcher(jobId);
-  delete button.dataset.k2cWatchJobId;
-  const messages = Array.isArray(job.messages)
-    ? job.messages
-    : (job.result?.messages || []);
-  const analysis = job.outputAnalysis
-    || computeOutputAnalysis({ outputs: job.outputs, result: job.result });
-  if (job.status === "completed") {
-    if (analysis.partial) {
-      updateButtonState(button, "partial", {
-        message: formatPartialImportMessage(messages, analysis.missing),
-      });
-    } else {
-      const tooltip = buildSuccessTooltip(analysis, messages);
-      updateButtonState(button, "success", {
-        message: tooltip || undefined,
-        libraryName: job.libraryName,
-        libraryPath: job.libraryPath,
-        celebrateJobId: jobId,
-      });
-    }
-    return;
-  }
-  if (job.status === "failed") {
-    updateButtonState(button, "error", {
-      message: formatStatusColon("Conversion failed", job.message || "unknown error"),
-      copyText: `Job failed: ${job.message || "Unknown error"}\n\nJob ID: ${jobId}\nStatus: ${job.status}\n${job.error || ""}`.trim(),
-    });
-  }
-}
-
-function startJobWatcher(button, jobId) {
-  const prevBtnJob = button.dataset.k2cWatchJobId;
-  if (prevBtnJob && prevBtnJob !== jobId) {
-    jobState.clearWatcher(prevBtnJob);
-    jobState.forgetUi(prevBtnJob);
-  }
-  button.dataset.k2cWatchJobId = jobId;
-  jobState.setWatcher(jobId, true);
-  dbg("startJobWatcher(ws push)", jobId);
-}
-
 function registerObserver(observer) {
   activeObservers.add(observer);
 }
@@ -5722,44 +5686,6 @@ function setupRouteListener() {
   window.addEventListener("hashchange", scheduleRouteCheck);
 }
 
-/**
- * Progress from `stateUpdate` (WebSocket pushes merged in the service worker).
- */
-function syncWatchedJobUIFromExtensionState(extState) {
-  const jobs = Array.isArray(extState?.jobs) ? extState.jobs : [];
-  if (!jobs.length) return;
-  const group = document.getElementById(BTN_GROUP_ID);
-  if (!group) return;
-  queryProductGroupButtons(group).forEach((btn) => {
-    const jid = btn.dataset.k2cWatchJobId;
-    if (!jid) return;
-    const job = jobs.find((j) => j && j.id === jid);
-    if (!job) return;
-    const st = String(job.status || "").toLowerCase();
-    if (st === "completed" || st === "failed") return;
-    applyJobStatusToButton(btn, jid, job);
-  });
-}
-
-/** If `jobTerminal` was missed, pick terminal rows up from `jobHistory`. */
-function syncWatchedTerminalFromExtensionState(extState) {
-  const hist = Array.isArray(extState?.jobHistory) ? extState.jobHistory : [];
-  if (!hist.length) return;
-  const group = document.getElementById(BTN_GROUP_ID);
-  if (!group) return;
-  const active = Array.isArray(extState?.jobs) ? extState.jobs : [];
-  queryProductGroupButtons(group).forEach((btn) => {
-    const jid = btn.dataset.k2cWatchJobId;
-    if (!jid) return;
-    if (active.some((j) => j && j.id === jid)) return;
-    const job = hist.find((h) => h && h.id === jid);
-    if (!job) return;
-    const st = String(job.status || "").toLowerCase();
-    if (st !== "completed" && st !== "failed") return;
-    applyTerminalJobUI(btn, jid, job);
-  });
-}
-
 function init() {
   try {
     if (typeof chrome === "undefined" || !chrome.runtime?.id) {
@@ -5802,17 +5728,6 @@ function init() {
           }, 250);
         }
       }
-      syncWatchedJobUIFromExtensionState(message.state);
-      syncWatchedTerminalFromExtensionState(message.state);
-    }
-    if (message?.type === "jobTerminal" && message.jobId && message.job) {
-      const group = document.getElementById(BTN_GROUP_ID);
-      if (!group) return;
-      queryProductGroupButtons(group).forEach((btn) => {
-        if (btn.dataset.k2cWatchJobId === message.jobId) {
-          applyTerminalJobUI(btn, message.jobId, message.job);
-        }
-      });
     }
   });
 
