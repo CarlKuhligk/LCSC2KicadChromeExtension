@@ -210,20 +210,25 @@ _FILL_TYPE_RE = re.compile(
     r"\(\s*fill\s*\(\s*type\s+(\w+)", re.IGNORECASE | re.DOTALL
 )
 
-
-# Near-opaque near-black fill so bodies read clearly on white preview backgrounds.
-_PREVIEW_FILL_DARK = "#0c0c0c"
-_PREVIEW_FILL_DARK_OPACITY = 0.92
-
 # Match footprint preview pad labels (`footprint_preview_svg`); extension may reinforce via CSS.
 _SYM_PIN_FONT_FAMILY = "Segoe UI,Roboto,Helvetica,Arial,sans-serif"
 
 
 @dataclass(frozen=True)
 class _PreviewPalette:
-    """Ink colors for symbol SVG (light page vs dark page / Dark Reader)."""
+    """
+    Ink colors for symbol SVG (light page vs dark page / Dark Reader).
 
-    body_fill_implicit: tuple[str, float]
+    KiCad has three fill semantics on body graphics:
+    - ``(fill (type none))``       → no fill (stroke only).
+    - ``(fill (type outline))``    → fill with the **outline / line color**.
+    - ``(fill (type background))`` → fill with KiCad's **device body background**
+      (pale yellow ``~#FFFFC2`` on the light theme, a subtle translucent tint on dark).
+    A missing fill clause is treated as ``none`` (modern ``.kicad_sym`` always emits one).
+    """
+
+    body_fill_background: tuple[str, float]
+    body_fill_outline: tuple[str, float]
     body_stroke: str
     pin_shaft: str
     pin_accent: str
@@ -238,9 +243,11 @@ class _PreviewPalette:
 
 def _preview_palette(theme: Literal["light", "dark"]) -> _PreviewPalette:
     if theme == "dark":
-        # No SVG background — monochrome white ink (wire-side square included).
+        # No SVG background — monochrome white ink. background-fill is a subtle translucent
+        # tint so an IC body is still implied without flooding pins / internal graphics.
         return _PreviewPalette(
-            body_fill_implicit=("#ffffff", 0.96),
+            body_fill_background=("#ffffff", 0.08),
+            body_fill_outline=("#ffffff", 0.92),
             body_stroke="#ffffff",
             pin_shaft="#ffffff",
             pin_accent="#ffffff",
@@ -252,9 +259,11 @@ def _preview_palette(theme: Literal["light", "dark"]) -> _PreviewPalette:
             text_name_fill="#ffffff",
             is_dark=True,
         )
-    # Light page: black symbol; green only at schematic wire connection (hotspot square).
+    # Light page: black ink; pale-yellow body background tint (KiCad default ~#FFFFC2);
+    # green only at schematic wire connection (hotspot square).
     return _PreviewPalette(
-        body_fill_implicit=("#000000", _PREVIEW_FILL_DARK_OPACITY),
+        body_fill_background=("#fffcc2", 0.92),
+        body_fill_outline=("#000000", 0.92),
         body_stroke="#000000",
         pin_shaft="#000000",
         pin_accent="#000000",
@@ -269,24 +278,23 @@ def _preview_palette(theme: Literal["light", "dark"]) -> _PreviewPalette:
 
 
 def _palette_resolve_fill(
-    fill: tuple[str, float] | None,
-    *,
-    has_fill_type: bool,
-    implicit_body: bool,
-    pal: _PreviewPalette,
+    fill_type: str | None, pal: _PreviewPalette
 ) -> tuple[str, float] | None:
     """
-    Map KiCad ``(fill …)`` to preview rgba.
+    Resolve KiCad ``(fill (type …))`` to preview ``(color, opacity)``.
 
-    ``implicit_body`` — no ``(fill (type …))`` in the library (KiCad still draws filled).
-
-    Filled shapes use theme body ink only (light: black, dark: white); library tints are ignored.
+    - ``None``       (no ``(fill …)`` clause)         → no fill (treat as ``none``).
+    - ``"none"``                                      → no fill.
+    - ``"background"``                                → pale body background (theme tint).
+    - ``"outline"``                                   → outline / line color.
+    - unknown                                         → outline color (safe fallback —
+      never collapse to an opaque black box).
     """
-    if fill is None and implicit_body:
-        return pal.body_fill_implicit
-    if fill is None:
+    if fill_type is None or fill_type == "none":
         return None
-    return pal.body_fill_implicit
+    if fill_type == "background":
+        return pal.body_fill_background
+    return pal.body_fill_outline
 
 
 # ``(stroke (width W) …)`` — width is first in modern KiCad; rarely ``(type …)`` precedes ``width``.
@@ -319,25 +327,19 @@ def _stroke_width_mm(block: str, default: float) -> float:
     return max(0.05, min(w, 5.0))
 
 
-def _kicad_shape_fill_rgba(block: str) -> tuple[str, float] | None:
+def _kicad_shape_fill_type(block: str) -> str | None:
     """
-    KiCad ``(fill (type background|outline|none))`` on rectangles, circles, polylines, etc.
+    Read the KiCad ``(fill (type …))`` keyword on a graphic block.
 
-    - ``none`` → no fill (stroke only).
-    - ``outline`` / ``background`` / unknown → very dark fill (KiCad body style in preview).
-    - If there is no ``(fill (type …))`` at all, returns ``None`` (callers may default).
+    Returns the lowercased type (``"none"``, ``"outline"``, ``"background"``, or any
+    other token the library carried) or ``None`` when no ``(fill …)`` clause is present —
+    modern ``.kicad_sym`` always emits one and a missing clause is treated like ``"none"``
+    by the renderer (was historically "implicit body fill", which over-painted bodies).
     """
     m = _FILL_TYPE_RE.search(block)
     if not m:
         return None
-    t = (m.group(1) or "").lower()
-    if t == "none":
-        return None
-    if t == "outline":
-        return _PREVIEW_FILL_DARK, _PREVIEW_FILL_DARK_OPACITY
-    if t == "background":
-        return _PREVIEW_FILL_DARK, _PREVIEW_FILL_DARK_OPACITY
-    return _PREVIEW_FILL_DARK, 0.88
+    return (m.group(1) or "").lower()
 
 
 def _arc_start_mid_end_kicad_mm(block: str) -> tuple[float, float, float, float, float, float] | None:
@@ -728,6 +730,10 @@ def symbol_block_to_svg(
         2.35 if label_pins else 1.95,
     )
 
+    # Paint order: body-background fills first (BEHIND), then outline-filled / stroked
+    # graphics, then pins. A KiCad `(fill (type background))` rectangle on an IC body must
+    # never paint OVER internal graphics, pin shafts, or labels.
+    bg_fill_parts: list[str] = []
     body_parts: list[str] = []
     pin_parts: list[str] = []
     ink = _DrawBounds()
@@ -743,28 +749,23 @@ def symbol_block_to_svg(
         ya, yb = min(sy0, sy1), max(sy0, sy1)
         sw = _stroke_width_mm(block, stroke_body)
         ink.add_rect_xy(xa, ya, xb, yb, sw * 0.55)
-        has_fill_type = _FILL_TYPE_RE.search(block) is not None
-        raw_fill = _kicad_shape_fill_rgba(block)
-        fill = _palette_resolve_fill(
-            raw_fill,
-            has_fill_type=has_fill_type,
-            implicit_body=not has_fill_type and raw_fill is None,
-            pal=pal,
-        )
+        fill_type = _kicad_shape_fill_type(block)
+        fill = _palette_resolve_fill(fill_type, pal)
         bs = html.escape(pal.body_stroke, quote=True)
         if fill:
             fc, fo = fill
             fce = html.escape(fc, quote=True)
-            body_parts.append(
+            elem = (
                 f'<rect x="{xa:.3f}" y="{ya:.3f}" width="{xb - xa:.3f}" height="{yb - ya:.3f}" '
                 f'fill="{fce}" fill-opacity="{fo:.2f}" stroke="{bs}" stroke-width="{sw:.3f}" '
                 f'stroke-linejoin="round"/>'
             )
         else:
-            body_parts.append(
+            elem = (
                 f'<rect x="{xa:.3f}" y="{ya:.3f}" width="{xb - xa:.3f}" height="{yb - ya:.3f}" '
                 f'fill="none" stroke="{bs}" stroke-width="{sw:.3f}" stroke-linejoin="round"/>'
             )
+        (bg_fill_parts if fill_type == "background" else body_parts).append(elem)
 
     for block in circle_blocks:
         c = _circle_center_radius_mm(block)
@@ -775,27 +776,22 @@ def symbol_block_to_svg(
         r_draw = max(r, sw * 1.25)
         sx, sy = mapper.xy(cx, cy)
         ink.add_point(sx, sy, r_draw + sw * 0.55)
-        has_fill_type = _FILL_TYPE_RE.search(block) is not None
-        raw_fill = _kicad_shape_fill_rgba(block)
-        fill = _palette_resolve_fill(
-            raw_fill,
-            has_fill_type=has_fill_type,
-            implicit_body=False,
-            pal=pal,
-        )
+        fill_type = _kicad_shape_fill_type(block)
+        fill = _palette_resolve_fill(fill_type, pal)
         bs = html.escape(pal.body_stroke, quote=True)
         if fill:
             fc, fo = fill
             fce = html.escape(fc, quote=True)
-            body_parts.append(
+            elem = (
                 f'<circle cx="{sx:.3f}" cy="{sy:.3f}" r="{r_draw:.3f}" fill="{fce}" '
                 f'fill-opacity="{fo:.2f}" stroke="{bs}" stroke-width="{sw:.3f}"/>'
             )
         else:
-            body_parts.append(
+            elem = (
                 f'<circle cx="{sx:.3f}" cy="{sy:.3f}" r="{r_draw:.3f}" fill="none" '
                 f'stroke="{bs}" stroke-width="{sw:.3f}"/>'
             )
+        (bg_fill_parts if fill_type == "background" else body_parts).append(elem)
 
     for block in arc_blocks:
         arc_pts = _arc_start_mid_end_kicad_mm(block)
@@ -821,27 +817,22 @@ def symbol_block_to_svg(
         sw = _stroke_width_mm(block, stroke_body)
         ink.add_polyline(pts_xy, sw * 0.55)
         coord = " ".join(f"{px:.3f},{py:.3f}" for px, py in pts_xy)
-        has_fill_type = _FILL_TYPE_RE.search(block) is not None
-        raw_fill = _kicad_shape_fill_rgba(block)
-        fill = _palette_resolve_fill(
-            raw_fill,
-            has_fill_type=has_fill_type,
-            implicit_body=False,
-            pal=pal,
-        )
+        fill_type = _kicad_shape_fill_type(block)
+        fill = _palette_resolve_fill(fill_type, pal)
         bs = html.escape(pal.body_stroke, quote=True)
         if fill:
             fc, fo = fill
             fce = html.escape(fc, quote=True)
-            body_parts.append(
+            elem = (
                 f'<polygon points="{coord}" fill="{fce}" fill-opacity="{fo:.2f}" stroke="{bs}" '
                 f'stroke-width="{sw:.3f}" stroke-linejoin="round" stroke-linecap="round"/>'
             )
         else:
-            body_parts.append(
+            elem = (
                 f'<polyline points="{coord}" fill="none" stroke="{bs}" '
                 f'stroke-width="{sw:.3f}" stroke-linejoin="round" stroke-linecap="round"/>'
             )
+        (bg_fill_parts if fill_type == "background" else body_parts).append(elem)
 
     for pin_index, block in enumerate(pin_blocks, start=1):
         geom = _parse_pin_geometry(block)
@@ -969,10 +960,10 @@ def symbol_block_to_svg(
             + "</g>"
         )
 
-    if not body_parts and not pin_parts:
+    if not bg_fill_parts and not body_parts and not pin_parts:
         return None, {"error": "nothing_drawn"}
 
-    inner = "\n  ".join(body_parts + pin_parts)
+    inner = "\n  ".join(bg_fill_parts + body_parts + pin_parts)
     w_mm = vb_w
     h_mm = vb_h
     if (
