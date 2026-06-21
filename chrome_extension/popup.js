@@ -1007,10 +1007,13 @@ function buildLibraryDetailsPanel(library) {
     wrap.appendChild(note);
   }
 
-  // Opt-in whitespace cleanup. Trims leading/trailing spaces KiCad warns about
-  // from symbol property keys/values, with a .bak backup (Native Host
-  // ``cleanLibrary``). Self-contained — does not depend on the inventory path.
-  if (sym && !library.isTemplateLibrary) {
+  // Whitespace cleanup is now AUTOMATIC (the inventory validate auto-runs
+  // ``cleanLibrary`` when the report flags padded fields — see background.js
+  // ``autoCleanWhitespaceIfNeeded``). This manual button is only a FALLBACK,
+  // shown when the report still flags whitespace (e.g. the auto-clean was
+  // skipped because an import was in flight, or its safety check aborted). On
+  // the normal path the lib is already tidy by render time, so it stays hidden.
+  if (sym && !library.isTemplateLibrary && ws && ws.clean === false) {
     const actions = document.createElement("div");
     actions.className = "library-details-actions";
     const cleanBtn = document.createElement("button");

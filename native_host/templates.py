@@ -277,6 +277,78 @@ def template_symbol_preview(payload: Any) -> dict[str, Any]:
     return {"svg": svg, "meta": meta}
 
 
+def _resolve_footprint_mod_file(lib_path: str, name: str) -> Path | None:
+    """Locate a template footprint ``.kicad_mod`` for preview.
+
+    Mirrors ``easyeda2kicad.service.conversion._resolve_template_footprint_file``
+    (kept local so native_host does not import an engine private). ``lib_path``
+    may be a ``.kicad_sym`` (sibling ``.pretty`` resolved), a ``.pretty`` dir,
+    or a direct ``.kicad_mod`` file.
+    """
+    src = Path(lib_path)
+    suffix = src.suffix.lower()
+    if suffix == ".kicad_mod":
+        candidate = src
+    elif suffix == ".kicad_sym":
+        candidate = _resolve_pretty_dir(src) / f"{name}.kicad_mod"
+    else:
+        candidate = src / f"{name}.kicad_mod"
+    return candidate if candidate.is_file() else None
+
+
+def template_footprint_preview(payload: Any) -> dict[str, Any]:
+    """V3 **TemplateFootprintPreview** RPC (footprint slice, #9).
+
+    Render a template ``.kicad_mod`` as an inline SVG so the Import-Editor can
+    show the footprint the user is about to assign — the footprint-side analogue
+    of :func:`template_symbol_preview`. Read-only.
+
+    Args:
+        payload: dict with ``templateLibPath`` (a ``.kicad_sym`` whose sibling
+            ``.pretty`` holds the footprint, a ``.pretty`` dir, or a direct
+            ``.kicad_mod``), ``templateName`` (footprint name / file stem), and
+            optional ``width`` / ``height`` (px).
+
+    Returns:
+        ``{"svg": str, "meta": {...}}`` on success, or ``{"svg": None,
+        "error": str}`` when the footprint is missing or unrenderable — the
+        editor falls back to a text label so a preview never hard-fails.
+
+    Raises:
+        ValueError: on missing/invalid ``templateLibPath`` or ``templateName``.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be an object")
+    template_lib_raw = payload.get("templateLibPath")
+    if not isinstance(template_lib_raw, str) or not template_lib_raw.strip():
+        raise ValueError("templateLibPath is required")
+    template_name_raw = payload.get("templateName")
+    if not isinstance(template_name_raw, str) or not template_name_raw.strip():
+        raise ValueError("templateName is required")
+    template_lib_path = template_lib_raw.strip()
+    template_name = template_name_raw.strip()
+
+    mod_file = _resolve_footprint_mod_file(template_lib_path, template_name)
+    if mod_file is None:
+        return {"svg": None, "error": "footprint_not_found"}
+    try:
+        mod_text = mod_file.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return {"svg": None, "error": "footprint_unreadable"}
+
+    # Lazy import: the renderer only loads when a preview is actually requested.
+    from easyeda2kicad.kicad.footprint_mod_preview_svg import kicad_mod_to_preview_svg
+
+    svg, meta = kicad_mod_to_preview_svg(
+        mod_text,
+        width_px=_coerce_preview_dim(payload.get("width"), 300),
+        height_px=_coerce_preview_dim(payload.get("height"), 225),
+    )
+    if svg is None:
+        return {"svg": None, "error": str(meta.get("error", "render_failed"))}
+    return {"svg": svg, "meta": meta}
+
+
 def list_templates(lib_path: Any) -> dict[str, Any]:
     """List symbols + footprints belonging to a Template Library.
 

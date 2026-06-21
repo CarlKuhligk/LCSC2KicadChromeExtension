@@ -4881,10 +4881,12 @@ function attachButton(lcscId) {
           }
           renderRegisterImportEditor(anchorRow, {
             templateLibs,
+            templateLibsFootprints,
             templateCategoriesByLib,
             pageParams,
             categoryPath: phase1Result?.categoryPath || null,
             initialSymbolSource: initial.initialSymbolSource || null,
+            initialFootprintSource: initial.initialFootprintSource || null,
             initialLabelMapping: initial.initialLabelMapping || null,
             initialHidePinNumbers:
               initial.initialHidePinNumbers ?? autoHidePinNumbers,
@@ -4918,7 +4920,7 @@ function attachButton(lcscId) {
               }
             },
             // Footprint preview = the EasyEDA footprint of this LCSC part (the
-            // one the Symbol-MVP imports). One-shot; reuses the gallery RPC.
+            // default-source preview). One-shot; reuses the gallery RPC.
             fetchFootprintPreview: async () => {
               try {
                 const resp = await contentRpc(
@@ -4928,6 +4930,28 @@ function attachButton(lcscId) {
                 );
                 if (resp?.ok && resp.data?.footprint_svg) {
                   return { svg: resp.data.footprint_svg };
+                }
+                const detail =
+                  (resp?.data && (resp.data.error || resp.data.message))
+                  || resp?.error
+                  || "Footprint-Vorschau nicht verfügbar";
+                return { svg: null, error: String(detail) };
+              } catch (err) {
+                return { svg: null, error: err?.message || "Footprint-Vorschau fehlgeschlagen" };
+              }
+            },
+            // Footprint slice (#9): render a chosen TEMPLATE footprint (a
+            // .kicad_mod in the template lib's sibling .pretty) as SVG. libPath
+            // is the template .kicad_sym; the Native Host resolves the .pretty.
+            fetchTemplateFootprintPreview: async ({ libPath, name }) => {
+              try {
+                const resp = await contentRpc(
+                  "templateFootprintPreviewSvg",
+                  { templateName: name, templateLibPath: libPath },
+                  k2cRpc(1, 400),
+                );
+                if (resp?.ok && resp.data?.ok && typeof resp.data.svg === "string") {
+                  return { svg: resp.data.svg };
                 }
                 const detail =
                   (resp?.data && (resp.data.error || resp.data.message))
@@ -4976,7 +5000,7 @@ function attachButton(lcscId) {
                 },
                 overrides: {
                   symbol: rule.symbolSource || { source: "easyeda" },
-                  footprint: { source: "easyeda" },
+                  footprint: rule.footprintSource || { source: "easyeda" },
                 },
                 log: (...args) => dbg("[phase2]", ...args),
               });
@@ -5043,6 +5067,7 @@ function attachButton(lcscId) {
               : null;
           openRegisterEditor({
             initialSymbolSource: rule.symbolSource || heuristicSymbol || null,
+            initialFootprintSource: rule.footprintSource || null,
             initialLabelMapping: rule.labelMapping || null,
             initialHidePinNumbers: rule.hidePinNumbers ?? autoHidePinNumbers,
             initialHidePinNames: rule.hidePinNames ?? false,

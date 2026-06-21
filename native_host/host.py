@@ -85,6 +85,7 @@ from native_host.phase2 import run_phase2_conversion  # noqa: E402
 from native_host.rules import get_rule, set_rule  # noqa: E402
 from native_host.templates import (  # noqa: E402
     list_templates,
+    template_footprint_preview,
     template_gallery_pin_summary,
     template_pin_check,
     template_symbol_preview,
@@ -338,6 +339,21 @@ def handle(
         params = raw_params if isinstance(raw_params, dict) else {}
         try:
             result = template_symbol_preview(params)
+        except ValueError as exc:
+            return {"id": request_id, "ok": False, "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "id": request_id,
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        return {"id": request_id, "ok": True, "result": result}
+
+    if verb == "templateFootprintPreview":
+        raw_params = request.get("params")
+        params = raw_params if isinstance(raw_params, dict) else {}
+        try:
+            result = template_footprint_preview(params)
         except ValueError as exc:
             return {"id": request_id, "ok": False, "error": str(exc)}
         except Exception as exc:  # noqa: BLE001

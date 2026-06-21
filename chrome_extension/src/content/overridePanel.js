@@ -437,22 +437,32 @@ export function buildYellowPanel(doc, opts = {}) {
  *     appends another empty row; rows whose LCSC label or KiCad property
  *     is blank are dropped on save.
  *
- * Footprint/3D stay on the EasyEDA default in the Symbol-MVP — those
- * controls land with the footprint follow-up slice.
+ *   - Footprint Source (#9) — a ``<select>`` mirroring the Symbol Source:
+ *     EasyEDA default OR a curated template footprint (a ``.kicad_mod`` from
+ *     a template library's sibling ``.pretty``). The footprint preview below
+ *     follows the selection.
+ *
+ * 3D stays on the footprint's own ``(model …)`` ref ("3D follows the
+ * Footprint", #6) — no separate 3D control.
  *
  * **Prefill (Issue #29 Modify path).** When ``initialSymbolSource`` /
- * ``initialLabelMapping`` are supplied the editor opens with those
- * values selected — the 🟢 ``[Modifizieren]`` button reuses this same
- * component (ADR-0006: "A single, reusable Import-Editor serves all
+ * ``initialFootprintSource`` / ``initialLabelMapping`` are supplied the editor
+ * opens with those values selected — the 🟢 ``[Modifizieren]`` button reuses
+ * this same component (ADR-0006: "A single, reusable Import-Editor serves all
  * three call sites — register / modify / low-confidence").
  *
  * @param {Document} doc
  * @param {{
  *   templateLibs?: Record<string, string[]>,
+ *   templateLibsFootprints?: Record<string, string[]>,
  *   pageParams?: Record<string, string>,
  *   categoryPath?: string | null,
  *   initialSymbolSource?: object | null,
+ *   initialFootprintSource?: object | null,
  *   initialLabelMapping?: Record<string, string> | null,
+ *   fetchSymbolPreview?: (sel: {libPath: string, name: string}) => Promise<{svg: string|null, error?: string}>,
+ *   fetchFootprintPreview?: () => Promise<{svg: string|null, error?: string}>,
+ *   fetchTemplateFootprintPreview?: (sel: {libPath: string, name: string}) => Promise<{svg: string|null, error?: string}>,
  *   onSave?: (rule: { categoryPath: string, rule: object }) => void,
  *   onCancel?: () => void,
  * }} [opts]
@@ -579,13 +589,20 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   centerCol.appendChild(mkColLabel("Symbol"));
   centerCol.appendChild(previewPane);
 
-  // Footprint preview (the EasyEDA footprint that will be imported in the
-  // Symbol-MVP). Independent of the selected template symbol, so it is fetched
-  // once via the injected ``opts.fetchFootprintPreview`` callback.
+  // Footprint-Source selector (#9): EasyEDA default OR a curated template
+  // footprint from a template library's sibling .pretty. The visible <select>
+  // is the source of truth (collectRegisterEditorRule reads it via parseLayer);
+  // changing it re-renders the footprint preview below.
   const footprintPane = doc.createElement("div");
   footprintPane.setAttribute(OVERRIDE_REGISTER_FOOTPRINT_PREVIEW_ATTR, "true");
   footprintPane.style.cssText = paneStyle;
+  const fpSelect = doc.createElement("select");
+  fpSelect.setAttribute(OVERRIDE_FOOTPRINT_SELECT_ATTR, "true");
+  populateSelect(fpSelect, doc, opts.templateLibsFootprints);
+  fpSelect.style.cssText = "width:100%;font-size:12px";
+  fpSelect.addEventListener("change", () => loadFootprintPreview());
   centerCol.appendChild(mkColLabel("Footprint"));
+  centerCol.appendChild(fpSelect);
   centerCol.appendChild(footprintPane);
 
   function setPaneText(pane, text) {
@@ -633,16 +650,33 @@ export function buildRegisterImportEditor(doc, opts = {}) {
       });
   }
 
-  // Footprint: a one-shot fetch — the EasyEDA footprint does not depend on the
-  // chosen template symbol (Symbol-MVP always imports the EasyEDA footprint).
+  // Footprint preview follows the Footprint-Source selector: EasyEDA default →
+  // ``opts.fetchFootprintPreview()`` (the part's EasyEDA footprint), template →
+  // ``opts.fetchTemplateFootprintPreview({libPath, name})`` (the curated
+  // .kicad_mod). A stale-request token guards against out-of-order replies when
+  // the user flips the selector quickly.
+  let fpPreviewReq = 0;
   function loadFootprintPreview() {
-    if (typeof opts.fetchFootprintPreview !== "function") {
-      setPaneText(footprintPane, "Footprint-Vorschau nicht verfügbar");
-      return;
-    }
+    const layer = parseLayer(fpSelect.value);
+    const reqId = ++fpPreviewReq;
     setPaneText(footprintPane, "Lade Footprint …");
-    Promise.resolve(opts.fetchFootprintPreview())
+    let fetchP;
+    if (layer.source === "template") {
+      fetchP =
+        typeof opts.fetchTemplateFootprintPreview === "function"
+          ? Promise.resolve(
+              opts.fetchTemplateFootprintPreview({ libPath: layer.libPath, name: layer.name }),
+            )
+          : Promise.resolve({ svg: null, error: "Footprint-Vorschau nicht verfügbar" });
+    } else {
+      fetchP =
+        typeof opts.fetchFootprintPreview === "function"
+          ? Promise.resolve(opts.fetchFootprintPreview())
+          : Promise.resolve({ svg: null, error: "Footprint-Vorschau nicht verfügbar" });
+    }
+    fetchP
       .then((res) => {
+        if (reqId !== fpPreviewReq) return; // a newer selection superseded this one
         if (res && typeof res.svg === "string" && res.svg) {
           setPaneImage(footprintPane, res.svg, "Footprint-Vorschau");
         } else {
@@ -650,6 +684,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
         }
       })
       .catch((err) => {
+        if (reqId !== fpPreviewReq) return;
         setPaneText(footprintPane, (err && err.message) || "Footprint-Vorschau fehlgeschlagen");
       });
   }
@@ -890,6 +925,17 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   ) {
     showAllCb.checked = true;
   }
+
+  // Footprint prefill (Modify path): preselect the rule's template footprint
+  // when it is still present in the populated options; else stay on EasyEDA.
+  const initialFp = opts.initialFootprintSource;
+  if (initialFp?.source === "template" && initialFp.libPath && initialFp.name) {
+    const fpCandidate = encodeTemplateValue(initialFp.libPath, initialFp.name);
+    if (Array.from(fpSelect.options).some((o) => o.value === fpCandidate)) {
+      fpSelect.value = fpCandidate;
+    }
+  }
+
   renderTemplateList();
   loadFootprintPreview();
 
@@ -909,6 +955,12 @@ export function buildRegisterImportEditor(doc, opts = {}) {
 export function collectRegisterEditorRule(panel, categoryPath) {
   const symSelect = panel.querySelector(`[${OVERRIDE_SYMBOL_SELECT_ATTR}]`);
   const symbolSource = parseLayer(symSelect?.value);
+  // Footprint-Source (#9): EasyEDA default or a curated template footprint.
+  // Same ``"<source>:<libPath>:<name>"`` grammar as the symbol select; for a
+  // footprint the libPath is the template ``.kicad_sym`` (the engine + preview
+  // resolve the sibling ``.pretty``).
+  const fpSelect = panel.querySelector(`[${OVERRIDE_FOOTPRINT_SELECT_ATTR}]`);
+  const footprintSource = parseLayer(fpSelect?.value);
   const hidePinNumbers = Boolean(
     panel.querySelector(`[${OVERRIDE_REGISTER_HIDE_PINNUM_ATTR}]`)?.checked,
   );
@@ -921,6 +973,7 @@ export function collectRegisterEditorRule(panel, categoryPath) {
     categoryPath: typeof categoryPath === "string" ? categoryPath : "",
     rule: {
       symbolSource,
+      footprintSource,
       // ADR-0006 (refined): metadata is auto-upserted from the page snapshot;
       // the rule no longer carries a manual label mapping.
       labelMapping: {},

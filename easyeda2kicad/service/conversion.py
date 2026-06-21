@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -28,7 +29,7 @@ from easyeda2kicad.helpers import (
 from easyeda2kicad.kicad.export_kicad_3d_model import Exporter3dModelKicad
 from easyeda2kicad.kicad.export_kicad_footprint import ExporterFootprintKicad
 from easyeda2kicad.kicad.export_kicad_symbol import ExporterSymbolKicad
-from easyeda2kicad.kicad.parameters_kicad_symbol import sanitize_fields
+from easyeda2kicad.kicad.parameters_kicad_symbol import KiSymbolInfo, sanitize_fields
 from easyeda2kicad.kicad.symbol_pin_remap import apply_pin_number_map
 from easyeda2kicad.kicad.template_merger import TemplateMerger, get_template_lib_path
 
@@ -77,6 +78,19 @@ class ConversionRequest:
     # Keys/values: remap symbol (number …) only; footprint pads are never renamed (see
     # _export_symbol_from_template + symbol_pin_remap.apply_pin_number_map).
     template_pin_map: Optional[Mapping[str, str]] = None
+    # Footprint template (Issue #9): instead of building the EasyEDA footprint,
+    # copy a user-curated ``.kicad_mod`` into the target library.
+    # ``footprint_template_lib_path`` identifies the source — a ``.kicad_sym``
+    # (sibling ``.pretty`` resolved), a ``.pretty`` dir, or a direct
+    # ``.kicad_mod`` (see ``_resolve_template_footprint_file``);
+    # ``footprint_template_name`` is the footprint name (file stem). The
+    # template's own 3D ``(model …)`` reference rides along verbatim — "3D
+    # follows the Footprint" (Issue #6). ``force_footprint_template`` turns a
+    # missing template into a hard error instead of a silent EasyEDA fallback.
+    use_footprint_template: bool = False
+    footprint_template_name: Optional[str] = None
+    footprint_template_lib_path: Optional[str] = None
+    force_footprint_template: bool = False
 
     def __post_init__(self) -> None:
         if not self.lcsc_id or not self.lcsc_id.startswith("C"):
@@ -286,6 +300,93 @@ def _footprint_exists(lib_path: str, package_name: str) -> bool:
     return Path(lib_path, f"{package_name}.kicad_mod").is_file()
 
 
+_FP_IDENTITY_RE = re.compile(r'(\(\s*footprint\s+)"[^"]*"')
+
+
+def _resolve_template_footprint_file(lib_path: str, name: str) -> Optional[Path]:
+    """Locate the source ``.kicad_mod`` for a footprint-template choice.
+
+    ``lib_path`` may be:
+
+    - a ``.kicad_sym`` file — a "template library" is identified by its symbol
+      file; the footprint layer is the sibling ``.pretty/`` (KiCad convention,
+      mirrors ``native_host.templates.list_templates``);
+    - a ``.pretty`` directory (or any directory) holding ``<name>.kicad_mod``;
+    - a direct path to a ``.kicad_mod`` file.
+
+    Returns ``None`` when nothing readable is found.
+    """
+    src = Path(lib_path)
+    suffix = src.suffix.lower()
+    if suffix == ".kicad_mod":
+        candidate = src
+    elif suffix == ".kicad_sym":
+        candidate = src.with_suffix(".pretty") / f"{name}.kicad_mod"
+    else:
+        candidate = src / f"{name}.kicad_mod"
+    return candidate if candidate.is_file() else None
+
+
+def _export_footprint_from_template(
+    request: "ConversionRequest", footprint_dir: str
+) -> Optional[str]:
+    """Copy a template ``.kicad_mod`` into the target ``.pretty`` library.
+
+    Mirrors the symbol-template carry-over: the user-curated footprint wins
+    over the EasyEDA-generated one, and its embedded 3D ``(model …)`` ref
+    rides along untouched ("3D follows the Footprint", #6). The footprint's
+    identity token is rewritten to the destination name so KiCad sees a
+    consistent file-stem ↔ name pairing. Returns the written path, or
+    ``None`` when the template cannot be found (caller decides fallback vs.
+    hard error via ``force_footprint_template``).
+    """
+    name = (request.footprint_template_name or "").strip()
+    lib_path = (request.footprint_template_lib_path or "").strip()
+    if not name or not lib_path:
+        return None
+    src_file = _resolve_template_footprint_file(lib_path, name)
+    if src_file is None:
+        logging.warning(
+            "Footprint template '%s' not found under %s", name, lib_path
+        )
+        return None
+    dest_file = Path(footprint_dir) / f"{name}.kicad_mod"
+    if dest_file.exists() and not request.overwrite:
+        return str(dest_file)
+    try:
+        content = src_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        logging.warning("Cannot read footprint template %s: %s", src_file, exc)
+        return None
+    # Keep the embedded identity token in sync with the destination file stem.
+    content = _FP_IDENTITY_RE.sub(rf'\g<1>"{name}"', content, count=1)
+    try:
+        dest_file.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        raise ConversionError(
+            f"Unable to write footprint template to '{dest_file}'."
+        ) from exc
+    return str(dest_file)
+
+
+def _apply_footprint_template_ref(
+    exporter: "ExporterSymbolKicad", request: "ConversionRequest"
+) -> None:
+    """Repoint an EasyEDA symbol's Footprint property at a template footprint.
+
+    Sets the bare package name BEFORE ``export()`` runs ``tune_footprint_ref_path``
+    (which prepends ``"<library_name>:"``) so the written Footprint property reads
+    ``"<library_name>:<footprint_template_name>"`` instead of the EasyEDA package.
+    No-op unless a footprint template is in play.
+    """
+    if not (request.use_footprint_template and request.footprint_template_name):
+        return
+    output = getattr(exporter, "output", None)
+    info = getattr(output, "info", None)
+    if info is not None:
+        info.package = request.footprint_template_name
+
+
 def _coerce_template_pin_map(
     pin_map: Optional[Mapping[str, Any]],
 ) -> Optional[dict[str, str]]:
@@ -305,11 +406,16 @@ def _coerce_template_pin_map(
 
 def _export_symbol_from_template(
     request: "ConversionRequest",
-    primary_symbol: object,
+    primary_symbol: object | None,
     library_name: str,
 ) -> str:
     """
     Build a symbol string by merging LCSC metadata into a template symbol.
+
+    ``primary_symbol`` is the EasyEDA-parsed symbol when CAD data is available;
+    pass ``None`` for a TEMPLATE-ONLY import (no EasyEDA data) — the info is then
+    synthesized from the request and the template keeps its own pins.
+
     Returns an empty string if the template cannot be found.
     """
     from easyeda2kicad.kicad.export_kicad_symbol import ExporterSymbolKicad
@@ -335,22 +441,53 @@ def _export_symbol_from_template(
         )
         return ""
 
-    # Build a KiSymbolInfo via the normal exporter path so that
-    # all fields (value, footprint, datasheet, params, …) are populated
-    # identically to a regular LCSC export.
-    exporter = ExporterSymbolKicad(
-        symbol=primary_symbol,
-        hide_pin_numbers=request.hide_pin_numbers,
-        hide_pin_names=request.hide_pin_names,
-        value_override=request.symbol_value_override,
-        value_param_key=request.symbol_value_param_key,
-        symbol_params=request.symbol_params,
-        symbol_description=request.symbol_description,
-        symbol_datasheet_url=request.symbol_datasheet_url,
-    )
-    # Populate ki_info by running the footprint ref path tuner
-    exporter.export(footprint_lib_name=library_name)
-    ki_info = exporter.output.info
+    # Build the KiSymbolInfo the merger consumes. WITH EasyEDA CAD data we run
+    # the normal exporter so every field (value, footprint, datasheet, params)
+    # and the source pins match a regular LCSC export. For a TEMPLATE-ONLY import
+    # (``primary_symbol is None`` — the part has no EasyEDA data, e.g. an LCSC
+    # part EasyEDA does not carry) we synthesize the info from the request alone
+    # and pass ``source_pins=None`` so the merger keeps the template's OWN pins
+    # untouched (it never had EasyEDA pins to match against).
+    if primary_symbol is not None:
+        exporter = ExporterSymbolKicad(
+            symbol=primary_symbol,
+            hide_pin_numbers=request.hide_pin_numbers,
+            hide_pin_names=request.hide_pin_names,
+            value_override=request.symbol_value_override,
+            value_param_key=request.symbol_value_param_key,
+            symbol_params=request.symbol_params,
+            symbol_description=request.symbol_description,
+            symbol_datasheet_url=request.symbol_datasheet_url,
+        )
+        # Populate ki_info by running the footprint ref path tuner
+        exporter.export(footprint_lib_name=library_name)
+        ki_info = exporter.output.info
+        source_pins = exporter.output.pins
+    else:
+        # Template-only: metadata comes from the scraped page params (symbol_params)
+        # + the resolved value/datasheet; the LCSC id fills name + LCSC Part.
+        ki_info = KiSymbolInfo(
+            name=request.lcsc_id,
+            prefix="U",
+            package="",
+            manufacturer="",
+            datasheet=(request.symbol_datasheet_url or ""),
+            lcsc_id=request.lcsc_id,
+            jlc_id="",
+            hide_pin_numbers=request.hide_pin_numbers,
+            hide_pin_names=request.hide_pin_names,
+            value_override=request.symbol_value_override,
+            value_param_key=request.symbol_value_param_key,
+            symbol_params=request.symbol_params,
+            symbol_description=request.symbol_description,
+        )
+        source_pins = None
+
+    # Footprint template (#9): point the merged symbol's Footprint property at
+    # the chosen template footprint instead of the EasyEDA package. ki_info.package
+    # already carries "<library_name>:<easyeda_name>" from tune_footprint_ref_path.
+    if request.use_footprint_template and request.footprint_template_name:
+        ki_info.package = f"{library_name}:{request.footprint_template_name}"
 
     merger = TemplateMerger()
     try:
@@ -358,7 +495,7 @@ def _export_symbol_from_template(
             template_sym_str=template_str,
             template_name=request.template_name,
             ki_info=ki_info,
-            source_pins=exporter.output.pins,
+            source_pins=source_pins,
         )
     except Exception as exc:
         logging.error("TemplateMerger.merge() failed: %s", exc)
@@ -411,39 +548,53 @@ def run_conversion(
 
     prog.emit("fetch", 0.08, "Library folders ready.")
 
+    # EasyEDA CAD data is only needed when something actually comes FROM EasyEDA:
+    # an EasyEDA symbol, an EasyEDA footprint, or a 3D model. A pure TEMPLATE
+    # import (symbol + footprint both from templates) needs no fetch — so a part
+    # EasyEDA does not carry can still be imported from the user's templates plus
+    # the scraped page metadata, instead of failing with "No CAD data received".
+    needs_easyeda = (
+        (request.generate_symbol and not request.use_template)
+        or (request.generate_footprint and not request.use_footprint_template)
+        or request.generate_model
+    )
+
     api = EasyedaApi()
-    cad_data = {}
-    last_exc: Exception | None = None
-    max_attempts = 3
-    for attempt in range(1, max_attempts + 1):
-        try:
-            prog.emit("fetch", 0.12, "Connecting to EasyEDA…")
-            cad_data = _cad_fetch_with_pulsing_progress(prog, api, request.lcsc_id)
-            last_exc = None
-            break
-        except Exception as exc:  # pragma: no cover - network errors bubble up
-            last_exc = exc
-            if attempt < max_attempts:
-                prog.emit(
-                    "fetch",
-                    min(0.88, 0.18 + 0.22 * attempt),
-                    f"CAD request failed ({attempt}/{max_attempts}). Retrying…",
-                )
-                time.sleep(1)
-            else:
+    cad_data: dict = {}
+    if needs_easyeda:
+        last_exc: Exception | None = None
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                prog.emit("fetch", 0.12, "Connecting to EasyEDA…")
+                cad_data = _cad_fetch_with_pulsing_progress(prog, api, request.lcsc_id)
+                last_exc = None
                 break
+            except Exception as exc:  # pragma: no cover - network errors bubble up
+                last_exc = exc
+                if attempt < max_attempts:
+                    prog.emit(
+                        "fetch",
+                        min(0.88, 0.18 + 0.22 * attempt),
+                        f"CAD request failed ({attempt}/{max_attempts}). Retrying…",
+                    )
+                    time.sleep(1)
+                else:
+                    break
 
-    if last_exc is not None:
-        raise ConversionError(
-            f"Failed to fetch data for {request.lcsc_id}: {last_exc}"
-        ) from last_exc
+        if last_exc is not None:
+            raise ConversionError(
+                f"Failed to fetch data for {request.lcsc_id}: {last_exc}"
+            ) from last_exc
 
-    if not cad_data:
-        raise ConversionError(
-            f"No CAD data received for component {request.lcsc_id}."
-        )
+        if not cad_data:
+            raise ConversionError(
+                f"No CAD data received for component {request.lcsc_id}."
+            )
 
-    prog.emit("fetch", 1.0, "CAD data received.")
+        prog.emit("fetch", 1.0, "CAD data received.")
+    else:
+        prog.emit("fetch", 1.0, "Template-only import — EasyEDA fetch skipped.")
 
     result = ConversionResult()
 
@@ -464,11 +615,19 @@ def run_conversion(
 
     if request.generate_symbol:
         prog.emit("symbol", 0.0, "Parsing EasyEDA symbol…")
-        primary_symbol, sub_symbols = lcsc_primary_and_sub_symbols(cad_data)
+        # Template-only imports have no CAD data → no EasyEDA primary symbol;
+        # the component name then comes from the LCSC id.
+        primary_symbol = None
+        sub_symbols: list = []
+        if cad_data:
+            primary_symbol, sub_symbols = lcsc_primary_and_sub_symbols(cad_data)
 
         prog.emit("symbol", 0.18, "Resolving pins, graphics, and sub-units…")
 
-        sanitized_name = sanitize_fields(primary_symbol.info.name)
+        component_name = (
+            primary_symbol.info.name if primary_symbol is not None else request.lcsc_id
+        )
+        sanitized_name = sanitize_fields(component_name)
         existing = id_already_in_symbol_lib(
             lib_path=str(symbol_file),
             component_name=sanitized_name,
@@ -477,7 +636,7 @@ def run_conversion(
         exported_sub_symbols: List[str] = []
         if existing and not request.overwrite:
             result.messages.append(
-                f"Symbol '{primary_symbol.info.name}' already exists – not overwritten."
+                f"Symbol '{component_name}' already exists – not overwritten."
             )
             prog.emit("symbol", 0.55, "Symbol already in library — skipping write.")
         else:
@@ -503,6 +662,15 @@ def run_conversion(
                         f"Template '{request.template_name}' not found; falling back to LCSC symbol."
                     )
 
+            if not exported_symbol and primary_symbol is None:
+                # Template-only import where the template merge produced nothing
+                # (e.g. template missing and force_template off) — there is no
+                # EasyEDA symbol to fall back to.
+                raise ConversionError(
+                    f"No EasyEDA data for {request.lcsc_id} and the template symbol "
+                    "could not be built — cannot produce a symbol."
+                )
+
             if not exported_symbol:
                 prog.emit("symbol", 0.48, "Rendering EasyEDA shapes for KiCad symbol…")
                 exporter = ExporterSymbolKicad(
@@ -515,6 +683,7 @@ def run_conversion(
                     symbol_description=request.symbol_description,
                     symbol_datasheet_url=request.symbol_datasheet_url,
                 )
+                _apply_footprint_template_ref(exporter, request)
                 exported_symbol = exporter.export(footprint_lib_name=library_name)
 
                 for sub_symbol in sub_symbols:
@@ -528,6 +697,7 @@ def run_conversion(
                         symbol_description=request.symbol_description,
                         symbol_datasheet_url=request.symbol_datasheet_url,
                     )
+                    _apply_footprint_template_ref(sub_exporter, request)
                     sub_export = sub_exporter.export(footprint_lib_name=library_name)
                     if sub_export and sub_export != exported_symbol:
                         exported_sub_symbols.append(sub_export)
@@ -557,58 +727,87 @@ def run_conversion(
 
     if request.generate_footprint:
         _retry_seg["seg"] = "footprint"
-        prog.emit("footprint", 0.0, "Parsing EasyEDA footprint…")
-        importer = EasyedaFootprintImporter(easyeda_cp_cad_data=cad_data, api=api_3d)
-        easyeda_footprint = importer.get_footprint()
-        # Never rename pads for template_pin_map — pad numbers stay as EasyEDA defines them.
 
-        prog.emit("footprint", 0.38, "Building KiCad footprint geometry…")
+        # Footprint template (Issue #9): user-curated .kicad_mod wins over the
+        # EasyEDA-generated one. On success the EasyEDA build is skipped entirely
+        # (no lossy round-trip); its own 3D model ref rides along (#6).
+        footprint_from_template = False
+        if request.use_footprint_template:
+            prog.emit(
+                "footprint",
+                0.2,
+                f"Copying template footprint '{request.footprint_template_name}'…",
+            )
+            written = _export_footprint_from_template(request, footprint_dir)
+            if written:
+                result.footprint_path = written
+                footprint_from_template = True
+                prog.emit("footprint", 1.0, "Template footprint copied.")
+            elif request.force_footprint_template:
+                raise ConversionError(
+                    f"Footprint template '{request.footprint_template_name}' not found "
+                    f"under '{request.footprint_template_lib_path}'; "
+                    "force_footprint_template is set, cannot fall back to the EasyEDA footprint."
+                )
+            else:
+                result.messages.append(
+                    f"Footprint template '{request.footprint_template_name}' not found; "
+                    "falling back to EasyEDA footprint."
+                )
 
-        footprint_exists = _footprint_exists(
-            footprint_dir, easyeda_footprint.info.name
-        )
-        footprint_filename = f"{easyeda_footprint.info.name}.kicad_mod"
-        model_path_override = (request.model_path or "").strip()
-        model_path_is_explicit = False
-        if model_path_override:
-            model_path = model_path_override
-            model_path_is_explicit = True
-        else:
-            model_path = str(model_dir).replace("\\", "/").replace("./", "/")
-            if request.project_relative:
-                relative_path = (request.project_relative_path or "").strip().replace("\\", "/")
-                if relative_path.startswith("${KIPRJMOD}"):
-                    relative_path = relative_path[len("${KIPRJMOD}"):]
-                if relative_path:
-                    if not relative_path.startswith("/"):
-                        relative_path = f"/{relative_path}"
-                    if relative_path.endswith(".3dshapes"):
-                        model_path = "${KIPRJMOD}" + relative_path
+        if not footprint_from_template:
+            prog.emit("footprint", 0.0, "Parsing EasyEDA footprint…")
+            importer = EasyedaFootprintImporter(easyeda_cp_cad_data=cad_data, api=api_3d)
+            easyeda_footprint = importer.get_footprint()
+            # Never rename pads for template_pin_map — pad numbers stay as EasyEDA defines them.
+
+            prog.emit("footprint", 0.38, "Building KiCad footprint geometry…")
+
+            footprint_exists = _footprint_exists(
+                footprint_dir, easyeda_footprint.info.name
+            )
+            footprint_filename = f"{easyeda_footprint.info.name}.kicad_mod"
+            model_path_override = (request.model_path or "").strip()
+            model_path_is_explicit = False
+            if model_path_override:
+                model_path = model_path_override
+                model_path_is_explicit = True
+            else:
+                model_path = str(model_dir).replace("\\", "/").replace("./", "/")
+                if request.project_relative:
+                    relative_path = (request.project_relative_path or "").strip().replace("\\", "/")
+                    if relative_path.startswith("${KIPRJMOD}"):
+                        relative_path = relative_path[len("${KIPRJMOD}"):]
+                    if relative_path:
+                        if not relative_path.startswith("/"):
+                            relative_path = f"/{relative_path}"
+                        if relative_path.endswith(".3dshapes"):
+                            model_path = "${KIPRJMOD}" + relative_path
+                        else:
+                            model_path = (
+                                "${KIPRJMOD}"
+                                + relative_path.rstrip("/")
+                                + f"/{output_path.name}.3dshapes"
+                            )
                     else:
-                        model_path = (
-                            "${KIPRJMOD}"
-                            + relative_path.rstrip("/")
-                            + f"/{output_path.name}.3dshapes"
-                        )
-                else:
-                    model_path = "${KIPRJMOD}/" + f"{output_path.name}.3dshapes"
+                        model_path = "${KIPRJMOD}/" + f"{output_path.name}.3dshapes"
 
-        if footprint_exists and not request.overwrite:
-            result.messages.append(
-                f"Footprint '{easyeda_footprint.info.name}' already exists – not overwritten."
-            )
-            prog.emit("footprint", 0.72, "Footprint already in library — skipping write.")
-        else:
-            prog.emit("footprint", 0.62, "Writing .kicad_mod file…")
-            ki_footprint = ExporterFootprintKicad(footprint=easyeda_footprint)
-            ki_footprint.export(
-                footprint_full_path=os.path.join(footprint_dir, footprint_filename),
-                model_3d_path=model_path,
-                model_3d_path_is_explicit=model_path_is_explicit,
-            )
+            if footprint_exists and not request.overwrite:
+                result.messages.append(
+                    f"Footprint '{easyeda_footprint.info.name}' already exists – not overwritten."
+                )
+                prog.emit("footprint", 0.72, "Footprint already in library — skipping write.")
+            else:
+                prog.emit("footprint", 0.62, "Writing .kicad_mod file…")
+                ki_footprint = ExporterFootprintKicad(footprint=easyeda_footprint)
+                ki_footprint.export(
+                    footprint_full_path=os.path.join(footprint_dir, footprint_filename),
+                    model_3d_path=model_path,
+                    model_3d_path_is_explicit=model_path_is_explicit,
+                )
 
-        prog.emit("footprint", 1.0, "Footprint export completed.")
-        result.footprint_path = os.path.join(footprint_dir, footprint_filename)
+            prog.emit("footprint", 1.0, "Footprint export completed.")
+            result.footprint_path = os.path.join(footprint_dir, footprint_filename)
 
     if request.generate_model:
         _retry_seg["seg"] = "model"

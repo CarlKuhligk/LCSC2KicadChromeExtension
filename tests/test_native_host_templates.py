@@ -448,6 +448,97 @@ def test_host_template_symbol_preview_returns_validation_error() -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# template_footprint_preview — V3 footprint SVG preview (footprint slice #9)
+# ---------------------------------------------------------------------------
+
+SAMPLE_KICAD_MOD = """(footprint "R0603_Custom" (layer "F.Cu")
+  (fp_line (start -1 -0.5) (end 1 -0.5) (layer "F.SilkS") (width 0.12))
+  (pad "1" smd roundrect (at -0.8 0) (size 0.9 0.95) (layers "F.Cu" "F.Paste" "F.Mask"))
+  (pad "2" smd roundrect (at 0.8 0) (size 0.9 0.95) (layers "F.Cu" "F.Paste" "F.Mask"))
+  (model "${KIPRJMOD}/3d/R0603.step" (offset (xyz 0 0 0)) (scale (xyz 1 1 1)) (rotate (xyz 0 0 0)))
+)
+"""
+
+
+def _write_fp_template(tmp_path: Path, lib: str = "MyTemplates", name: str = "R0603_Custom") -> Path:
+    """Write Templates.kicad_sym + sibling .pretty/<name>.kicad_mod; return the .kicad_sym path."""
+    sym = tmp_path / f"{lib}.kicad_sym"
+    sym.write_text("(kicad_symbol_lib)\n", encoding="utf-8")
+    pretty = tmp_path / f"{lib}.pretty"
+    pretty.mkdir(exist_ok=True)
+    (pretty / f"{name}.kicad_mod").write_text(SAMPLE_KICAD_MOD, encoding="utf-8")
+    return sym
+
+
+def test_template_footprint_preview_returns_svg(tmp_path: Path) -> None:
+    sym = _write_fp_template(tmp_path)
+    result = templates.template_footprint_preview(
+        {"templateLibPath": str(sym), "templateName": "R0603_Custom"}
+    )
+    assert result["svg"] and "<svg" in result["svg"]
+    assert "viewBox" in result["svg"]
+    assert isinstance(result["meta"], dict)
+    assert result["meta"]["pad_count"] == 2
+
+
+def test_template_footprint_preview_from_pretty_dir(tmp_path: Path) -> None:
+    _write_fp_template(tmp_path)
+    pretty = tmp_path / "MyTemplates.pretty"
+    result = templates.template_footprint_preview(
+        {"templateLibPath": str(pretty), "templateName": "R0603_Custom"}
+    )
+    assert result["svg"] and "<svg" in result["svg"]
+
+
+def test_template_footprint_preview_missing_is_soft_error(tmp_path: Path) -> None:
+    sym = _write_fp_template(tmp_path)
+    result = templates.template_footprint_preview(
+        {"templateLibPath": str(sym), "templateName": "DoesNotExist"}
+    )
+    assert result["svg"] is None
+    assert result["error"] == "footprint_not_found"
+
+
+@pytest.mark.parametrize(
+    "payload, message_substr",
+    [
+        ({"templateName": "R0603_Custom"}, "templateLibPath"),
+        ({"templateLibPath": "x"}, "templateName"),
+    ],
+)
+def test_template_footprint_preview_validation_errors(payload, message_substr) -> None:
+    with pytest.raises(ValueError, match=message_substr):
+        templates.template_footprint_preview(payload)
+
+
+def test_host_dispatches_template_footprint_preview_verb(tmp_path: Path) -> None:
+    sym = _write_fp_template(tmp_path)
+    response = host.handle({
+        "id": 13,
+        "verb": "templateFootprintPreview",
+        "params": {"templateLibPath": str(sym), "templateName": "R0603_Custom"},
+    })
+    assert response["id"] == 13
+    assert response["ok"] is True
+    assert "<svg" in response["result"]["svg"]
+
+
+def test_host_template_footprint_preview_returns_validation_error() -> None:
+    response = host.handle({
+        "id": "fp",
+        "verb": "templateFootprintPreview",
+        "params": {"templateLibPath": "x"},
+    })
+    assert response["ok"] is False
+    assert "templateName" in response["error"]
+
+
+# ---------------------------------------------------------------------------
+# template_gallery_pin_summary — V3 batch pin-count summary (gallery; Gallery→V3)
+# ---------------------------------------------------------------------------
+
+
 def test_gallery_pin_summary_batches_compares(tmp_path: Path) -> None:
     sym = _write_lib(tmp_path)  # Resistor_SMT_0603 (1 pin), Capacitor_SMT_0402 (1 pin)
     two_pin = tmp_path / "Two.kicad_sym"

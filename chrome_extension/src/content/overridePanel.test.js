@@ -66,6 +66,12 @@ const ONE_LIB = {
   "/home/user/templates/MyTemplates.kicad_sym": ["R0603", "C0805"],
 };
 
+// Footprint layer for ONE_LIB — keyed by the SAME .kicad_sym path (the template
+// library identifier; the host resolves the sibling .pretty). (#9)
+const ONE_LIB_FP = {
+  "/home/user/templates/MyTemplates.kicad_sym": ["R0603_HandSolder", "C0805_Std"],
+};
+
 const TWO_LIBS = {
   "/home/user/templates/MyTemplates.kicad_sym": ["R0603", "C0805"],
   "/home/user/templates/Other.kicad_sym": ["LED_RED"],
@@ -375,9 +381,36 @@ describe("buildRegisterImportEditor", () => {
     );
   });
 
-  it("does NOT render a Footprint dropdown in the Symbol-MVP", () => {
-    const panel = buildRegisterImportEditor(document, { templateLibs: ONE_LIB });
-    expect(panel.querySelector(`[${OVERRIDE_FOOTPRINT_SELECT_ATTR}]`)).toBeNull();
+  it("renders a Footprint dropdown (EasyEDA + template footprints, #9)", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+    });
+    const fp = panel.querySelector(`[${OVERRIDE_FOOTPRINT_SELECT_ATTR}]`);
+    expect(fp).toBeTruthy();
+    const values = Array.from(fp.querySelectorAll("option")).map((o) => o.value);
+    expect(values[0]).toBe(EASYEDA_OPTION_VALUE);
+    expect(values).toContain(
+      "template:/home/user/templates/MyTemplates.kicad_sym:R0603_HandSolder",
+    );
+    // Default selection is EasyEDA until the user picks a template footprint.
+    expect(fp.value).toBe(EASYEDA_OPTION_VALUE);
+  });
+
+  it("prefills the Footprint dropdown from initialFootprintSource (Modify)", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+      initialFootprintSource: {
+        source: "template",
+        libPath: "/home/user/templates/MyTemplates.kicad_sym",
+        name: "C0805_Std",
+      },
+    });
+    const fp = panel.querySelector(`[${OVERRIDE_FOOTPRINT_SELECT_ATTR}]`);
+    expect(fp.value).toBe(
+      "template:/home/user/templates/MyTemplates.kicad_sym:C0805_Std",
+    );
   });
 
   it("renders a read-only property preview from the snapshot (no manual mapper)", () => {
@@ -556,6 +589,8 @@ describe("collectRegisterEditorRule", () => {
           libPath: "/home/user/templates/MyTemplates.kicad_sym",
           name: "R0603",
         },
+        // Footprint defaults to EasyEDA when the user did not pick a template FP.
+        footprintSource: { source: "easyeda" },
         // ADR-0006 (refined): no manual mapping — all params auto-upserted.
         labelMapping: {},
         hidePinNumbers: false,
@@ -570,6 +605,28 @@ describe("collectRegisterEditorRule", () => {
     const panel = buildRegisterImportEditor(document, { templateLibs: ONE_LIB });
     const payload = collectRegisterEditorRule(panel, "Passives");
     expect(payload.rule.symbolSource).toEqual({ source: "easyeda" });
+  });
+
+  it("returns the chosen footprintSource (template) (#9)", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+    });
+    const fp = panel.querySelector(`[${OVERRIDE_FOOTPRINT_SELECT_ATTR}]`);
+    fp.value = "template:/home/user/templates/MyTemplates.kicad_sym:R0603_HandSolder";
+    const payload = collectRegisterEditorRule(panel, "Passives");
+    expect(payload.rule.footprintSource).toEqual({
+      source: "template",
+      libPath: "/home/user/templates/MyTemplates.kicad_sym",
+      name: "R0603_HandSolder",
+    });
+  });
+
+  it("defaults footprintSource to easyeda when no template FP picked", () => {
+    const panel = buildRegisterImportEditor(document, { templateLibs: ONE_LIB });
+    expect(collectRegisterEditorRule(panel, "X").rule.footprintSource).toEqual({
+      source: "easyeda",
+    });
   });
 });
 
@@ -621,6 +678,7 @@ describe("renderRegisterImportEditor", () => {
             libPath: "/home/user/templates/MyTemplates.kicad_sym",
             name: "R0603",
           },
+          footprintSource: { source: "easyeda" },
           labelMapping: {},
           hidePinNumbers: false,
           hidePinNames: false,
@@ -1063,8 +1121,9 @@ describe("buildRegisterImportEditor — footprint preview (3-column layout)", ()
     expect(decodeURIComponent(img.getAttribute("src"))).toContain("<svg id='fp'>");
   });
 
-  it("shows a placeholder when no footprint fetcher is provided", () => {
+  it("shows a placeholder when no footprint fetcher is provided", async () => {
     const panel = buildRegisterImportEditor(document, { templateLibs: ONE_LIB });
+    await flush();
     const pane = panel.querySelector(`[${OVERRIDE_REGISTER_FOOTPRINT_PREVIEW_ATTR}]`);
     expect(pane.querySelector("img")).toBeNull();
     expect(pane.textContent).toContain("nicht verfügbar");
@@ -1079,5 +1138,29 @@ describe("buildRegisterImportEditor — footprint preview (3-column layout)", ()
     const pane = panel.querySelector(`[${OVERRIDE_REGISTER_FOOTPRINT_PREVIEW_ATTR}]`);
     expect(pane.querySelector("img")).toBeNull();
     expect(pane.textContent).toContain("footprint_unavailable");
+  });
+
+  it("fetches the TEMPLATE footprint preview when a template FP is selected (#9)", async () => {
+    const seen = [];
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+      fetchFootprintPreview: () => Promise.resolve({ svg: "<svg id='ee'></svg>" }),
+      fetchTemplateFootprintPreview: ({ libPath, name }) => {
+        seen.push({ libPath, name });
+        return Promise.resolve({ svg: "<svg id='tpl'></svg>" });
+      },
+    });
+    const fp = panel.querySelector(`[${OVERRIDE_FOOTPRINT_SELECT_ATTR}]`);
+    fp.value = "template:/home/user/templates/MyTemplates.kicad_sym:R0603_HandSolder";
+    fp.dispatchEvent(new Event("change"));
+    await flush();
+    expect(seen).toEqual([
+      { libPath: "/home/user/templates/MyTemplates.kicad_sym", name: "R0603_HandSolder" },
+    ]);
+    const img = panel.querySelector(
+      `[${OVERRIDE_REGISTER_FOOTPRINT_PREVIEW_ATTR}] img`,
+    );
+    expect(decodeURIComponent(img.getAttribute("src"))).toContain("<svg id='tpl'>");
   });
 });

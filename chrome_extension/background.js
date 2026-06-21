@@ -658,6 +658,47 @@ async function validateLibraryOnServer(path) {
   return nativeHostValidateLibrary(path);
 }
 
+/**
+ * Auto-fix property whitespace when the read-only ``validateLibrary`` report
+ * flags it (property hygiene). The owner chose **automatic** cleanup over the
+ * manual popup button: any inventory validate that finds padded fields triggers
+ * ``cleanLibrary`` (idempotent + safety-guarded server-side — backup +
+ * re-validate, aborts untouched on any anomaly), then re-reads the now-clean
+ * report so the card renders the post-clean state.
+ *
+ * Best-effort: on any failure we keep the original validation so the card still
+ * renders (the manual button stays as a fallback). Idempotent — once a lib is
+ * tidy ``whitespace.clean`` is true, so this returns early and never re-writes.
+ * Only INVENTORY (non-template) libraries reach this path; template libraries
+ * are listed separately and are never cleaned (they stay read-only).
+ *
+ * @param {string} symbolPath
+ * @param {object|null} validation  result of {@link validateLibraryOnServer}
+ * @returns {Promise<object|null>} the (possibly re-validated) report
+ */
+async function autoCleanWhitespaceIfNeeded(symbolPath, validation) {
+  if (!validation || validation.whitespace?.clean !== false) {
+    return validation;
+  }
+  // Never write the symbol file while a convert is mid-flight — cleanLibrary
+  // reads-then-writes the whole file and would race the import's own write.
+  // Skip; the next inventory / post-convert pass picks it up (idempotent).
+  if (nativeHostConvertInFlight) {
+    return validation;
+  }
+  try {
+    const result = await nativeHostCleanLibrary(symbolPath);
+    console.info(
+      `[whitespace] auto-cleaned ${result?.changed ?? 0} field(s) in ${symbolPath}`,
+    );
+    const revalidated = await validateLibraryOnServer(symbolPath);
+    return revalidated || validation;
+  } catch (error) {
+    console.warn(`[whitespace] auto-clean failed for ${symbolPath}`, error);
+    return validation;
+  }
+}
+
 async function checkComponentOnServer(path, lcscId) {
   // V3: offline component-presence check via the Native Host (was the V2
   // WebSocket ``libraries_component``). Returns { symbol_path, footprint_path,
@@ -697,10 +738,11 @@ async function refreshLibraryCountsForPrefix(prefix) {
   }
 
   try {
-    const validation = await validateLibraryOnServer(symbolPath);
+    let validation = await validateLibraryOnServer(symbolPath);
     if (!validation) {
       return;
     }
+    validation = await autoCleanWhitespaceIfNeeded(symbolPath, validation);
 
     state.libraries[index] = buildLibraryStatus(library, validation);
 
@@ -725,6 +767,7 @@ async function inventoryLibraries() {
         return Promise.resolve({ library, validation: null });
       }
       return validateLibraryOnServer(symbolPath)
+        .then((validation) => autoCleanWhitespaceIfNeeded(symbolPath, validation))
         .then((validation) => ({ library, validation }))
         .catch(() => ({ library, validation: null }));
     })
@@ -867,6 +910,34 @@ async function nativeHostTemplateSymbolPreview(payload) {
         theme: payload?.theme,
         labelPins: payload?.labelPins,
         drawPinNames: payload?.drawPinNames,
+      },
+      { timeoutMs: 8000 },
+    );
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+  if (envelope && envelope.ok === true && envelope.result && typeof envelope.result === "object") {
+    return { ok: true, result: envelope.result };
+  }
+  return { ok: false, error: envelope?.error || "no result" };
+}
+
+/**
+ * V3 footprint slice (#9) — render a TEMPLATE footprint (a ``.kicad_mod`` in a
+ * template library's sibling ``.pretty``) as SVG via the Native Host's
+ * ``templateFootprintPreview`` verb. Offline (no EasyEDA fetch), so the short
+ * symbol-preview timeout fits. ``templateLibPath`` is the template ``.kicad_sym``
+ * (the host resolves the sibling ``.pretty``). Resolves ``{ ok, result | error }``
+ * where ``result`` is ``{ svg, meta }`` or a soft ``{ svg: null, error }``.
+ */
+async function nativeHostTemplateFootprintPreview(payload) {
+  let envelope;
+  try {
+    envelope = await getWarmNativePort().send(
+      "templateFootprintPreview",
+      {
+        templateLibPath: payload?.templateLibPath,
+        templateName: payload?.templateName,
       },
       { timeoutMs: 8000 },
     );
@@ -1686,6 +1757,13 @@ async function nativeHostConvert(payload) {
       },
     });
     if (envelope && envelope.ok === true && envelope.result && typeof envelope.result === "object") {
+      // Post-import hygiene: refresh the active library in the background so its
+      // whitespace report is re-evaluated and auto-cleaned (the import only
+      // strips the freshly-written symbol; pre-existing padded symbols are
+      // tidied here so KiCad never warns). Fire-and-forget — the import is done.
+      void refreshLibraryCountsForPrefix(libraryPath)
+        .then(() => broadcastState())
+        .catch((err) => console.warn("post-convert library refresh failed", err));
       return { ok: true, result: envelope.result };
     }
     return { ok: false, error: envelope?.error || "convert returned no result" };
@@ -1986,6 +2064,29 @@ const RUNTIME_MESSAGE_HANDLERS = {
     });
     if (!res.ok) {
       return { ok: false, svg: null, error: res.error || "Preview unavailable" };
+    }
+    const result = res.result || {};
+    return {
+      ok: typeof result.svg === "string",
+      svg: typeof result.svg === "string" ? result.svg : null,
+      error: result.error,
+      meta: result.meta,
+    };
+  },
+  templateFootprintPreviewSvg: async (message) => {
+    const templateName = typeof message.templateName === "string" ? message.templateName.trim() : "";
+    const templateLibPath = typeof message.templateLibPath === "string" ? message.templateLibPath.trim() : "";
+    if (!templateName || !templateLibPath) {
+      throw new Error("templateFootprintPreviewSvg requires templateName and templateLibPath.");
+    }
+    if (!isKnownTemplateLibraryPath(templateLibPath)) {
+      throw new Error("Template library path is not registered in extension settings.");
+    }
+    // V3 footprint slice (#9): render a template .kicad_mod via the Native Host.
+    // Same { ok, svg, error, meta } shape the symbol preview returns.
+    const res = await nativeHostTemplateFootprintPreview({ templateLibPath, templateName });
+    if (!res.ok) {
+      return { ok: false, svg: null, error: res.error || "Footprint preview unavailable" };
     }
     const result = res.result || {};
     return {

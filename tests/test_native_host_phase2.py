@@ -665,13 +665,86 @@ def test_rejects_unknown_source_value() -> None:
         )
 
 
-def test_footprint_template_override_rejected_until_pin_map_lands() -> None:
-    """Until #9 (Pin-Map Sidecar) + #6 (3D follows Footprint) land, choosing
-    a template footprint cannot produce a correct conversion — surface the
-    constraint as a clear RPC error instead of silently dropping back to
-    the EasyEDA footprint the user did not pick.
+def test_footprint_template_override_flows_into_request() -> None:
+    """#9: Override Panel footprint=Template-X ⇒ ConversionRequest carries the
+    footprint template fields so the engine copies the curated ``.kicad_mod``
+    into the library instead of building the EasyEDA footprint. ``libPath`` is
+    the source ``.pretty`` dir. ``force_footprint_template`` makes a missing
+    template a hard error, not a silent EasyEDA fallback.
     """
-    with pytest.raises(ValueError, match="footprint template override is not yet wired"):
+    seen, runner = _capturing_runner()
+    run_phase2_conversion(
+        {
+            "lcscId": "C22548",
+            "libraryPath": "/tmp/MyLib",
+            "overrides": {
+                "symbol": {"source": "easyeda"},
+                "footprint": {
+                    "source": "template",
+                    "libPath": "/home/user/Templates.pretty",
+                    "name": "R0603_HandSolder",
+                },
+            },
+        },
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    req = seen["req"]
+    assert req.use_footprint_template is True
+    assert req.footprint_template_name == "R0603_HandSolder"
+    assert req.footprint_template_lib_path == "/home/user/Templates.pretty"
+    assert req.force_footprint_template is True
+
+
+def test_footprint_template_and_symbol_template_combine() -> None:
+    """The keystone case: both layers from template. The request carries the
+    symbol AND footprint template fields so a full curated import lands."""
+    seen, runner = _capturing_runner()
+    run_phase2_conversion(
+        {
+            "lcscId": "C22548",
+            "libraryPath": "/tmp/MyLib",
+            "overrides": {
+                "symbol": {
+                    "source": "template",
+                    "libPath": "/home/user/Templates.kicad_sym",
+                    "name": "R0603",
+                },
+                "footprint": {
+                    "source": "template",
+                    "libPath": "/home/user/Templates.pretty",
+                    "name": "R0603",
+                },
+            },
+        },
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    req = seen["req"]
+    assert req.use_template is True
+    assert req.use_footprint_template is True
+    assert req.footprint_template_name == "R0603"
+    assert req.footprint_template_lib_path == "/home/user/Templates.pretty"
+
+
+def test_footprint_template_override_requires_lib_path() -> None:
+    with pytest.raises(ValueError, match="overrides.footprint.libPath"):
+        run_phase2_conversion(
+            {
+                "lcscId": "C22548",
+                "libraryPath": "/tmp/MyLib",
+                "overrides": {
+                    "symbol": {"source": "easyeda"},
+                    "footprint": {"source": "template", "name": "R0603"},
+                },
+            },
+            emit=lambda *_: None,
+            conversion_runner=_stub_runner(),
+        )
+
+
+def test_footprint_template_override_requires_name() -> None:
+    with pytest.raises(ValueError, match="overrides.footprint.name"):
         run_phase2_conversion(
             {
                 "lcscId": "C22548",
@@ -680,14 +753,28 @@ def test_footprint_template_override_rejected_until_pin_map_lands() -> None:
                     "symbol": {"source": "easyeda"},
                     "footprint": {
                         "source": "template",
-                        "libPath": "/home/user/T.kicad_sym",
-                        "name": "R0603",
+                        "libPath": "/home/user/Templates.pretty",
                     },
                 },
             },
             emit=lambda *_: None,
             conversion_runner=_stub_runner(),
         )
+
+
+def test_default_path_omits_footprint_template_fields() -> None:
+    """No overrides ⇒ footprint template fields stay off (EasyEDA footprint)."""
+    seen, runner = _capturing_runner()
+    run_phase2_conversion(
+        {"lcscId": "C22548", "libraryPath": "/tmp/MyLib"},
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    req = seen["req"]
+    assert req.use_footprint_template is False
+    assert req.footprint_template_name is None
+    assert req.footprint_template_lib_path is None
+    assert req.force_footprint_template is False
 
 
 def test_handle_convert_returns_validation_error_for_bad_overrides() -> None:

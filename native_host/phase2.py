@@ -31,9 +31,10 @@ Inputs (``params`` dict, validated below):
   via ``use_template`` / ``template_name`` / ``template_lib_path``;
   **Always Re-Resolve** is honored because ``TemplateMerger`` reads the
   template file fresh from disk on every conversion — no caching layer.
-  ``footprint.source == "template"`` is rejected for now: the full
-  footprint-template path needs the Pin-Map Sidecar (#9) and the 3D Layer
-  follow-the-Footprint logic (#6) to land first.
+  ``footprint.source == "template"`` copies the user-curated ``.kicad_mod``
+  from the template ``.pretty`` (``libPath``) into the target library and
+  repoints the symbol's Footprint property at it; the template's own 3D
+  model ref rides along ("3D follows the Footprint", #6).
 
 - ``labelMapping`` — optional, the Register slice's metadata projection
   (Issue #28). ``{LcscParamKey: KiCadPropertyName}``. Combined with
@@ -135,12 +136,11 @@ def _validate_layer_override(raw: Any, *, layer: str) -> dict[str, Any]:
 def _validate_overrides(raw: Any) -> dict[str, dict[str, Any]]:
     """Normalize the full Override Panel payload (or default to both EasyEDA).
 
-    Footprint-template overrides are explicitly rejected for now — the full
-    footprint-template assembly path needs the Pin-Map Sidecar (#9) plus
-    the 3D Layer follow-the-Footprint logic (#6) to land first. Until then
-    the panel UI may still send the choice, but Phase 2 surfaces a clear
-    RPC error instead of silently producing EasyEDA output the user did
-    not pick.
+    Both layers accept the same grammar: ``{"source": "easyeda"}`` or
+    ``{"source": "template", "libPath": str, "name": str}``. A template
+    footprint copies the user-curated ``.kicad_mod`` into the target library
+    (Issue #9); its own 3D model ref rides along ("3D follows the Footprint",
+    #6). For a footprint template ``libPath`` is the source ``.pretty`` dir.
     """
     if raw is None:
         return {"symbol": {"source": "easyeda"}, "footprint": {"source": "easyeda"}}
@@ -148,11 +148,6 @@ def _validate_overrides(raw: Any) -> dict[str, dict[str, Any]]:
         raise ValueError("overrides must be an object")
     symbol = _validate_layer_override(raw.get("symbol"), layer="symbol")
     footprint = _validate_layer_override(raw.get("footprint"), layer="footprint")
-    if footprint["source"] == "template":
-        raise ValueError(
-            "footprint template override is not yet wired "
-            "(needs Pin-Map Sidecar #9 + 3D follows Footprint #6)"
-        )
     return {"symbol": symbol, "footprint": footprint}
 
 
@@ -263,6 +258,13 @@ def run_phase2_conversion(
     symbol_override = overrides["symbol"]
     use_template = symbol_override["source"] == "template"
 
+    # Footprint source (#9): a template footprint copies the user-curated
+    # .kicad_mod into the target library instead of building the EasyEDA one.
+    # ``force_footprint_template`` makes a missing template a hard error rather
+    # than a silent EasyEDA fallback the user did not pick.
+    footprint_override = overrides["footprint"]
+    use_footprint_template = footprint_override["source"] == "template"
+
     # Value-Param: the one scraped param whose value fills the KiCad Value field
     # (e.g. Resistance -> 10k). Resolve + normalize it (Ω-strip for Resistance),
     # then exclude its key from symbol_params so it doesn't ALSO land as a
@@ -315,6 +317,15 @@ def run_phase2_conversion(
         template_lib_path=symbol_override.get("libPath") if use_template else None,
         force_template=use_template,
         template_pin_map=template_pin_map,
+        # Footprint = Template (#9): copy the curated .kicad_mod into the library.
+        use_footprint_template=use_footprint_template,
+        footprint_template_name=(
+            footprint_override.get("name") if use_footprint_template else None
+        ),
+        footprint_template_lib_path=(
+            footprint_override.get("libPath") if use_footprint_template else None
+        ),
+        force_footprint_template=use_footprint_template,
         symbol_params=symbol_params,
         hide_pin_numbers=hide_pin_numbers,
         hide_pin_names=hide_pin_names,
