@@ -239,40 +239,46 @@ class _PreviewPalette:
     text_num_fill: str
     text_name_fill: str
     is_dark: bool
+    #: Optional solid panel painted behind everything (dark theme only). ``None``
+    #: leaves the SVG transparent (light theme sits on the white preview pane).
+    bg_panel: str | None = None
 
 
 def _preview_palette(theme: Literal["light", "dark"]) -> _PreviewPalette:
     if theme == "dark":
-        # No SVG background — monochrome white ink. background-fill is a subtle translucent
-        # tint so an IC body is still implied without flooding pins / internal graphics.
+        # Dark theme: its OWN slate panel so the preview is self-contained and reads
+        # as "dark" regardless of the host surface. Soft light-slate ink (NOT harsh
+        # pure white), a teal accent for pin names, and a green connection hotspot.
         return _PreviewPalette(
-            body_fill_background=("#ffffff", 0.08),
-            body_fill_outline=("#ffffff", 0.92),
-            body_stroke="#ffffff",
-            pin_shaft="#ffffff",
-            pin_accent="#ffffff",
-            pin_square_fill="#ffffff",
-            pin_square_stroke="#ffffff",
-            pin_dot_fill="#ffffff",
-            pin_dot_stroke="#ffffff",
-            text_num_fill="#ffffff",
-            text_name_fill="#ffffff",
+            bg_panel="#0f172a",                       # slate-900 panel
+            body_fill_background=("#cbd5e1", 0.08),   # very subtle body tint
+            body_fill_outline=("#cbd5e1", 0.92),      # outline-fill = line color
+            body_stroke="#cbd5e1",                    # slate-300 lines
+            pin_shaft="#cbd5e1",
+            pin_accent="#cbd5e1",
+            pin_square_fill="#166534",                # green-800 hotspot
+            pin_square_stroke="#4ade80",              # green-400 ring
+            pin_dot_fill="#cbd5e1",
+            pin_dot_stroke="#0f172a",
+            text_num_fill="#e2e8f0",                  # slate-200 numbers
+            text_name_fill="#67e8f9",                 # cyan-300 names (accent)
             is_dark=True,
         )
-    # Light page: black ink; pale-yellow body background tint (KiCad default ~#FFFFC2);
-    # green only at schematic wire connection (hotspot square).
+    # Light theme (white preview pane): refined slate ink (softer than pure black),
+    # soft KiCad body-yellow fill, a green connection hotspot, teal pin names.
     return _PreviewPalette(
-        body_fill_background=("#fffcc2", 0.92),
-        body_fill_outline=("#000000", 0.92),
-        body_stroke="#000000",
-        pin_shaft="#000000",
-        pin_accent="#000000",
-        pin_square_fill="#86efac",
-        pin_square_stroke="#14532d",
-        pin_dot_fill="#000000",
-        pin_dot_stroke="#000000",
-        text_num_fill="#000000",
-        text_name_fill="#000000",
+        bg_panel=None,
+        body_fill_background=("#fef9c3", 0.92),       # yellow-100 body tint
+        body_fill_outline=("#334155", 0.92),          # outline-fill = line color
+        body_stroke="#334155",                        # slate-700 lines
+        pin_shaft="#334155",
+        pin_accent="#334155",
+        pin_square_fill="#bbf7d0",                     # green-200 hotspot
+        pin_square_stroke="#15803d",                   # green-700 ring
+        pin_dot_fill="#334155",
+        pin_dot_stroke="#ffffff",
+        text_num_fill="#334155",                       # slate-700 numbers
+        text_name_fill="#0e7490",                      # cyan-700 names (accent)
         is_dark=False,
     )
 
@@ -1008,11 +1014,22 @@ def symbol_block_to_svg(
 
     if not math.isfinite(w_mm) or not math.isfinite(h_mm) or w_mm <= 0 or h_mm <= 0:
         return None, {"error": "invalid_viewbox"}
+    # Dark theme paints its own rounded slate panel behind everything so the preview
+    # is self-contained on any host surface; light theme stays transparent (it sits
+    # on the white preview pane).
+    bg_panel_rect = ""
+    if pal.bg_panel:
+        rr = min(w_mm, h_mm) * 0.04
+        panel = html.escape(pal.bg_panel, quote=True)
+        bg_panel_rect = (
+            f'<rect x="0" y="0" width="{w_mm:.3f}" height="{h_mm:.3f}" '
+            f'rx="{rr:.3f}" ry="{rr:.3f}" fill="{panel}"/>\n  '
+        )
     svg = (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w_mm:.3f} {h_mm:.3f}" '
         f'width="{width_px}" height="{height_px}" preserveAspectRatio="xMidYMid meet" '
         'role="img" aria-label="Symbol preview">\n'
-        f"  {inner}\n"
+        f"  {bg_panel_rect}{inner}\n"
         "</svg>"
     )
     meta: dict[str, float] = {

@@ -395,7 +395,10 @@ def test_template_symbol_preview_dark_theme(tmp_path: Path) -> None:
     result = templates.template_symbol_preview(
         {"templateLibPath": str(sym), "templateName": "R", "theme": "dark"}
     )
-    assert result["svg"] and "#ffffff" in result["svg"]
+    # Dark theme paints its own slate panel + soft light-slate ink.
+    assert result["svg"]
+    assert '#0f172a' in result["svg"]
+    assert '#cbd5e1' in result["svg"]
 
 
 def test_template_symbol_preview_missing_symbol_is_soft_error(tmp_path: Path) -> None:

@@ -16,15 +16,19 @@ _MINIMAL_SYMBOL = """
 """
 
 
-def test_preview_theme_dark_no_canvas_rect_light_ink():
+def test_preview_theme_dark_panel_and_light_ink():
     svg_light, _ = symbol_block_to_svg(_MINIMAL_SYMBOL.strip())
     svg_dark, _ = symbol_block_to_svg(_MINIMAL_SYMBOL.strip(), preview_theme="dark")
     assert svg_light and svg_dark
-    assert "#252a32" not in svg_dark
-    assert "#ffffff" in svg_dark
-    assert "#86efac" not in svg_dark
-    assert "#000000" in svg_light
-    assert "#86efac" in svg_light
+    # Dark theme: its own slate panel behind everything + soft light-slate ink
+    # (not harsh pure white), and a green connection hotspot.
+    assert 'fill="#0f172a"' in svg_dark
+    assert "#cbd5e1" in svg_dark
+    assert "#ffffff" not in svg_dark
+    # Light theme: no dark panel; refined slate ink + green hotspot.
+    assert 'fill="#0f172a"' not in svg_light
+    assert "#334155" in svg_light
+    assert "#bbf7d0" in svg_light
 
 
 def test_symbol_block_to_svg_emits_svg():
@@ -239,10 +243,10 @@ def test_circle_fill_type_background():
     svg, _ = symbol_block_to_svg(sym.strip())
     assert svg is not None
     assert "fill-opacity=" in svg
-    # Pale-yellow KiCad body background (was wrongly the near-black ink).
-    assert 'fill="#fffcc2"' in svg
-    # Stroke still uses the body ink color.
-    assert 'stroke="#000000"' in svg
+    # Soft KiCad body background tint (was wrongly the near-black ink).
+    assert 'fill="#fef9c3"' in svg
+    # Stroke uses the body ink (slate) color.
+    assert 'stroke="#334155"' in svg
 
 
 def test_rectangle_fill_type_background():
@@ -257,7 +261,7 @@ def test_rectangle_fill_type_background():
     svg, _ = symbol_block_to_svg(sym.strip())
     assert svg is not None
     assert "<rect" in svg
-    assert 'fill="#fffcc2"' in svg
+    assert 'fill="#fef9c3"' in svg
     assert "fill-opacity=" in svg
     # Regression guard: a `background`-filled rect must NOT come out as a near-black box.
     assert 'fill="#000000"' not in svg
@@ -279,7 +283,7 @@ def test_polyline_closed_fill_type_background_emits_polygon():
     svg, _ = symbol_block_to_svg(sym.strip())
     assert svg is not None
     assert "<polygon" in svg
-    assert 'fill="#fffcc2"' in svg
+    assert 'fill="#fef9c3"' in svg
     assert 'fill="#000000"' not in svg
 
 
@@ -296,8 +300,8 @@ def test_rectangle_fill_type_outline_renders_interior():
     svg, _ = symbol_block_to_svg(sym.strip())
     assert svg is not None
     assert "<rect" in svg
-    # Outline fill == body ink color (black on light theme).
-    assert 'fill="#000000"' in svg
+    # Outline fill == body ink color (slate line color on light theme).
+    assert 'fill="#334155"' in svg
     assert "fill-opacity=" in svg
 
 
@@ -357,10 +361,10 @@ def test_three_fill_types_all_render_correctly_light_theme():
     """One unit with all three fill types — verify each maps to the right color."""
     svg, _ = symbol_block_to_svg(_THREE_FILL_SYMBOL.strip())
     assert svg is not None
-    # background → pale body tint
-    assert 'fill="#fffcc2"' in svg
-    # outline → line color
-    assert 'fill="#000000"' in svg
+    # background → soft body tint
+    assert 'fill="#fef9c3"' in svg
+    # outline → line color (slate)
+    assert 'fill="#334155"' in svg
     # none → no fill
     assert 'fill="none"' in svg
 
@@ -377,22 +381,22 @@ def test_ic_body_does_not_render_as_opaque_black_box():
     # The first ``<rect …>`` (the body) — its fill attribute must be the pale body tint.
     body_rect = re.search(r"<rect[^/>]*?/>", svg)
     assert body_rect is not None, svg
-    assert 'fill="#fffcc2"' in body_rect.group(0), body_rect.group(0)
+    assert 'fill="#fef9c3"' in body_rect.group(0), body_rect.group(0)
 
 
 def test_background_fill_paints_behind_pins_and_strokes():
     """Paint order: background-filled bodies precede every stroke/pin in the SVG string."""
     svg, _ = symbol_block_to_svg(_THREE_FILL_SYMBOL.strip())
     assert svg is not None
-    # Index of the background-filled (pale-yellow) rect.
-    bg_idx = svg.find('fill="#fffcc2"')
+    # Index of the background-filled (soft body tint) rect.
+    bg_idx = svg.find('fill="#fef9c3"')
     assert bg_idx != -1
     # Pin group (and pin shaft <line>) must appear AFTER the background fill.
     pin_grp_idx = svg.find('class="k2c-sym-pin"')
     assert pin_grp_idx != -1
     assert pin_grp_idx > bg_idx
     # Outline-filled and stroke-only rects also paint after the background fill.
-    outline_idx = svg.find('fill="#000000"')
+    outline_idx = svg.find('fill="#334155"')
     none_idx = svg.find('fill="none"')
     assert outline_idx > bg_idx
     assert none_idx > bg_idx
@@ -409,14 +413,14 @@ def test_background_fill_dark_theme_is_subtle_translucent_tint():
 """
     svg, _ = symbol_block_to_svg(sym.strip(), preview_theme="dark")
     assert svg is not None
-    # Background tint is white but at low opacity (legible on a dark page).
-    assert 'fill="#ffffff"' in svg
-    m = re.search(r'fill="#ffffff" fill-opacity="([\d.]+)"', svg)
+    # Background tint is the slate ink at low opacity (legible on the dark panel).
+    assert 'fill="#cbd5e1"' in svg
+    m = re.search(r'fill="#cbd5e1" fill-opacity="([\d.]+)"', svg)
     assert m, "background fill must carry an explicit low opacity on dark"
     bg_alpha = float(m.group(1))
     assert bg_alpha < 0.25, f"dark bg fill alpha={bg_alpha} would flood the body"
-    # Stroke is the white ink color.
-    assert 'stroke="#ffffff"' in svg
+    # Stroke is the slate ink color.
+    assert 'stroke="#cbd5e1"' in svg
 
 
 def test_outline_fill_dark_theme_uses_line_color():
@@ -430,8 +434,8 @@ def test_outline_fill_dark_theme_uses_line_color():
 """
     svg, _ = symbol_block_to_svg(sym.strip(), preview_theme="dark")
     assert svg is not None
-    assert 'fill="#ffffff"' in svg
-    m = re.search(r'fill="#ffffff" fill-opacity="([\d.]+)"', svg)
+    assert 'fill="#cbd5e1"' in svg
+    m = re.search(r'fill="#cbd5e1" fill-opacity="([\d.]+)"', svg)
     assert m
     assert float(m.group(1)) >= 0.5  # solid-ish, like KiCad's outline fill
 
