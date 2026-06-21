@@ -228,6 +228,7 @@ def test_kicad_arc_rendered_as_polyline():
 
 
 def test_circle_fill_type_background():
+    """KiCad ``background`` fill on a circle is the device body tint, NOT the ink color."""
     sym = """
 (symbol "C"
   (symbol "C_0_0"
@@ -238,10 +239,14 @@ def test_circle_fill_type_background():
     svg, _ = symbol_block_to_svg(sym.strip())
     assert svg is not None
     assert "fill-opacity=" in svg
-    assert "#000000" in svg
+    # Pale-yellow KiCad body background (was wrongly the near-black ink).
+    assert 'fill="#fffcc2"' in svg
+    # Stroke still uses the body ink color.
+    assert 'stroke="#000000"' in svg
 
 
 def test_rectangle_fill_type_background():
+    """KiCad ``background`` fill on a rectangle paints the pale body tint, not opaque black."""
     sym = """
 (symbol "B"
   (symbol "B_0_0"
@@ -252,11 +257,15 @@ def test_rectangle_fill_type_background():
     svg, _ = symbol_block_to_svg(sym.strip())
     assert svg is not None
     assert "<rect" in svg
-    assert 'fill="#000000"' in svg
+    assert 'fill="#fffcc2"' in svg
     assert "fill-opacity=" in svg
+    # Regression guard: a `background`-filled rect must NOT come out as a near-black box.
+    assert 'fill="#000000"' not in svg
+    assert 'fill="#0c0c0c"' not in svg
 
 
 def test_polyline_closed_fill_type_background_emits_polygon():
+    """A closed polyline with ``background`` fill becomes a polygon with the body tint."""
     sym = """
 (symbol "P"
   (symbol "P_0_0"
@@ -270,11 +279,12 @@ def test_polyline_closed_fill_type_background_emits_polygon():
     svg, _ = symbol_block_to_svg(sym.strip())
     assert svg is not None
     assert "<polygon" in svg
-    assert 'fill="#000000"' in svg
+    assert 'fill="#fffcc2"' in svg
+    assert 'fill="#000000"' not in svg
 
 
 def test_rectangle_fill_type_outline_renders_interior():
-    """KiCad ``outline`` fill is a filled interior (outline color), not hollow."""
+    """KiCad ``outline`` fill is a filled interior in the **outline / line color**, not hollow."""
     sym = """
 (symbol "O"
   (symbol "O_0_0"
@@ -286,12 +296,17 @@ def test_rectangle_fill_type_outline_renders_interior():
     svg, _ = symbol_block_to_svg(sym.strip())
     assert svg is not None
     assert "<rect" in svg
+    # Outline fill == body ink color (black on light theme).
     assert 'fill="#000000"' in svg
     assert "fill-opacity=" in svg
 
 
-def test_rectangle_without_fill_clause_defaults_to_body_fill():
-    """Some libraries omit ``(fill …)``; KiCad still shows a filled body."""
+def test_rectangle_without_fill_clause_treated_as_none():
+    """Modern ``.kicad_sym`` always emits a fill type; a missing clause is treated as ``none``.
+
+    The old renderer force-filled bare rectangles as an implicit dark body — that produced
+    a solid near-black box and hid every other graphic in the symbol.
+    """
     sym = """
 (symbol "N"
   (symbol "N_0_0"
@@ -302,7 +317,123 @@ def test_rectangle_without_fill_clause_defaults_to_body_fill():
     svg, _ = symbol_block_to_svg(sym.strip())
     assert svg is not None
     assert "<rect" in svg
+    assert 'fill="none"' in svg
+    # No implicit dark body fill anymore.
+    assert 'fill="#000000"' not in svg
+    assert 'fill="#0c0c0c"' not in svg
+
+
+def test_rectangle_fill_type_none_emits_fill_none():
+    """``(fill (type none))`` → SVG ``fill="none"`` (the three-case spec)."""
+    sym = """
+(symbol "Z"
+  (symbol "Z_0_0"
+    (rectangle (start -1 -1) (end 1 1) (stroke (width 0.1)) (fill (type none)))
+  )
+)
+"""
+    svg, _ = symbol_block_to_svg(sym.strip())
+    assert svg is not None
+    assert "<rect" in svg
+    assert 'fill="none"' in svg
+
+
+# Three-fill-type IC body fixture (per issue #41 acceptance criteria).
+_THREE_FILL_SYMBOL = """
+(symbol "U_TEST"
+  (symbol "U_TEST_0_1"
+    (rectangle (start -5 5) (end 5 -5) (stroke (width 0.2) (type default)) (fill (type background)))
+    (rectangle (start -2 2) (end 2 -2) (stroke (width 0.1) (type default)) (fill (type outline)))
+    (rectangle (start -1 1) (end 1 -1) (stroke (width 0.1) (type default)) (fill (type none)))
+    (pin passive line (at -7.62 0 0) (length 2.54)
+      (name "IN" (effects (font (size 1.27 1.27))))
+      (number "1" (effects (font (size 1.27 1.27)))))
+  )
+)
+"""
+
+
+def test_three_fill_types_all_render_correctly_light_theme():
+    """One unit with all three fill types — verify each maps to the right color."""
+    svg, _ = symbol_block_to_svg(_THREE_FILL_SYMBOL.strip())
+    assert svg is not None
+    # background → pale body tint
+    assert 'fill="#fffcc2"' in svg
+    # outline → line color
     assert 'fill="#000000"' in svg
+    # none → no fill
+    assert 'fill="none"' in svg
+
+
+def test_ic_body_does_not_render_as_opaque_black_box():
+    """
+    Regression test for issue #41 — a `(fill (type background))` IC body used to render
+    as a near-opaque black block that obscured every internal graphic and pin label.
+    """
+    svg, _ = symbol_block_to_svg(_THREE_FILL_SYMBOL.strip())
+    assert svg is not None
+    # The body rectangle must not be the legacy near-black box.
+    assert 'fill="#0c0c0c"' not in svg
+    # The first ``<rect …>`` (the body) — its fill attribute must be the pale body tint.
+    body_rect = re.search(r"<rect[^/>]*?/>", svg)
+    assert body_rect is not None, svg
+    assert 'fill="#fffcc2"' in body_rect.group(0), body_rect.group(0)
+
+
+def test_background_fill_paints_behind_pins_and_strokes():
+    """Paint order: background-filled bodies precede every stroke/pin in the SVG string."""
+    svg, _ = symbol_block_to_svg(_THREE_FILL_SYMBOL.strip())
+    assert svg is not None
+    # Index of the background-filled (pale-yellow) rect.
+    bg_idx = svg.find('fill="#fffcc2"')
+    assert bg_idx != -1
+    # Pin group (and pin shaft <line>) must appear AFTER the background fill.
+    pin_grp_idx = svg.find('class="k2c-sym-pin"')
+    assert pin_grp_idx != -1
+    assert pin_grp_idx > bg_idx
+    # Outline-filled and stroke-only rects also paint after the background fill.
+    outline_idx = svg.find('fill="#000000"')
+    none_idx = svg.find('fill="none"')
+    assert outline_idx > bg_idx
+    assert none_idx > bg_idx
+
+
+def test_background_fill_dark_theme_is_subtle_translucent_tint():
+    """Dark theme must keep the body legible — background fill is a low-opacity white tint."""
+    sym = """
+(symbol "B"
+  (symbol "B_0_0"
+    (rectangle (start -2.54 -1.27) (end 2.54 1.27) (stroke (width 0.254)) (fill (type background)))
+  )
+)
+"""
+    svg, _ = symbol_block_to_svg(sym.strip(), preview_theme="dark")
+    assert svg is not None
+    # Background tint is white but at low opacity (legible on a dark page).
+    assert 'fill="#ffffff"' in svg
+    m = re.search(r'fill="#ffffff" fill-opacity="([\d.]+)"', svg)
+    assert m, "background fill must carry an explicit low opacity on dark"
+    bg_alpha = float(m.group(1))
+    assert bg_alpha < 0.25, f"dark bg fill alpha={bg_alpha} would flood the body"
+    # Stroke is the white ink color.
+    assert 'stroke="#ffffff"' in svg
+
+
+def test_outline_fill_dark_theme_uses_line_color():
+    """``outline`` fill on dark → the white line color (legible on dark page)."""
+    sym = """
+(symbol "O"
+  (symbol "O_0_0"
+    (rectangle (start -1 -1) (end 1 1) (stroke (width 0.1)) (fill (type outline)))
+  )
+)
+"""
+    svg, _ = symbol_block_to_svg(sym.strip(), preview_theme="dark")
+    assert svg is not None
+    assert 'fill="#ffffff"' in svg
+    m = re.search(r'fill="#ffffff" fill-opacity="([\d.]+)"', svg)
+    assert m
+    assert float(m.group(1)) >= 0.5  # solid-ish, like KiCad's outline fill
 
 
 def test_default_svg_pixel_size_increased():
