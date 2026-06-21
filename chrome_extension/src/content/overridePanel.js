@@ -593,10 +593,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   const symHeadRow = doc.createElement("div");
   symHeadRow.style.cssText =
     `display:flex;align-items:center;justify-content:space-between;gap:${DIALOG_SPACING.sm}`;
-  const symHeading = doc.createElement("div");
-  symHeading.textContent = "Symbol-Vorlage";
-  symHeading.style.cssText = `color:${T.textMuted};font-weight:600;font-size:${DIALOG_TYPE.micro}`;
-  symHeadRow.appendChild(symHeading);
+  symHeadRow.appendChild(mkColLabel("Symbol-Vorlage"));
   const showAllLabel = doc.createElement("label");
   showAllLabel.style.cssText =
     `display:flex;align-items:center;gap:${DIALOG_SPACING.xs};font-size:${DIALOG_TYPE.micro};color:${T.textFaint};cursor:pointer`;
@@ -636,10 +633,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   // written symbol — typical for 2-pin parts (R/C/L/D) where they clutter the
   // schematic. The caller auto-prefills "hide numbers" for ≤2-pin parts via
   // opts.initialHidePinNumbers; the engine applies it on both symbol paths.
-  const pinHeading = doc.createElement("div");
-  pinHeading.textContent = "Pin-Beschriftung";
-  pinHeading.style.cssText = `color:${T.textMuted};font-weight:600;font-size:${DIALOG_TYPE.micro}`;
-  leftPane.appendChild(pinHeading);
+  leftPane.appendChild(mkColLabel("Pin-Beschriftung"));
 
   const pinRow = doc.createElement("div");
   pinRow.style.cssText = `display:flex;gap:${DIALOG_SPACING.lg};flex-wrap:wrap`;
@@ -714,12 +708,11 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   valueRow.appendChild(valueSelectWrap);
   leftPane.appendChild(valueRow);
 
-  const propHeading = doc.createElement("div");
-  propHeading.textContent = propEntries.length
-    ? `Eigenschaften, die ins Symbol übernommen werden (${propEntries.length})`
-    : "Keine Metadaten auf der Produktseite gefunden";
-  propHeading.style.cssText = `color:${T.textMuted};font-weight:600;font-size:${DIALOG_TYPE.micro}`;
-  leftPane.appendChild(propHeading);
+  leftPane.appendChild(mkColLabel(
+    propEntries.length
+      ? `Eigenschaften, die ins Symbol übernommen werden (${propEntries.length})`
+      : "Keine Metadaten auf der Produktseite gefunden",
+  ));
 
   if (propEntries.length) {
     const propList = doc.createElement("div");
@@ -815,10 +808,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
     `border-radius:${T.radiusSm}`,
     `background:${T.surface2}`,
   ].join(";");
-  const pinMapHeading = doc.createElement("div");
-  pinMapHeading.textContent = "Pin-Zuordnung (Footprint-Pad → Symbol-Pin)";
-  pinMapHeading.style.cssText = `color:${T.textMuted};font-weight:600;font-size:${DIALOG_TYPE.micro}`;
-  pinMapHost.appendChild(pinMapHeading);
+  pinMapHost.appendChild(mkColLabel("Pin-Zuordnung (Footprint-Pad → Symbol-Pin)"));
   const pinMapBody = doc.createElement("div");
   pinMapBody.style.cssText = "max-height:240px;overflow:auto";
   pinMapHost.appendChild(pinMapBody);
@@ -953,52 +943,44 @@ export function buildRegisterImportEditor(doc, opts = {}) {
     mapStatus.style.color = fg;
   }
 
+  function showPinMapPlaceholder(text) {
+    const placeholder = doc.createElement("div");
+    placeholder.textContent = text;
+    placeholder.style.cssText =
+      `color:${T.placeholder};font-size:${DIALOG_TYPE.micro};font-style:italic;padding:${DIALOG_SPACING.xs}`;
+    pinMapBody.appendChild(placeholder);
+    setMapStatus("Standard (1:1)", null);
+  }
+
   function rebuildPinMap() {
     // Snapshot existing user choices BEFORE clearing so a preview swap doesn't
     // silently wipe a hand-made mapping for pads that still exist post-swap.
     const prevChoices = readEditorPadToSymbolMap(panel);
     pinMapBody.innerHTML = "";
 
-    const symbolLayer = parseLayer(symSelect.value);
-    const usingTemplateSymbol = symbolLayer.source === "template";
+    const usingTemplateSymbol = parseLayer(symSelect.value).source === "template";
     const usingTemplateFootprint = parseLayer(fpSelect.value).source === "template";
 
     if (!usingTemplateSymbol) {
-      const placeholder = doc.createElement("div");
-      placeholder.textContent = "Pin-Zuordnung nur für Template-Symbole";
-      placeholder.style.cssText =
-        `color:${T.placeholder};font-size:${DIALOG_TYPE.micro};font-style:italic;padding:${DIALOG_SPACING.xs}`;
-      pinMapBody.appendChild(placeholder);
-      setMapStatus("Standard (1:1)", null);
+      showPinMapPlaceholder("Pin-Zuordnung nur für Template-Symbole");
       return;
     }
-
     if (usingTemplateFootprint) {
-      const placeholder = doc.createElement("div");
-      placeholder.textContent =
-        "Pin-Zuordnung für Template-Footprints noch nicht verfügbar";
-      placeholder.style.cssText =
-        `color:${T.placeholder};font-size:${DIALOG_TYPE.micro};font-style:italic;padding:${DIALOG_SPACING.xs}`;
-      pinMapBody.appendChild(placeholder);
-      setMapStatus("Standard (1:1)", null);
+      showPinMapPlaceholder("Pin-Zuordnung für Template-Footprints noch nicht verfügbar");
       return;
     }
-
     if (!editorFootprintPads.length || !editorSymbolPins.length) {
-      const placeholder = doc.createElement("div");
-      placeholder.textContent = editorFootprintPads.length
-        ? "Pin-Daten der Vorlage werden geladen …"
-        : "Pad-Daten des Footprints werden geladen …";
-      placeholder.style.cssText =
-        `color:${T.placeholder};font-size:${DIALOG_TYPE.micro};font-style:italic;padding:${DIALOG_SPACING.xs}`;
-      pinMapBody.appendChild(placeholder);
-      setMapStatus("Standard (1:1)", null);
+      showPinMapPlaceholder(
+        editorFootprintPads.length
+          ? "Pin-Daten der Vorlage werden geladen …"
+          : "Pad-Daten des Footprints werden geladen …",
+      );
       return;
     }
 
     const table = doc.createElement("table");
     table.setAttribute(OVERRIDE_REGISTER_PINMAP_TABLE_ATTR, "true");
-    table.style.cssText = "width:100%;border-collapse:collapse;font-size:" + DIALOG_TYPE.small;
+    table.style.cssText = `width:100%;border-collapse:collapse;font-size:${DIALOG_TYPE.small}`;
 
     const thead = doc.createElement("thead");
     const headRow = doc.createElement("tr");
