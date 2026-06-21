@@ -838,16 +838,19 @@ export function buildRegisterImportEditor(doc, opts = {}) {
       typeof k === "string" && k.trim() && typeof v === "string" && v.trim(),
   );
 
-  // Value-Param dropdown (over the preview).
+  // Value-Param dropdown (over the preview). The select sits inside a flex
+  // wrapper because ``applyDialogStyleSelect`` rewrites the select's own
+  // ``cssText`` on focus/hover, which would otherwise wipe out the flex
+  // sizing the row layout depends on.
   const valueRow = doc.createElement("label");
   valueRow.style.cssText =
     `display:flex;align-items:center;gap:${DIALOG_SPACING.sm};margin-top:${DIALOG_SPACING.xs};color:${T.textMuted}`;
   valueRow.appendChild(doc.createTextNode("Value-Feld"));
+  const valueSelectWrap = doc.createElement("div");
+  valueSelectWrap.style.cssText = "flex:1;min-width:0";
   const valueSelect = doc.createElement("select");
   valueSelect.setAttribute(OVERRIDE_REGISTER_VALUE_PARAM_ATTR, "true");
   applyDialogStyleSelect(valueSelect, { theme: opts.theme });
-  valueSelect.style.flex = "1";
-  valueSelect.style.minWidth = "0";
   const noneOpt = doc.createElement("option");
   noneOpt.value = "";
   noneOpt.textContent = "— Kein Value-Param (EasyEDA-Standard) —";
@@ -867,7 +870,8 @@ export function buildRegisterImportEditor(doc, opts = {}) {
     (o) => o.value === presetValueParam,
   );
   valueSelect.value = hasValueOpt ? presetValueParam : "";
-  valueRow.appendChild(valueSelect);
+  valueSelectWrap.appendChild(valueSelect);
+  valueRow.appendChild(valueSelectWrap);
   rightCol.appendChild(valueRow);
 
   const propHeading = doc.createElement("div");

@@ -629,7 +629,7 @@ export function buildModalHeader(doc, opts = {}) {
     closeBtn.type = "button";
     closeBtn.setAttribute("data-k2c-modal-close", "true");
     closeBtn.setAttribute("aria-label", "Schließen");
-    closeBtn.textContent = "✕"; // ✕
+    closeBtn.textContent = "✕";
     closeBtn.style.cssText = cssJoin([
       "appearance:none",
       "background:transparent",

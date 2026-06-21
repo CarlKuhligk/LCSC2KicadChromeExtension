@@ -1226,4 +1226,27 @@ describe("Override Panel — theme-aware token chrome (#43)", () => {
     expect(sym.style.background).not.toBe(jsdomColor("#ffffff"));
     expect(fp.style.background).not.toBe(jsdomColor("#ffffff"));
   });
+
+  it("Value-Param select keeps its flex sizing across focus (regression #43)", () => {
+    // ``applyDialogStyleSelect`` rewrites the select's ``cssText`` on
+    // focus/blur/hover. The Value-Feld row places the select inside a
+    // flex wrapper so the row's ``flex:1`` + ``min-width:0`` survive the
+    // rewrite — otherwise focusing the select would collapse the layout.
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+      pageParams: { "MPN": "ABC123" },
+    });
+    const valueSelect = panel.querySelector(
+      `[${OVERRIDE_REGISTER_VALUE_PARAM_ATTR}]`,
+    );
+    const wrap = valueSelect.parentElement;
+    // JSDOM normalizes ``flex:1`` to ``1 1 0%``; ``flexGrow`` is the
+    // canonical read-out and survives the normalization.
+    expect(wrap.style.flexGrow).toBe("1");
+    expect(wrap.style.minWidth).toBe("0");
+    valueSelect.dispatchEvent(new Event("focus"));
+    expect(wrap.style.flexGrow).toBe("1");
+    expect(wrap.style.minWidth).toBe("0");
+  });
 });
