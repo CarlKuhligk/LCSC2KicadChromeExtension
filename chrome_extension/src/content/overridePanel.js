@@ -1,6 +1,13 @@
 "use strict";
 
-import { mountCsModal } from "./dialog.js";
+import {
+  mountCsModal,
+  getDialogTokens,
+  applyDialogStyleSelect,
+  dialogButtonStyle,
+  DIALOG_SPACING,
+  DIALOG_TYPE,
+} from "./dialog.js";
 import { templatesMatchingCategory } from "../../shared/confidenceState.mjs";
 import { detectValueParam } from "../../shared/valueParam.mjs";
 
@@ -120,26 +127,27 @@ function populateSelect(select, doc, templateLibs) {
  * @param {{ onEasyedaOnly?: () => void, onRegister?: () => void }} [opts]
  */
 export function buildRegisterPrompt(doc, opts = {}) {
+  const T = getDialogTokens(opts.theme);
   const panel = doc.createElement("div");
   panel.setAttribute(OVERRIDE_PANEL_ATTR, "true");
   panel.setAttribute(OVERRIDE_PANEL_MODE_ATTR, "white");
   panel.style.cssText = [
     "display:flex",
     "flex-direction:column",
-    "gap:8px",
-    "padding:10px 12px",
-    "border:1px solid #cbd5e1",
-    "border-radius:6px",
-    "background:#f8fafc",
-    "margin-top:6px",
-    "font-size:12px",
-    "color:#1e293b",
+    `gap:${DIALOG_SPACING.sm}`,
+    `padding:${DIALOG_SPACING.md} ${DIALOG_SPACING.md}`,
+    `border:1px solid ${T.borderStrong}`,
+    `border-radius:${T.radiusSm}`,
+    `background:${T.surface2}`,
+    `margin-top:${DIALOG_SPACING.xs}`,
+    `font-size:${DIALOG_TYPE.small}`,
+    `color:${T.text}`,
   ].join(";");
 
   const heading = doc.createElement("div");
   heading.textContent = "Neues Bauteil";
   heading.style.cssText =
-    "font-weight:600;font-size:11px;letter-spacing:0.04em;text-transform:uppercase;color:#475569";
+    `font-weight:600;font-size:${DIALOG_TYPE.micro};letter-spacing:0.04em;text-transform:uppercase;color:${T.textMuted}`;
   panel.appendChild(heading);
 
   const body = doc.createElement("div");
@@ -149,18 +157,20 @@ export function buildRegisterPrompt(doc, opts = {}) {
   panel.appendChild(body);
 
   const actions = doc.createElement("div");
-  actions.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:4px";
+  actions.style.cssText = `display:flex;gap:${DIALOG_SPACING.sm};justify-content:flex-end;margin-top:${DIALOG_SPACING.xs}`;
 
   const easyedaBtn = doc.createElement("button");
   easyedaBtn.type = "button";
   easyedaBtn.textContent = "nur EasyEDA";
   easyedaBtn.setAttribute(OVERRIDE_EASYEDA_ONLY_ATTR, "true");
+  easyedaBtn.style.cssText = dialogButtonStyle("secondary", "dense", { theme: opts.theme });
   actions.appendChild(easyedaBtn);
 
   const registerBtn = doc.createElement("button");
   registerBtn.type = "button";
   registerBtn.textContent = "registrieren";
   registerBtn.setAttribute(OVERRIDE_REGISTER_ATTR, "true");
+  registerBtn.style.cssText = dialogButtonStyle("primary", "dense", { theme: opts.theme });
   actions.appendChild(registerBtn);
 
   panel.appendChild(actions);
@@ -204,20 +214,21 @@ function describeSymbolSource(symbolSource) {
  * }} [opts]
  */
 export function buildOneClickPanel(doc, opts = {}) {
+  const T = getDialogTokens(opts.theme);
   const panel = doc.createElement("div");
   panel.setAttribute(OVERRIDE_PANEL_ATTR, "true");
   panel.setAttribute(OVERRIDE_PANEL_MODE_ATTR, "green");
   panel.style.cssText = [
     "display:flex",
     "flex-direction:column",
-    "gap:8px",
-    "padding:10px 12px",
-    "border:1px solid #bbf7d0",
-    "border-radius:6px",
-    "background:#f0fdf4",
-    "margin-top:6px",
-    "font-size:12px",
-    "color:#14532d",
+    `gap:${DIALOG_SPACING.sm}`,
+    `padding:${DIALOG_SPACING.md} ${DIALOG_SPACING.md}`,
+    `border:1px solid ${T.successBorder}`,
+    `border-radius:${T.radiusSm}`,
+    `background:${T.successSurface}`,
+    `margin-top:${DIALOG_SPACING.xs}`,
+    `font-size:${DIALOG_TYPE.small}`,
+    `color:${T.successText}`,
   ].join(";");
 
   const heading = doc.createElement("div");
@@ -226,7 +237,7 @@ export function buildOneClickPanel(doc, opts = {}) {
     ? `Registriert: "${ruleKey}" — Ein-Klick`
     : "Registriert — Ein-Klick";
   heading.style.cssText =
-    "font-weight:600;font-size:11px;letter-spacing:0.04em;text-transform:uppercase;color:#166534";
+    `font-weight:600;font-size:${DIALOG_TYPE.micro};letter-spacing:0.04em;text-transform:uppercase;color:${T.success}`;
   panel.appendChild(heading);
 
   // Preview — Symbol Source + Label-Mapping summary so the user can see
@@ -234,16 +245,19 @@ export function buildOneClickPanel(doc, opts = {}) {
   // resolved result is shown before the click").
   const preview = doc.createElement("div");
   preview.setAttribute(OVERRIDE_ONECLICK_PREVIEW_ATTR, "true");
-  preview.style.cssText = "display:flex;flex-direction:column;gap:4px";
+  preview.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.xs}`;
+
+  const lblStyle = `color:${T.success};font-weight:500;min-width:64px`;
+  const valStyle = `color:${T.successText}`;
 
   const symbolLine = doc.createElement("div");
-  symbolLine.style.cssText = "display:flex;gap:6px;align-items:baseline";
+  symbolLine.style.cssText = `display:flex;gap:${DIALOG_SPACING.xs};align-items:baseline`;
   const symLabel = doc.createElement("span");
   symLabel.textContent = "Symbol:";
-  symLabel.style.cssText = "color:#166534;font-weight:500;min-width:64px";
+  symLabel.style.cssText = lblStyle;
   const symValue = doc.createElement("span");
   symValue.textContent = describeSymbolSource(opts.symbolSource);
-  symValue.style.cssText = "color:#14532d";
+  symValue.style.cssText = valStyle;
   symbolLine.appendChild(symLabel);
   symbolLine.appendChild(symValue);
   preview.appendChild(symbolLine);
@@ -254,15 +268,15 @@ export function buildOneClickPanel(doc, opts = {}) {
   const mappingEntries = Object.entries(mapping);
   if (mappingEntries.length) {
     const mappingLine = doc.createElement("div");
-    mappingLine.style.cssText = "display:flex;gap:6px;align-items:baseline";
+    mappingLine.style.cssText = `display:flex;gap:${DIALOG_SPACING.xs};align-items:baseline`;
     const mapLabel = doc.createElement("span");
     mapLabel.textContent = "Mapping:";
-    mapLabel.style.cssText = "color:#166534;font-weight:500;min-width:64px";
+    mapLabel.style.cssText = lblStyle;
     const mapValue = doc.createElement("span");
     mapValue.textContent = mappingEntries
       .map(([k, v]) => `${k} → ${v}`)
       .join(", ");
-    mapValue.style.cssText = "color:#14532d;word-break:break-word";
+    mapValue.style.cssText = `${valStyle};word-break:break-word`;
     mappingLine.appendChild(mapLabel);
     mappingLine.appendChild(mapValue);
     preview.appendChild(mappingLine);
@@ -274,13 +288,13 @@ export function buildOneClickPanel(doc, opts = {}) {
   // terse for the common default case.
   const addPreviewLine = (labelText, valueText) => {
     const line = doc.createElement("div");
-    line.style.cssText = "display:flex;gap:6px;align-items:baseline";
+    line.style.cssText = `display:flex;gap:${DIALOG_SPACING.xs};align-items:baseline`;
     const lbl = doc.createElement("span");
     lbl.textContent = labelText;
-    lbl.style.cssText = "color:#166534;font-weight:500;min-width:64px";
+    lbl.style.cssText = lblStyle;
     const val = doc.createElement("span");
     val.textContent = valueText;
-    val.style.cssText = "color:#14532d;word-break:break-word";
+    val.style.cssText = `${valStyle};word-break:break-word`;
     line.appendChild(lbl);
     line.appendChild(val);
     preview.appendChild(line);
@@ -299,7 +313,7 @@ export function buildOneClickPanel(doc, opts = {}) {
   panel.appendChild(preview);
 
   const actions = doc.createElement("div");
-  actions.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:4px";
+  actions.style.cssText = `display:flex;gap:${DIALOG_SPACING.sm};justify-content:flex-end;margin-top:${DIALOG_SPACING.xs}`;
 
   // [Modifizieren] sits to the LEFT of [Import] so the visual cursor
   // ends on the primary action (one-click ergonomics).
@@ -307,12 +321,14 @@ export function buildOneClickPanel(doc, opts = {}) {
   modifyBtn.type = "button";
   modifyBtn.textContent = "Modifizieren";
   modifyBtn.setAttribute(OVERRIDE_MODIFY_ATTR, "true");
+  modifyBtn.style.cssText = dialogButtonStyle("secondary", "dense", { theme: opts.theme });
   actions.appendChild(modifyBtn);
 
   const importBtn = doc.createElement("button");
   importBtn.type = "button";
   importBtn.textContent = "Import";
   importBtn.setAttribute(OVERRIDE_IMPORT_ATTR, "true");
+  importBtn.style.cssText = dialogButtonStyle("primary", "dense", { theme: opts.theme });
   actions.appendChild(importBtn);
 
   panel.appendChild(actions);
@@ -348,26 +364,27 @@ export function buildOneClickPanel(doc, opts = {}) {
  * }} [opts]
  */
 export function buildYellowPanel(doc, opts = {}) {
+  const T = getDialogTokens(opts.theme);
   const panel = doc.createElement("div");
   panel.setAttribute(OVERRIDE_PANEL_ATTR, "true");
   panel.setAttribute(OVERRIDE_PANEL_MODE_ATTR, "yellow");
   panel.style.cssText = [
     "display:flex",
     "flex-direction:column",
-    "gap:8px",
-    "padding:10px 12px",
-    "border:1px solid #fde68a",
-    "border-radius:6px",
-    "background:#fefce8",
-    "margin-top:6px",
-    "font-size:12px",
-    "color:#713f12",
+    `gap:${DIALOG_SPACING.sm}`,
+    `padding:${DIALOG_SPACING.md} ${DIALOG_SPACING.md}`,
+    `border:1px solid ${T.warningBorder}`,
+    `border-radius:${T.radiusSm}`,
+    `background:${T.warningSurface}`,
+    `margin-top:${DIALOG_SPACING.xs}`,
+    `font-size:${DIALOG_TYPE.small}`,
+    `color:${T.warningText}`,
   ].join(";");
 
   const heading = doc.createElement("div");
   heading.textContent = "Niedrige Confidence — prüfen oder EasyEDA behalten";
   heading.style.cssText =
-    "font-weight:600;font-size:11px;letter-spacing:0.04em;text-transform:uppercase;color:#92400e";
+    `font-weight:600;font-size:${DIALOG_TYPE.micro};letter-spacing:0.04em;text-transform:uppercase;color:${T.warning}`;
   panel.appendChild(heading);
 
   // Unobtrusive hint about the heuristic candidate the matcher picked.
@@ -394,24 +411,26 @@ export function buildYellowPanel(doc, opts = {}) {
   if (hintLines.length) {
     const hint = doc.createElement("div");
     hint.setAttribute(OVERRIDE_YELLOW_HINT_ATTR, "true");
-    hint.style.cssText = "line-height:1.4;color:#78350f";
+    hint.style.cssText = `line-height:1.4;color:${T.warningHint}`;
     hint.textContent = hintLines.join(" · ");
     panel.appendChild(hint);
   }
 
   const actions = doc.createElement("div");
-  actions.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:4px";
+  actions.style.cssText = `display:flex;gap:${DIALOG_SPACING.sm};justify-content:flex-end;margin-top:${DIALOG_SPACING.xs}`;
 
   const openEditorBtn = doc.createElement("button");
   openEditorBtn.type = "button";
   openEditorBtn.textContent = "Editor öffnen";
   openEditorBtn.setAttribute(OVERRIDE_YELLOW_OPEN_EDITOR_ATTR, "true");
+  openEditorBtn.style.cssText = dialogButtonStyle("secondary", "dense", { theme: opts.theme });
   actions.appendChild(openEditorBtn);
 
   const keepEasyedaBtn = doc.createElement("button");
   keepEasyedaBtn.type = "button";
   keepEasyedaBtn.textContent = "EasyEDA übernehmen";
   keepEasyedaBtn.setAttribute(OVERRIDE_YELLOW_KEEP_EASYEDA_ATTR, "true");
+  keepEasyedaBtn.style.cssText = dialogButtonStyle("primary", "dense", { theme: opts.theme });
   actions.appendChild(keepEasyedaBtn);
 
   panel.appendChild(actions);
@@ -468,6 +487,7 @@ export function buildYellowPanel(doc, opts = {}) {
  * }} [opts]
  */
 export function buildRegisterImportEditor(doc, opts = {}) {
+  const T = getDialogTokens(opts.theme);
   const panel = doc.createElement("div");
   panel.setAttribute(OVERRIDE_PANEL_ATTR, "true");
   panel.setAttribute(OVERRIDE_PANEL_MODE_ATTR, "registerEditor");
@@ -475,14 +495,14 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   panel.style.cssText = [
     "display:flex",
     "flex-direction:column",
-    "gap:8px",
-    "padding:10px 12px",
-    "border:1px solid #cbd5e1",
-    "border-radius:6px",
-    "background:#f8fafc",
-    "margin-top:6px",
-    "font-size:12px",
-    "color:#1e293b",
+    `gap:${DIALOG_SPACING.sm}`,
+    `padding:${DIALOG_SPACING.md} ${DIALOG_SPACING.md}`,
+    `border:1px solid ${T.borderStrong}`,
+    `border-radius:${T.radiusSm}`,
+    `background:${T.surface}`,
+    `margin-top:${DIALOG_SPACING.xs}`,
+    `font-size:${DIALOG_TYPE.small}`,
+    `color:${T.text}`,
   ].join(";");
 
   // 3-column layout: left = template navigation, center = symbol (top) +
@@ -490,39 +510,39 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   // property list. Columns wrap on narrow widths so the on-page editor stays
   // usable in tight layouts. Heading/category span the top; actions the bottom.
   const topBar = doc.createElement("div");
-  topBar.style.cssText = "display:flex;flex-direction:column;gap:4px";
+  topBar.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.xs}`;
   panel.appendChild(topBar);
 
   const body = doc.createElement("div");
-  body.style.cssText = "display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start";
+  body.style.cssText = `display:flex;flex-wrap:wrap;gap:${DIALOG_SPACING.md};align-items:flex-start`;
   panel.appendChild(body);
 
   const navCol = doc.createElement("div");
   navCol.style.cssText =
-    "display:flex;flex-direction:column;gap:4px;flex:1 1 180px;min-width:160px;max-width:280px";
+    `display:flex;flex-direction:column;gap:${DIALOG_SPACING.xs};flex:1 1 180px;min-width:160px;max-width:280px`;
   body.appendChild(navCol);
 
   const centerCol = doc.createElement("div");
   centerCol.style.cssText =
-    "display:flex;flex-direction:column;gap:6px;flex:1 1 280px;min-width:220px";
+    `display:flex;flex-direction:column;gap:${DIALOG_SPACING.xs};flex:1 1 280px;min-width:220px`;
   body.appendChild(centerCol);
 
   const rightCol = doc.createElement("div");
   rightCol.style.cssText =
-    "display:flex;flex-direction:column;gap:4px;flex:1 1 220px;min-width:200px";
+    `display:flex;flex-direction:column;gap:${DIALOG_SPACING.xs};flex:1 1 220px;min-width:200px`;
   body.appendChild(rightCol);
 
   const mkColLabel = (text) => {
     const el = doc.createElement("div");
     el.textContent = text;
-    el.style.cssText = "color:#475569;font-weight:600;font-size:11px";
+    el.style.cssText = `color:${T.textMuted};font-weight:600;font-size:${DIALOG_TYPE.micro}`;
     return el;
   };
 
   const heading = doc.createElement("div");
   heading.textContent = "Registrieren";
   heading.style.cssText =
-    "font-weight:600;font-size:11px;letter-spacing:0.04em;text-transform:uppercase;color:#475569";
+    `font-weight:600;font-size:${DIALOG_TYPE.micro};letter-spacing:0.04em;text-transform:uppercase;color:${T.textMuted}`;
   topBar.appendChild(heading);
 
   const categoryLine = doc.createElement("div");
@@ -530,7 +550,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   categoryLine.textContent = categoryPath
     ? `Kategorie: ${categoryPath}`
     : "Kategorie: (unbekannt)";
-  categoryLine.style.cssText = "color:#64748b";
+  categoryLine.style.cssText = `color:${T.textFaint}`;
   topBar.appendChild(categoryLine);
 
   // Symbol-Source: a hidden <select> stays the source of truth (parseLayer /
@@ -545,14 +565,14 @@ export function buildRegisterImportEditor(doc, opts = {}) {
 
   const symHeadRow = doc.createElement("div");
   symHeadRow.style.cssText =
-    "display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:4px";
+    `display:flex;align-items:center;justify-content:space-between;gap:${DIALOG_SPACING.sm};margin-top:${DIALOG_SPACING.xs}`;
   const symHeading = doc.createElement("div");
   symHeading.textContent = "Symbol-Vorlage";
-  symHeading.style.cssText = "color:#475569";
+  symHeading.style.cssText = `color:${T.textMuted}`;
   symHeadRow.appendChild(symHeading);
   const showAllLabel = doc.createElement("label");
   showAllLabel.style.cssText =
-    "display:flex;align-items:center;gap:4px;font-size:11px;color:#64748b;cursor:pointer";
+    `display:flex;align-items:center;gap:${DIALOG_SPACING.xs};font-size:${DIALOG_TYPE.micro};color:${T.textFaint};cursor:pointer`;
   const showAllCb = doc.createElement("input");
   showAllCb.type = "checkbox";
   showAllCb.setAttribute(OVERRIDE_REGISTER_SHOWALL_ATTR, "true");
@@ -566,8 +586,9 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   listHost.style.cssText = [
     "display:flex", "flex-direction:column", "gap:2px",
     "max-height:200px", "overflow:auto",
-    "border:1px solid #cbd5e1", "border-radius:4px", "padding:4px",
-    "background:#ffffff",
+    `border:1px solid ${T.borderStrong}`, `border-radius:${T.radiusSm}`,
+    `padding:${DIALOG_SPACING.xs}`,
+    `background:${T.surface2}`,
   ].join(";");
   navCol.appendChild(listHost);
 
@@ -576,10 +597,13 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   // of the footprint preview. The actual render is fetched via the injected
   // ``opts.fetchSymbolPreview`` callback (keeps this module chrome-free and
   // unit-testable); a stale-request token guards against out-of-order replies.
+  // In dark theme the pane sits on ``surface2`` so the SVG (which the backend
+  // renders in dark colors when ``previewTheme="dark"``) reads cleanly.
   const paneStyle = [
     "display:flex", "align-items:center", "justify-content:center",
-    "min-height:120px", "max-height:240px", "padding:6px",
-    "border:1px solid #cbd5e1", "border-radius:4px", "background:#ffffff",
+    "min-height:120px", "max-height:240px", `padding:${DIALOG_SPACING.xs}`,
+    `border:1px solid ${T.borderStrong}`, `border-radius:${T.radiusSm}`,
+    `background:${T.surface2}`,
     "overflow:hidden",
   ].join(";");
 
@@ -599,7 +623,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   const fpSelect = doc.createElement("select");
   fpSelect.setAttribute(OVERRIDE_FOOTPRINT_SELECT_ATTR, "true");
   populateSelect(fpSelect, doc, opts.templateLibsFootprints);
-  fpSelect.style.cssText = "width:100%;font-size:12px";
+  applyDialogStyleSelect(fpSelect, { theme: opts.theme });
   fpSelect.addEventListener("change", () => loadFootprintPreview());
   centerCol.appendChild(mkColLabel("Footprint"));
   centerCol.appendChild(fpSelect);
@@ -609,7 +633,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
     pane.innerHTML = "";
     const t = doc.createElement("div");
     t.textContent = text;
-    t.style.cssText = "color:#94a3b8;font-size:11px;font-style:italic;text-align:center";
+    t.style.cssText = `color:${T.placeholder};font-size:${DIALOG_TYPE.micro};font-style:italic;text-align:center`;
     pane.appendChild(t);
   }
 
@@ -721,7 +745,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
     }
     if (!showAllCb.checked && matched.length === 0) {
       const none = doc.createElement("div");
-      none.style.cssText = "color:#94a3b8;padding:4px 6px;font-style:italic";
+      none.style.cssText = `color:${T.placeholder};padding:${DIALOG_SPACING.xs} ${DIALOG_SPACING.xs};font-style:italic`;
       none.textContent = "Kein passendes Template — „alle Templates anzeigen“ aktivieren";
       listHost.appendChild(none);
     }
@@ -731,21 +755,32 @@ export function buildRegisterImportEditor(doc, opts = {}) {
       row.dataset.value = it.value;
       const selected = symSelect.value === it.value;
       row.style.cssText = [
-        "display:flex", "justify-content:space-between", "gap:8px",
-        "padding:4px 6px", "border-radius:3px", "cursor:pointer",
-        selected ? "background:#dbeafe" : "background:transparent",
+        "display:flex", "justify-content:space-between", `gap:${DIALOG_SPACING.sm}`,
+        `padding:${DIALOG_SPACING.xs} ${DIALOG_SPACING.xs}`, "border-radius:3px", "cursor:pointer",
+        selected ? `background:${T.selectedSurface}` : "background:transparent",
+        "transition:background 0.12s ease",
       ].join(";");
       const left = doc.createElement("span");
       left.textContent = it.label;
       left.style.cssText = selected
-        ? "font-weight:600;color:#1e3a8a"
-        : "color:#1e293b";
+        ? `font-weight:600;color:${T.accent}`
+        : `color:${T.text}`;
       row.appendChild(left);
       if (it.category) {
         const tag = doc.createElement("span");
         tag.textContent = it.category;
-        tag.style.cssText = "color:#64748b;font-size:11px";
+        tag.style.cssText = `color:${T.textFaint};font-size:${DIALOG_TYPE.micro}`;
         row.appendChild(tag);
+      }
+      // Hover affordance for unselected rows; selected rows keep their
+      // accent highlight.
+      if (!selected) {
+        row.addEventListener("mouseenter", () => {
+          row.style.background = T.surface3;
+        });
+        row.addEventListener("mouseleave", () => {
+          row.style.background = "transparent";
+        });
       }
       row.addEventListener("click", () => {
         symSelect.value = it.value;
@@ -763,15 +798,15 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   // opts.initialHidePinNumbers; the engine applies it on both symbol paths.
   const pinHeading = doc.createElement("div");
   pinHeading.textContent = "Pin-Beschriftung";
-  pinHeading.style.cssText = "color:#475569;font-weight:600;font-size:11px";
+  pinHeading.style.cssText = `color:${T.textMuted};font-weight:600;font-size:${DIALOG_TYPE.micro}`;
   rightCol.appendChild(pinHeading);
 
   const pinRow = doc.createElement("div");
-  pinRow.style.cssText = "display:flex;gap:16px;flex-wrap:wrap";
+  pinRow.style.cssText = `display:flex;gap:${DIALOG_SPACING.lg};flex-wrap:wrap`;
   const mkPinCheckbox = (attr, labelText, checked) => {
     const lbl = doc.createElement("label");
     lbl.style.cssText =
-      "display:flex;align-items:center;gap:4px;font-size:12px;color:#1e293b;cursor:pointer";
+      `display:flex;align-items:center;gap:${DIALOG_SPACING.xs};font-size:${DIALOG_TYPE.small};color:${T.text};cursor:pointer`;
     const cb = doc.createElement("input");
     cb.type = "checkbox";
     cb.setAttribute(attr, "true");
@@ -806,11 +841,13 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   // Value-Param dropdown (over the preview).
   const valueRow = doc.createElement("label");
   valueRow.style.cssText =
-    "display:flex;align-items:center;gap:8px;margin-top:6px;color:#475569";
+    `display:flex;align-items:center;gap:${DIALOG_SPACING.sm};margin-top:${DIALOG_SPACING.xs};color:${T.textMuted}`;
   valueRow.appendChild(doc.createTextNode("Value-Feld"));
   const valueSelect = doc.createElement("select");
   valueSelect.setAttribute(OVERRIDE_REGISTER_VALUE_PARAM_ATTR, "true");
-  valueSelect.style.cssText = "flex:1;min-width:0";
+  applyDialogStyleSelect(valueSelect, { theme: opts.theme });
+  valueSelect.style.flex = "1";
+  valueSelect.style.minWidth = "0";
   const noneOpt = doc.createElement("option");
   noneOpt.value = "";
   noneOpt.textContent = "— Kein Value-Param (EasyEDA-Standard) —";
@@ -837,7 +874,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   propHeading.textContent = propEntries.length
     ? `Eigenschaften, die ins Symbol übernommen werden (${propEntries.length})`
     : "Keine Metadaten auf der Produktseite gefunden";
-  propHeading.style.cssText = "margin-top:4px;color:#475569;font-weight:600;font-size:11px";
+  propHeading.style.cssText = `margin-top:${DIALOG_SPACING.xs};color:${T.textMuted};font-weight:600;font-size:${DIALOG_TYPE.micro}`;
   rightCol.appendChild(propHeading);
 
   if (propEntries.length) {
@@ -849,10 +886,10 @@ export function buildRegisterImportEditor(doc, opts = {}) {
       "gap:2px",
       "max-height:180px",
       "overflow:auto",
-      "border:1px solid #e2e8f0",
-      "border-radius:4px",
-      "padding:6px 8px",
-      "background:#ffffff",
+      `border:1px solid ${T.borderSoft}`,
+      `border-radius:${T.radiusSm}`,
+      `padding:${DIALOG_SPACING.xs} ${DIALOG_SPACING.sm}`,
+      `background:${T.surface2}`,
     ].join(";");
     // Re-rendered when the Value-Param changes so the "→ Value" badge follows.
     const renderPropPreview = () => {
@@ -862,16 +899,16 @@ export function buildRegisterImportEditor(doc, opts = {}) {
         const isValue = k === chosen;
         const propRow = doc.createElement("div");
         propRow.style.cssText =
-          "display:flex;justify-content:space-between;gap:12px;line-height:1.4";
+          `display:flex;justify-content:space-between;gap:${DIALOG_SPACING.md};line-height:1.4`;
         const key = doc.createElement("span");
         key.textContent = isValue ? `${k} → Value` : k;
         key.style.cssText = isValue
-          ? "color:#1e3a8a;font-weight:600;flex:0 0 auto"
-          : "color:#475569;flex:0 0 auto";
+          ? `color:${T.accent};font-weight:600;flex:0 0 auto`
+          : `color:${T.textMuted};flex:0 0 auto`;
         const val = doc.createElement("span");
         val.textContent = v;
         val.style.cssText =
-          "color:#0f172a;font-weight:500;text-align:right;word-break:break-word";
+          `color:${T.textStrong};font-weight:500;text-align:right;word-break:break-word`;
         propRow.appendChild(key);
         propRow.appendChild(val);
         propList.appendChild(propRow);
@@ -883,18 +920,20 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   }
 
   const actions = doc.createElement("div");
-  actions.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:4px";
+  actions.style.cssText = `display:flex;gap:${DIALOG_SPACING.sm};justify-content:flex-end;margin-top:${DIALOG_SPACING.xs};border-top:1px solid ${T.borderSoft};padding-top:${DIALOG_SPACING.md}`;
 
   const cancelBtn = doc.createElement("button");
   cancelBtn.type = "button";
   cancelBtn.textContent = "Abbrechen";
   cancelBtn.setAttribute(OVERRIDE_REGISTER_CANCEL_ATTR, "true");
+  cancelBtn.style.cssText = dialogButtonStyle("secondary", "wide", { theme: opts.theme });
   actions.appendChild(cancelBtn);
 
   const saveBtn = doc.createElement("button");
   saveBtn.type = "button";
   saveBtn.textContent = "Übernehmen";
   saveBtn.setAttribute(OVERRIDE_REGISTER_SAVE_ATTR, "true");
+  saveBtn.style.cssText = dialogButtonStyle("primary", "wide", { theme: opts.theme });
   actions.appendChild(saveBtn);
 
   panel.appendChild(actions);
@@ -998,29 +1037,30 @@ export function collectRegisterEditorRule(panel, categoryPath) {
  * }} opts
  */
 export function buildOverridePanel(doc, opts = {}) {
+  const T = getDialogTokens(opts.theme);
   const panel = doc.createElement("div");
   panel.setAttribute(OVERRIDE_PANEL_ATTR, "true");
   panel.setAttribute(OVERRIDE_PANEL_MODE_ATTR, "sources");
   panel.style.cssText = [
     "display:flex",
     "flex-direction:column",
-    "gap:8px",
-    "padding:10px 12px",
-    "border:1px solid #cbd5e1",
-    "border-radius:6px",
-    "background:#f8fafc",
-    "margin-top:6px",
-    "font-size:12px",
-    "color:#1e293b",
+    `gap:${DIALOG_SPACING.sm}`,
+    `padding:${DIALOG_SPACING.md} ${DIALOG_SPACING.md}`,
+    `border:1px solid ${T.borderStrong}`,
+    `border-radius:${T.radiusSm}`,
+    `background:${T.surface2}`,
+    `margin-top:${DIALOG_SPACING.xs}`,
+    `font-size:${DIALOG_TYPE.small}`,
+    `color:${T.text}`,
   ].join(";");
 
   const heading = doc.createElement("div");
   heading.textContent = "Override sources";
-  heading.style.cssText = "font-weight:600;font-size:11px;letter-spacing:0.04em;text-transform:uppercase;color:#475569";
+  heading.style.cssText = `font-weight:600;font-size:${DIALOG_TYPE.micro};letter-spacing:0.04em;text-transform:uppercase;color:${T.textMuted}`;
   panel.appendChild(heading);
 
   const symLabel = doc.createElement("label");
-  symLabel.style.cssText = "display:flex;align-items:center;gap:8px";
+  symLabel.style.cssText = `display:flex;align-items:center;gap:${DIALOG_SPACING.sm}`;
   symLabel.appendChild(doc.createTextNode("Symbol"));
   const symSelect = doc.createElement("select");
   symSelect.setAttribute(OVERRIDE_SYMBOL_SELECT_ATTR, "true");
@@ -1029,7 +1069,7 @@ export function buildOverridePanel(doc, opts = {}) {
   panel.appendChild(symLabel);
 
   const fpLabel = doc.createElement("label");
-  fpLabel.style.cssText = "display:flex;align-items:center;gap:8px";
+  fpLabel.style.cssText = `display:flex;align-items:center;gap:${DIALOG_SPACING.sm}`;
   fpLabel.appendChild(doc.createTextNode("Footprint"));
   const fpSelect = doc.createElement("select");
   fpSelect.setAttribute(OVERRIDE_FOOTPRINT_SELECT_ATTR, "true");
@@ -1038,18 +1078,20 @@ export function buildOverridePanel(doc, opts = {}) {
   panel.appendChild(fpLabel);
 
   const actions = doc.createElement("div");
-  actions.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:4px";
+  actions.style.cssText = `display:flex;gap:${DIALOG_SPACING.sm};justify-content:flex-end;margin-top:${DIALOG_SPACING.xs}`;
 
   const cancelBtn = doc.createElement("button");
   cancelBtn.type = "button";
   cancelBtn.textContent = "Cancel";
   cancelBtn.setAttribute(OVERRIDE_CANCEL_ATTR, "true");
+  cancelBtn.style.cssText = dialogButtonStyle("secondary", "dense", { theme: opts.theme });
   actions.appendChild(cancelBtn);
 
   const confirmBtn = doc.createElement("button");
   confirmBtn.type = "button";
   confirmBtn.textContent = "Confirm";
   confirmBtn.setAttribute(OVERRIDE_CONFIRM_ATTR, "true");
+  confirmBtn.style.cssText = dialogButtonStyle("primary", "dense", { theme: opts.theme });
   actions.appendChild(confirmBtn);
 
   panel.appendChild(actions);
@@ -1211,12 +1253,14 @@ export function renderOverridePanel(anchorRow, opts = {}) {
       hidePinNumbers: opts.match?.rule?.hidePinNumbers ?? false,
       hidePinNames: opts.match?.rule?.hidePinNames ?? false,
       valueParam: opts.match?.rule?.valueParam ?? null,
+      theme: opts.theme,
     });
   } else if (isYellow) {
     // ``keepEasyeda`` branch — Hinweis + EasyEDA default + editor escape.
     panel = buildYellowPanel(doc, {
       ruleKey: opts.match?.ruleKey ?? null,
       match: opts.match || null,
+      theme: opts.theme,
     });
   } else {
     panel = buildOverridePanel(doc, opts);
@@ -1231,9 +1275,13 @@ export function renderOverridePanel(anchorRow, opts = {}) {
     const { dismiss } = mountCsModal({
       id: "k2c-register-prompt-modal",
       maxWidthPx: 460,
+      title: "Neues Bauteil",
+      closeable: true,
+      ariaLabel: "Neues Bauteil registrieren",
       children: [panel],
       closeOnBackdrop: true,
       closeOnEscape: true,
+      theme: opts.theme,
     });
     removePanel = dismiss;
   } else {
@@ -1421,10 +1469,14 @@ export function renderRegisterImportEditor(anchorRow, opts = {}) {
   let settled = false;
   const { dismiss } = mountCsModal({
     id: "k2c-register-editor-modal",
-    maxWidthPx: 560,
+    maxWidthPx: 720,
+    title: "Import-Editor",
+    closeable: true,
+    ariaLabel: "Import-Editor — Symbol-/Footprint-Vorlagen zuweisen",
     children: [panel],
     closeOnBackdrop: true,
     closeOnEscape: true,
+    theme: opts.theme,
     onDismiss: () => {
       // Backdrop / Escape / cancel all funnel through here. Guard against a
       // double-fire after a save() already dismissed.

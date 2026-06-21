@@ -1164,3 +1164,66 @@ describe("buildRegisterImportEditor — footprint preview (3-column layout)", ()
     expect(decodeURIComponent(img.getAttribute("src"))).toContain("<svg id='tpl'>");
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/*  Issue #43 — design tokens flow through panel chrome (light + dark theme) */
+/* -------------------------------------------------------------------------- */
+
+// JSDOM normalizes color strings (hex / rgba) — round-trip the expected value
+// through a throwaway element so the assertion compares apples to apples.
+function jsdomColor(value) {
+  const probe = document.createElement("div");
+  probe.style.background = value;
+  return probe.style.background;
+}
+
+describe("Override Panel — theme-aware token chrome (#43)", () => {
+  it("buildRegisterPrompt in dark theme uses the dark surface", async () => {
+    const { getDialogTokens } = await import("./dialog.js");
+    const dark = getDialogTokens("dark");
+    const panel = buildRegisterPrompt(document, { theme: "dark" });
+    expect(panel.style.background).toBe(jsdomColor(dark.surface2));
+  });
+
+  it("buildOneClickPanel keeps the green-state semantic surface in dark theme", async () => {
+    const { getDialogTokens } = await import("./dialog.js");
+    const light = getDialogTokens("light");
+    const dark = getDialogTokens("dark");
+    const panel = buildOneClickPanel(document, { theme: "dark" });
+    // ``successSurface`` for the green state is the semantic anchor — its
+    // dark-theme value differs from the light-theme one. Asserting on
+    // ``style.background`` (the JSDOM-normalized form) skips the rgba-comma
+    // mangling problem that ``cssText`` would have.
+    expect(panel.style.background).toBe(jsdomColor(dark.successSurface));
+    expect(panel.style.background).not.toBe(jsdomColor(light.successSurface));
+  });
+
+  it("buildYellowPanel in dark theme honors the dark warning surface", async () => {
+    const { getDialogTokens } = await import("./dialog.js");
+    const light = getDialogTokens("light");
+    const dark = getDialogTokens("dark");
+    const panel = buildYellowPanel(document, { theme: "dark" });
+    expect(panel.style.background).toBe(jsdomColor(dark.warningSurface));
+    expect(panel.style.background).not.toBe(jsdomColor(light.warningSurface));
+  });
+
+  it("buildRegisterImportEditor preview panes use the dark surface in dark theme", async () => {
+    const { getDialogTokens } = await import("./dialog.js");
+    const dark = getDialogTokens("dark");
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+      theme: "dark",
+    });
+    const sym = panel.querySelector(`[${OVERRIDE_REGISTER_SYMBOL_PREVIEW_ATTR}]`);
+    const fp = panel.querySelector(`[${OVERRIDE_REGISTER_FOOTPRINT_PREVIEW_ATTR}]`);
+    // The pre-#43 implementation hard-coded ``background:#ffffff`` here —
+    // the dark theme MUST move away from that so SVGs (which the backend
+    // ships in dark-aware palettes when ``previewTheme="dark"``) read
+    // against a matching pane.
+    expect(sym.style.background).toBe(jsdomColor(dark.surface2));
+    expect(fp.style.background).toBe(jsdomColor(dark.surface2));
+    expect(sym.style.background).not.toBe(jsdomColor("#ffffff"));
+    expect(fp.style.background).not.toBe(jsdomColor("#ffffff"));
+  });
+});
