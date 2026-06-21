@@ -25,6 +25,8 @@ import {
   unlockOverlayPageScroll,
   mountCsModal,
   dismissCsModalById,
+  resolveDialogTheme,
+  installDialogThemeStorageListener,
 } from "./dialog.js";
 import { contentRpc, k2cRpc } from "./rpc.js";
 import { BackendStatusMonitor } from "./backendStatusMonitor.js";
@@ -4869,7 +4871,7 @@ function attachButton(lcscId) {
         // Issue #29 — 🟢 ``[Modifizieren]`` reuses the same editor with
         // the matched Rule prefilled (ADR-0006: one reusable editor for
         // register / modify / low-confidence).
-        const openRegisterEditor = (initial = {}) => {
+        const openRegisterEditor = async (initial = {}) => {
           let pageParams = {};
           try {
             const snap = extractPageData(document) || {};
@@ -4879,12 +4881,23 @@ function attachButton(lcscId) {
           } catch (e) {
             dbg("[register] snapshot for editor failed", e);
           }
+          // Issue #43 — resolve the user's dialog theme BEFORE mounting so the
+          // Import-Editor + its symbol-preview SVG render in the same palette.
+          // The popup's ``popupUiState.theme`` takes precedence; OS
+          // ``prefers-color-scheme`` is the fallback.
+          let editorTheme = "light";
+          try {
+            editorTheme = await resolveDialogTheme();
+          } catch (_e) {
+            /* keep light */
+          }
           renderRegisterImportEditor(anchorRow, {
             templateLibs,
             templateLibsFootprints,
             templateCategoriesByLib,
             pageParams,
             categoryPath: phase1Result?.categoryPath || null,
+            theme: editorTheme,
             initialSymbolSource: initial.initialSymbolSource || null,
             initialFootprintSource: initial.initialFootprintSource || null,
             initialLabelMapping: initial.initialLabelMapping || null,
@@ -4895,6 +4908,8 @@ function attachButton(lcscId) {
             // UI Etappe B — render the selected template symbol as SVG so the
             // user sees what they assign. Mirrors the gallery hover preview RPC;
             // returns { svg } | { svg: null, error } (editor falls back to text).
+            // ``previewTheme`` follows the resolved editor theme so the
+            // backend (``symbol_preview_svg.py``) returns a matching palette.
             fetchSymbolPreview: async ({ libPath, name }) => {
               try {
                 const resp = await contentRpc(
@@ -4903,7 +4918,7 @@ function attachButton(lcscId) {
                     templateName: name,
                     templateLibPath: libPath,
                     labelPins: true,
-                    previewTheme: "light",
+                    previewTheme: editorTheme,
                   },
                   k2cRpc(1, 400),
                 );
@@ -5721,6 +5736,11 @@ function init() {
   }
 
   void initDebug();
+  // Issue #43 — warm the dialog-theme cache once at boot and subscribe to
+  // popupUiState changes so the next modal/open picks up the user's theme
+  // without forcing every call site to await chrome.storage.local first.
+  void resolveDialogTheme();
+  installDialogThemeStorageListener();
   try {
   chrome.runtime.onMessage.addListener((message) => {
     if (message?.type === "k2c-datasheet-fetch-progress") {
