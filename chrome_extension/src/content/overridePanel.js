@@ -64,6 +64,13 @@ export const OVERRIDE_REGISTER_SHOWALL_ATTR = "data-k2c-register-showall";
 export const OVERRIDE_REGISTER_HIDE_PINNUM_ATTR = "data-k2c-register-hide-pinnum";
 export const OVERRIDE_REGISTER_HIDE_PINNAME_ATTR = "data-k2c-register-hide-pinname";
 export const OVERRIDE_REGISTER_VALUE_PARAM_ATTR = "data-k2c-register-value-param";
+/** Pin↔Pad Mapper (Issue #9). */
+export const OVERRIDE_REGISTER_PINMAP_ATTR = "data-k2c-register-pinmap";
+export const OVERRIDE_REGISTER_PINMAP_TABLE_ATTR = "data-k2c-register-pinmap-table";
+export const OVERRIDE_REGISTER_PINMAP_PAD_ATTR = "data-k2c-register-pinmap-pad";
+export const OVERRIDE_REGISTER_MAPSTATUS_ATTR = "data-k2c-register-mapstatus";
+/** Backend sentinel for "no connection" — mirrors the gallery's K2C_GALLERY_PAD_NC. */
+export const OVERRIDE_REGISTER_PINMAP_NC = "__NC__";
 /** 🟢 One-Click panel controls (Issue #29). */
 export const OVERRIDE_IMPORT_ATTR = "data-k2c-override-import";
 export const OVERRIDE_MODIFY_ATTR = "data-k2c-override-modify";
@@ -505,32 +512,33 @@ export function buildRegisterImportEditor(doc, opts = {}) {
     `color:${T.text}`,
   ].join(";");
 
-  // 3-column layout: left = template navigation, center = symbol (top) +
-  // footprint (below) previews, right = pin/value controls + the read-only
-  // property list. Columns wrap on narrow widths so the on-page editor stays
-  // usable in tight layouts. Heading/category span the top; actions the bottom.
+  // Two-pane workspace (Issue #9 redesign).
+  //
+  // TOP BAR (full width, above the grid): heading "Registrieren", category line,
+  // live Pin-Mapper status strip. The intent is one glanceable "what's happening"
+  // line above every control.
+  //
+  // BODY (CSS Grid): intrinsic collapse via ``repeat(auto-fit, minmax(260px, 1fr))``
+  // so the layout reflows without any post-mount width-read (a width-read would
+  // race ``mountCsModal``'s own layout pass). Left pane collects every INPUT in
+  // import order; the right pane carries the two SVG previews + the Pin↔Pad
+  // mapper table.
   const topBar = doc.createElement("div");
   topBar.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.xs}`;
   panel.appendChild(topBar);
 
   const body = doc.createElement("div");
-  body.style.cssText = `display:flex;flex-wrap:wrap;gap:${DIALOG_SPACING.md};align-items:flex-start`;
+  body.style.cssText =
+    `display:grid;grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));gap:${DIALOG_SPACING.lg};align-items:start`;
   panel.appendChild(body);
 
-  const navCol = doc.createElement("div");
-  navCol.style.cssText =
-    `display:flex;flex-direction:column;gap:${DIALOG_SPACING.xs};flex:1 1 180px;min-width:160px;max-width:280px`;
-  body.appendChild(navCol);
+  const leftPane = doc.createElement("div");
+  leftPane.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.sm};min-width:0`;
+  body.appendChild(leftPane);
 
-  const centerCol = doc.createElement("div");
-  centerCol.style.cssText =
-    `display:flex;flex-direction:column;gap:${DIALOG_SPACING.xs};flex:1 1 280px;min-width:220px`;
-  body.appendChild(centerCol);
-
-  const rightCol = doc.createElement("div");
-  rightCol.style.cssText =
-    `display:flex;flex-direction:column;gap:${DIALOG_SPACING.xs};flex:1 1 220px;min-width:200px`;
-  body.appendChild(rightCol);
+  const rightPane = doc.createElement("div");
+  rightPane.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.sm};min-width:0`;
+  body.appendChild(rightPane);
 
   const mkColLabel = (text) => {
     const el = doc.createElement("div");
@@ -553,6 +561,25 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   categoryLine.style.cssText = `color:${T.textFaint}`;
   topBar.appendChild(categoryLine);
 
+  // Live Pin-Mapper status strip (Issue #9). One short line that summarizes the
+  // current assignment so the user can verify completeness at a glance without
+  // scanning the table. Updated on every <select> change.
+  const mapStatus = doc.createElement("div");
+  mapStatus.setAttribute(OVERRIDE_REGISTER_MAPSTATUS_ATTR, "true");
+  mapStatus.style.cssText = [
+    "display:inline-block",
+    "align-self:flex-start",
+    `padding:2px ${DIALOG_SPACING.sm}`,
+    `border-radius:${T.radiusSm}`,
+    `font-size:${DIALOG_TYPE.micro}`,
+    `background:${T.primarySoft}`,
+    `color:${T.primary}`,
+  ].join(";");
+  mapStatus.textContent = "Standard (1:1)";
+  topBar.appendChild(mapStatus);
+
+  /* ----- LEFT PANE — Quellen + Steuerung ----------------------------------- */
+
   // Symbol-Source: a hidden <select> stays the source of truth (parseLayer /
   // collectRegisterEditorRule read it; prefill sets it). The visible UI is a
   // selectable TEMPLATE LIST — Category-matched templates shown by default with
@@ -561,14 +588,14 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   symSelect.setAttribute(OVERRIDE_SYMBOL_SELECT_ATTR, "true");
   populateSelect(symSelect, doc, opts.templateLibs);
   symSelect.style.cssText = "display:none";
-  navCol.appendChild(symSelect);
+  leftPane.appendChild(symSelect);
 
   const symHeadRow = doc.createElement("div");
   symHeadRow.style.cssText =
-    `display:flex;align-items:center;justify-content:space-between;gap:${DIALOG_SPACING.sm};margin-top:${DIALOG_SPACING.xs}`;
+    `display:flex;align-items:center;justify-content:space-between;gap:${DIALOG_SPACING.sm}`;
   const symHeading = doc.createElement("div");
   symHeading.textContent = "Symbol-Vorlage";
-  symHeading.style.cssText = `color:${T.textMuted}`;
+  symHeading.style.cssText = `color:${T.textMuted};font-weight:600;font-size:${DIALOG_TYPE.micro}`;
   symHeadRow.appendChild(symHeading);
   const showAllLabel = doc.createElement("label");
   showAllLabel.style.cssText =
@@ -579,26 +606,173 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   showAllLabel.appendChild(showAllCb);
   showAllLabel.appendChild(doc.createTextNode("alle Templates anzeigen"));
   symHeadRow.appendChild(showAllLabel);
-  navCol.appendChild(symHeadRow);
+  leftPane.appendChild(symHeadRow);
 
   const listHost = doc.createElement("div");
   listHost.setAttribute(OVERRIDE_REGISTER_TEMPLATE_LIST_ATTR, "true");
   listHost.style.cssText = [
     "display:flex", "flex-direction:column", "gap:2px",
-    "max-height:200px", "overflow:auto",
+    "max-height:160px", "overflow:auto",
     `border:1px solid ${T.borderStrong}`, `border-radius:${T.radiusSm}`,
     `padding:${DIALOG_SPACING.xs}`,
     `background:${T.surface2}`,
   ].join(";");
-  navCol.appendChild(listHost);
+  leftPane.appendChild(listHost);
 
-  // Symbol PREVIEW pane (UI Etappe B): renders the selected template symbol as
-  // an SVG so the user sees what they are assigning — the symbol-side analogue
-  // of the footprint preview. The actual render is fetched via the injected
-  // ``opts.fetchSymbolPreview`` callback (keeps this module chrome-free and
-  // unit-testable); a stale-request token guards against out-of-order replies.
-  // In dark theme the pane sits on ``surface2`` so the SVG (which the backend
-  // renders in dark colors when ``previewTheme="dark"``) reads cleanly.
+  // Footprint-Source selector (#9). EasyEDA default OR a curated template
+  // footprint from a template library's sibling .pretty. The visible <select>
+  // is the source of truth (collectRegisterEditorRule reads it via parseLayer);
+  // changing it re-renders the footprint preview in the right pane. Only the
+  // chooser sits here; the preview moved into the right pane preview row.
+  leftPane.appendChild(mkColLabel("Footprint-Quelle"));
+  const fpSelect = doc.createElement("select");
+  fpSelect.setAttribute(OVERRIDE_FOOTPRINT_SELECT_ATTR, "true");
+  populateSelect(fpSelect, doc, opts.templateLibsFootprints);
+  applyDialogStyleSelect(fpSelect, { theme: opts.theme });
+  fpSelect.addEventListener("change", () => loadFootprintPreview());
+  leftPane.appendChild(fpSelect);
+
+  // Pin-label visibility (V2 carry-over): hide pin numbers / names in the
+  // written symbol — typical for 2-pin parts (R/C/L/D) where they clutter the
+  // schematic. The caller auto-prefills "hide numbers" for ≤2-pin parts via
+  // opts.initialHidePinNumbers; the engine applies it on both symbol paths.
+  const pinHeading = doc.createElement("div");
+  pinHeading.textContent = "Pin-Beschriftung";
+  pinHeading.style.cssText = `color:${T.textMuted};font-weight:600;font-size:${DIALOG_TYPE.micro}`;
+  leftPane.appendChild(pinHeading);
+
+  const pinRow = doc.createElement("div");
+  pinRow.style.cssText = `display:flex;gap:${DIALOG_SPACING.lg};flex-wrap:wrap`;
+  const mkPinCheckbox = (attr, labelText, checked) => {
+    const lbl = doc.createElement("label");
+    lbl.style.cssText =
+      `display:flex;align-items:center;gap:${DIALOG_SPACING.xs};font-size:${DIALOG_TYPE.small};color:${T.text};cursor:pointer`;
+    const cb = doc.createElement("input");
+    cb.type = "checkbox";
+    cb.setAttribute(attr, "true");
+    cb.checked = Boolean(checked);
+    lbl.appendChild(cb);
+    lbl.appendChild(doc.createTextNode(labelText));
+    pinRow.appendChild(lbl);
+  };
+  mkPinCheckbox(
+    OVERRIDE_REGISTER_HIDE_PINNUM_ATTR,
+    "Pin-Nummern ausblenden",
+    opts.initialHidePinNumbers,
+  );
+  mkPinCheckbox(
+    OVERRIDE_REGISTER_HIDE_PINNAME_ATTR,
+    "Pin-Namen ausblenden",
+    opts.initialHidePinNames,
+  );
+  leftPane.appendChild(pinRow);
+
+  // Value-Param + Metadata preview (ADR-0006 refined). The Value dropdown picks
+  // the one param whose value fills the KiCad Value field; the read-only preview
+  // lists every param written as a Property and marks the chosen one ("→ Value")
+  // — that one is NOT also written as a duplicate Property (engine excludes it).
+  const pageParams =
+    opts.pageParams && typeof opts.pageParams === "object" ? opts.pageParams : {};
+  const propEntries = Object.entries(pageParams).filter(
+    ([k, v]) =>
+      typeof k === "string" && k.trim() && typeof v === "string" && v.trim(),
+  );
+
+  // Value-Param dropdown (over the preview). The select sits inside a flex
+  // wrapper because ``applyDialogStyleSelect`` rewrites the select's own
+  // ``cssText`` on focus/hover, which would otherwise wipe out the flex
+  // sizing the row layout depends on.
+  const valueRow = doc.createElement("label");
+  valueRow.style.cssText =
+    `display:flex;align-items:center;gap:${DIALOG_SPACING.sm};color:${T.textMuted}`;
+  valueRow.appendChild(doc.createTextNode("Value-Feld"));
+  const valueSelectWrap = doc.createElement("div");
+  valueSelectWrap.style.cssText = "flex:1;min-width:0";
+  const valueSelect = doc.createElement("select");
+  valueSelect.setAttribute(OVERRIDE_REGISTER_VALUE_PARAM_ATTR, "true");
+  applyDialogStyleSelect(valueSelect, { theme: opts.theme });
+  const noneOpt = doc.createElement("option");
+  noneOpt.value = "";
+  noneOpt.textContent = "— Kein Value-Param (EasyEDA-Standard) —";
+  valueSelect.appendChild(noneOpt);
+  for (const [k, v] of propEntries) {
+    const opt = doc.createElement("option");
+    opt.value = k;
+    opt.textContent = `${k} — ${v}`;
+    valueSelect.appendChild(opt);
+  }
+  // Preselect: caller's initialValueParam, else auto-detect, else none.
+  const presetValueParam =
+    (typeof opts.initialValueParam === "string" && opts.initialValueParam) ||
+    detectValueParam(pageParams) ||
+    "";
+  const hasValueOpt = Array.from(valueSelect.options).some(
+    (o) => o.value === presetValueParam,
+  );
+  valueSelect.value = hasValueOpt ? presetValueParam : "";
+  valueSelectWrap.appendChild(valueSelect);
+  valueRow.appendChild(valueSelectWrap);
+  leftPane.appendChild(valueRow);
+
+  const propHeading = doc.createElement("div");
+  propHeading.textContent = propEntries.length
+    ? `Eigenschaften, die ins Symbol übernommen werden (${propEntries.length})`
+    : "Keine Metadaten auf der Produktseite gefunden";
+  propHeading.style.cssText = `color:${T.textMuted};font-weight:600;font-size:${DIALOG_TYPE.micro}`;
+  leftPane.appendChild(propHeading);
+
+  if (propEntries.length) {
+    const propList = doc.createElement("div");
+    propList.setAttribute(OVERRIDE_REGISTER_PROP_PREVIEW_ATTR, "true");
+    propList.style.cssText = [
+      "display:flex",
+      "flex-direction:column",
+      "gap:2px",
+      "max-height:160px",
+      "overflow:auto",
+      `border:1px solid ${T.borderSoft}`,
+      `border-radius:${T.radiusSm}`,
+      `padding:${DIALOG_SPACING.xs} ${DIALOG_SPACING.sm}`,
+      `background:${T.surface2}`,
+    ].join(";");
+    // Re-rendered when the Value-Param changes so the "→ Value" badge follows.
+    const renderPropPreview = () => {
+      propList.innerHTML = "";
+      const chosen = valueSelect.value;
+      for (const [k, v] of propEntries) {
+        const isValue = k === chosen;
+        const propRow = doc.createElement("div");
+        propRow.style.cssText =
+          `display:flex;justify-content:space-between;gap:${DIALOG_SPACING.md};line-height:1.4`;
+        const key = doc.createElement("span");
+        key.textContent = isValue ? `${k} → Value` : k;
+        key.style.cssText = isValue
+          ? `color:${T.accent};font-weight:600;flex:0 0 auto`
+          : `color:${T.textMuted};flex:0 0 auto`;
+        const val = doc.createElement("span");
+        val.textContent = v;
+        val.style.cssText =
+          `color:${T.textStrong};font-weight:500;text-align:right;word-break:break-word`;
+        propRow.appendChild(key);
+        propRow.appendChild(val);
+        propList.appendChild(propRow);
+      }
+    };
+    renderPropPreview();
+    valueSelect.addEventListener("change", renderPropPreview);
+    leftPane.appendChild(propList);
+  }
+
+  /* ----- RIGHT PANE — Vorschau + Pin-Mapper -------------------------------- */
+
+  // Preview row — symbol and footprint side-by-side. Same intrinsic
+  // ``auto-fit, minmax(260px, 1fr)`` collapse rule as the body grid so a narrow
+  // modal folds the panes onto two rows without a media-query or width-read.
+  const previewRow = doc.createElement("div");
+  previewRow.style.cssText =
+    `display:grid;grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));gap:${DIALOG_SPACING.md}`;
+  rightPane.appendChild(previewRow);
+
   const paneStyle = [
     "display:flex", "align-items:center", "justify-content:center",
     "min-height:120px", "max-height:240px", `padding:${DIALOG_SPACING.xs}`,
@@ -607,27 +781,50 @@ export function buildRegisterImportEditor(doc, opts = {}) {
     "overflow:hidden",
   ].join(";");
 
+  const symPreviewCell = doc.createElement("div");
+  symPreviewCell.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.xs};min-width:0`;
+  symPreviewCell.appendChild(mkColLabel("Symbol"));
   const previewPane = doc.createElement("div");
   previewPane.setAttribute(OVERRIDE_REGISTER_SYMBOL_PREVIEW_ATTR, "true");
   previewPane.style.cssText = paneStyle;
-  centerCol.appendChild(mkColLabel("Symbol"));
-  centerCol.appendChild(previewPane);
+  symPreviewCell.appendChild(previewPane);
+  previewRow.appendChild(symPreviewCell);
 
-  // Footprint-Source selector (#9): EasyEDA default OR a curated template
-  // footprint from a template library's sibling .pretty. The visible <select>
-  // is the source of truth (collectRegisterEditorRule reads it via parseLayer);
-  // changing it re-renders the footprint preview below.
+  const fpPreviewCell = doc.createElement("div");
+  fpPreviewCell.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.xs};min-width:0`;
+  fpPreviewCell.appendChild(mkColLabel("Footprint"));
   const footprintPane = doc.createElement("div");
   footprintPane.setAttribute(OVERRIDE_REGISTER_FOOTPRINT_PREVIEW_ATTR, "true");
   footprintPane.style.cssText = paneStyle;
-  const fpSelect = doc.createElement("select");
-  fpSelect.setAttribute(OVERRIDE_FOOTPRINT_SELECT_ATTR, "true");
-  populateSelect(fpSelect, doc, opts.templateLibsFootprints);
-  applyDialogStyleSelect(fpSelect, { theme: opts.theme });
-  fpSelect.addEventListener("change", () => loadFootprintPreview());
-  centerCol.appendChild(mkColLabel("Footprint"));
-  centerCol.appendChild(fpSelect);
-  centerCol.appendChild(footprintPane);
+  fpPreviewCell.appendChild(footprintPane);
+  previewRow.appendChild(fpPreviewCell);
+
+  // Pin↔Pad Mapper (#9). A pad-driven assignment table — one <tr> per footprint
+  // pad with a native <select> picking which template symbol pin connects to it.
+  // Same mental model as the gallery's renderFootprintPadMapTable; native selects
+  // give Tab walking + arrow keys + typeahead for free. Drag, inline-SVG, and
+  // bezier connectors are deferred (the verified-highest-risk pieces).
+  const pinMapHost = doc.createElement("div");
+  pinMapHost.setAttribute(OVERRIDE_REGISTER_PINMAP_ATTR, "true");
+  pinMapHost.style.cssText = [
+    "display:flex",
+    "flex-direction:column",
+    `gap:${DIALOG_SPACING.xs}`,
+    `padding:${DIALOG_SPACING.sm}`,
+    `border:1px solid ${T.borderSoft}`,
+    `border-radius:${T.radiusSm}`,
+    `background:${T.surface2}`,
+  ].join(";");
+  const pinMapHeading = doc.createElement("div");
+  pinMapHeading.textContent = "Pin-Zuordnung (Footprint-Pad → Symbol-Pin)";
+  pinMapHeading.style.cssText = `color:${T.textMuted};font-weight:600;font-size:${DIALOG_TYPE.micro}`;
+  pinMapHost.appendChild(pinMapHeading);
+  const pinMapBody = doc.createElement("div");
+  pinMapBody.style.cssText = "max-height:240px;overflow:auto";
+  pinMapHost.appendChild(pinMapBody);
+  rightPane.appendChild(pinMapHost);
+
+  /* ----- Preview fetch helpers --------------------------------------------- */
 
   function setPaneText(pane, text) {
     pane.innerHTML = "";
@@ -646,15 +843,24 @@ export function buildRegisterImportEditor(doc, opts = {}) {
     pane.appendChild(img);
   }
 
+  // Captured from the preview fetcher returns — drive the Pin-Mapper without
+  // re-parsing the SVG. Absent ⇒ mapper shows a placeholder.
+  let editorSymbolPins = [];
+  let editorFootprintPads = [];
+
   let previewReq = 0;
   function updateSymbolPreview() {
     const layer = parseLayer(symSelect.value);
     if (layer.source !== "template") {
       setPaneText(previewPane, "EasyEDA-Standardsymbol — keine Vorschau");
+      editorSymbolPins = [];
+      rebuildPinMap();
       return;
     }
     if (typeof opts.fetchSymbolPreview !== "function") {
       setPaneText(previewPane, "Vorschau nicht verfügbar");
+      editorSymbolPins = [];
+      rebuildPinMap();
       return;
     }
     const reqId = ++previewReq;
@@ -667,10 +873,14 @@ export function buildRegisterImportEditor(doc, opts = {}) {
         } else {
           setPaneText(previewPane, (res && res.error) || "Keine Vorschau verfügbar");
         }
+        editorSymbolPins = res && Array.isArray(res.pins) ? res.pins : [];
+        rebuildPinMap();
       })
       .catch((err) => {
         if (reqId !== previewReq) return;
         setPaneText(previewPane, (err && err.message) || "Vorschau fehlgeschlagen");
+        editorSymbolPins = [];
+        rebuildPinMap();
       });
   }
 
@@ -685,7 +895,8 @@ export function buildRegisterImportEditor(doc, opts = {}) {
     const reqId = ++fpPreviewReq;
     setPaneText(footprintPane, "Lade Footprint …");
     let fetchP;
-    if (layer.source === "template") {
+    const isTemplate = layer.source === "template";
+    if (isTemplate) {
       fetchP =
         typeof opts.fetchTemplateFootprintPreview === "function"
           ? Promise.resolve(
@@ -706,12 +917,200 @@ export function buildRegisterImportEditor(doc, opts = {}) {
         } else {
           setPaneText(footprintPane, (res && res.error) || "Keine Footprint-Vorschau");
         }
+        // Pad labels are only available on the EasyEDA path (``lcscFootprintPreview``
+        // returns ``pads``). Template footprints have no pad-label source today
+        // (``template_footprint_preview`` only ships ``meta.pad_count``), so the
+        // mapper shows a "noch nicht verfügbar" placeholder for template FPs.
+        if (!isTemplate && res && Array.isArray(res.pads)) {
+          editorFootprintPads = res.pads;
+        } else {
+          editorFootprintPads = [];
+        }
+        rebuildPinMap();
       })
       .catch((err) => {
         if (reqId !== fpPreviewReq) return;
         setPaneText(footprintPane, (err && err.message) || "Footprint-Vorschau fehlgeschlagen");
+        editorFootprintPads = [];
+        rebuildPinMap();
       });
   }
+
+  /* ----- Pin↔Pad Mapper ---------------------------------------------------- */
+
+  function setMapStatus(text, tone) {
+    mapStatus.textContent = text;
+    let bg = T.primarySoft;
+    let fg = T.primary;
+    if (tone === "success") {
+      bg = T.successSurface;
+      fg = T.successText;
+    } else if (tone === "warning") {
+      bg = T.warningSurface;
+      fg = T.warningText;
+    }
+    mapStatus.style.background = bg;
+    mapStatus.style.color = fg;
+  }
+
+  function rebuildPinMap() {
+    // Snapshot existing user choices BEFORE clearing so a preview swap doesn't
+    // silently wipe a hand-made mapping for pads that still exist post-swap.
+    const prevChoices = readEditorPadToSymbolMap(panel);
+    pinMapBody.innerHTML = "";
+
+    const symbolLayer = parseLayer(symSelect.value);
+    const usingTemplateSymbol = symbolLayer.source === "template";
+    const usingTemplateFootprint = parseLayer(fpSelect.value).source === "template";
+
+    if (!usingTemplateSymbol) {
+      const placeholder = doc.createElement("div");
+      placeholder.textContent = "Pin-Zuordnung nur für Template-Symbole";
+      placeholder.style.cssText =
+        `color:${T.placeholder};font-size:${DIALOG_TYPE.micro};font-style:italic;padding:${DIALOG_SPACING.xs}`;
+      pinMapBody.appendChild(placeholder);
+      setMapStatus("Standard (1:1)", null);
+      return;
+    }
+
+    if (usingTemplateFootprint) {
+      const placeholder = doc.createElement("div");
+      placeholder.textContent =
+        "Pin-Zuordnung für Template-Footprints noch nicht verfügbar";
+      placeholder.style.cssText =
+        `color:${T.placeholder};font-size:${DIALOG_TYPE.micro};font-style:italic;padding:${DIALOG_SPACING.xs}`;
+      pinMapBody.appendChild(placeholder);
+      setMapStatus("Standard (1:1)", null);
+      return;
+    }
+
+    if (!editorFootprintPads.length || !editorSymbolPins.length) {
+      const placeholder = doc.createElement("div");
+      placeholder.textContent = editorFootprintPads.length
+        ? "Pin-Daten der Vorlage werden geladen …"
+        : "Pad-Daten des Footprints werden geladen …";
+      placeholder.style.cssText =
+        `color:${T.placeholder};font-size:${DIALOG_TYPE.micro};font-style:italic;padding:${DIALOG_SPACING.xs}`;
+      pinMapBody.appendChild(placeholder);
+      setMapStatus("Standard (1:1)", null);
+      return;
+    }
+
+    const table = doc.createElement("table");
+    table.setAttribute(OVERRIDE_REGISTER_PINMAP_TABLE_ATTR, "true");
+    table.style.cssText = "width:100%;border-collapse:collapse;font-size:" + DIALOG_TYPE.small;
+
+    const thead = doc.createElement("thead");
+    const headRow = doc.createElement("tr");
+    for (const text of ["Footprint-Pad", "Symbol-Pin"]) {
+      const th = doc.createElement("th");
+      th.scope = "col";
+      th.textContent = text;
+      th.style.cssText = [
+        "position:sticky", "top:0", "text-align:left",
+        `padding:${DIALOG_SPACING.xs} ${DIALOG_SPACING.sm}`,
+        `background:${T.surface3}`,
+        `color:${T.textMuted}`,
+        `border-bottom:1px solid ${T.borderSoft}`,
+        `font-size:${DIALOG_TYPE.micro}`,
+        "font-weight:600",
+      ].join(";");
+      headRow.appendChild(th);
+    }
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = doc.createElement("tbody");
+    for (const padRaw of editorFootprintPads) {
+      const padLabel = String(padRaw ?? "");
+      if (!padLabel) continue;
+      const tr = doc.createElement("tr");
+      const padCell = doc.createElement("td");
+      padCell.textContent = padLabel;
+      padCell.style.cssText = [
+        `padding:${DIALOG_SPACING.xs} ${DIALOG_SPACING.sm}`,
+        `color:${T.textStrong}`,
+        "font-weight:600",
+        "font-variant-numeric:tabular-nums",
+        `border-bottom:1px solid ${T.borderSoft}`,
+        "width:1%",
+        "white-space:nowrap",
+      ].join(";");
+      tr.appendChild(padCell);
+
+      const selCell = doc.createElement("td");
+      selCell.style.cssText =
+        `padding:${DIALOG_SPACING.xs} ${DIALOG_SPACING.sm};border-bottom:1px solid ${T.borderSoft}`;
+      const sel = doc.createElement("select");
+      sel.setAttribute(OVERRIDE_REGISTER_PINMAP_PAD_ATTR, padLabel);
+      sel.setAttribute(
+        "aria-label",
+        `Symbol-Pin für Footprint-Pad ${padLabel}`,
+      );
+      applyDialogStyleSelect(sel, { theme: opts.theme });
+
+      const ncOpt = doc.createElement("option");
+      ncOpt.value = OVERRIDE_REGISTER_PINMAP_NC;
+      ncOpt.textContent = "NC";
+      sel.appendChild(ncOpt);
+      for (const pin of editorSymbolPins) {
+        if (!pin || pin.number == null) continue;
+        const opt = doc.createElement("option");
+        opt.value = String(pin.number);
+        const label = pin.name ? `${pin.number} · ${pin.name}` : String(pin.number);
+        opt.textContent = label;
+        sel.appendChild(opt);
+      }
+
+      // Preserve a still-valid prior choice; else auto-default 1:1 (with digit
+      // normalization "01"→"1"); else NC.
+      const prior = prevChoices[padLabel];
+      const validPriorPin =
+        typeof prior === "string"
+          && prior !== ""
+          && (prior === OVERRIDE_REGISTER_PINMAP_NC
+            || editorSymbolPins.some((p) => String(p?.number) === prior));
+      if (validPriorPin) {
+        sel.value = prior;
+      } else {
+        const padNorm = normalizePinMapPadLabel(padLabel);
+        const autoPin = editorSymbolPins.find(
+          (p) => normalizePinMapPadLabel(String(p?.number ?? "")) === padNorm,
+        );
+        sel.value = autoPin ? String(autoPin.number) : OVERRIDE_REGISTER_PINMAP_NC;
+      }
+
+      sel.addEventListener("change", updateMapStatus);
+      selCell.appendChild(sel);
+      tr.appendChild(selCell);
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    pinMapBody.appendChild(table);
+    updateMapStatus();
+  }
+
+  function updateMapStatus() {
+    const selects = pinMapBody.querySelectorAll(
+      `select[${OVERRIDE_REGISTER_PINMAP_PAD_ATTR}]`,
+    );
+    if (!selects.length) {
+      // Placeholder mode — keep whatever setMapStatus already set in rebuildPinMap.
+      return;
+    }
+    let assigned = 0;
+    for (const s of selects) {
+      if (s.value && s.value !== OVERRIDE_REGISTER_PINMAP_NC) assigned += 1;
+    }
+    const open = selects.length - assigned;
+    const tone = open === 0 ? "success" : "warning";
+    setMapStatus(
+      `Pin-Zuordnung: ${assigned}/${selects.length} zugeordnet · ${open} offen`,
+      tone,
+    );
+  }
+
+  /* ----- Category-matched template list ----------------------------------- */
 
   // Category-matched templates for the current LCSC category (self-describing
   // templates) — the default shortlist. "show all" reveals every template.
@@ -792,136 +1191,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   }
   showAllCb.addEventListener("change", renderTemplateList);
 
-  // Pin-label visibility (V2 carry-over): hide pin numbers / names in the
-  // written symbol — typical for 2-pin parts (R/C/L/D) where they clutter the
-  // schematic. The caller auto-prefills "hide numbers" for ≤2-pin parts via
-  // opts.initialHidePinNumbers; the engine applies it on both symbol paths.
-  const pinHeading = doc.createElement("div");
-  pinHeading.textContent = "Pin-Beschriftung";
-  pinHeading.style.cssText = `color:${T.textMuted};font-weight:600;font-size:${DIALOG_TYPE.micro}`;
-  rightCol.appendChild(pinHeading);
-
-  const pinRow = doc.createElement("div");
-  pinRow.style.cssText = `display:flex;gap:${DIALOG_SPACING.lg};flex-wrap:wrap`;
-  const mkPinCheckbox = (attr, labelText, checked) => {
-    const lbl = doc.createElement("label");
-    lbl.style.cssText =
-      `display:flex;align-items:center;gap:${DIALOG_SPACING.xs};font-size:${DIALOG_TYPE.small};color:${T.text};cursor:pointer`;
-    const cb = doc.createElement("input");
-    cb.type = "checkbox";
-    cb.setAttribute(attr, "true");
-    cb.checked = Boolean(checked);
-    lbl.appendChild(cb);
-    lbl.appendChild(doc.createTextNode(labelText));
-    pinRow.appendChild(lbl);
-  };
-  mkPinCheckbox(
-    OVERRIDE_REGISTER_HIDE_PINNUM_ATTR,
-    "Pin-Nummern ausblenden",
-    opts.initialHidePinNumbers,
-  );
-  mkPinCheckbox(
-    OVERRIDE_REGISTER_HIDE_PINNAME_ATTR,
-    "Pin-Namen ausblenden",
-    opts.initialHidePinNames,
-  );
-  rightCol.appendChild(pinRow);
-
-  // Value-Param + Metadata preview (ADR-0006 refined). The Value dropdown picks
-  // the one param whose value fills the KiCad Value field; the read-only preview
-  // lists every param written as a Property and marks the chosen one ("→ Value")
-  // — that one is NOT also written as a duplicate Property (engine excludes it).
-  const pageParams =
-    opts.pageParams && typeof opts.pageParams === "object" ? opts.pageParams : {};
-  const propEntries = Object.entries(pageParams).filter(
-    ([k, v]) =>
-      typeof k === "string" && k.trim() && typeof v === "string" && v.trim(),
-  );
-
-  // Value-Param dropdown (over the preview). The select sits inside a flex
-  // wrapper because ``applyDialogStyleSelect`` rewrites the select's own
-  // ``cssText`` on focus/hover, which would otherwise wipe out the flex
-  // sizing the row layout depends on.
-  const valueRow = doc.createElement("label");
-  valueRow.style.cssText =
-    `display:flex;align-items:center;gap:${DIALOG_SPACING.sm};margin-top:${DIALOG_SPACING.xs};color:${T.textMuted}`;
-  valueRow.appendChild(doc.createTextNode("Value-Feld"));
-  const valueSelectWrap = doc.createElement("div");
-  valueSelectWrap.style.cssText = "flex:1;min-width:0";
-  const valueSelect = doc.createElement("select");
-  valueSelect.setAttribute(OVERRIDE_REGISTER_VALUE_PARAM_ATTR, "true");
-  applyDialogStyleSelect(valueSelect, { theme: opts.theme });
-  const noneOpt = doc.createElement("option");
-  noneOpt.value = "";
-  noneOpt.textContent = "— Kein Value-Param (EasyEDA-Standard) —";
-  valueSelect.appendChild(noneOpt);
-  for (const [k, v] of propEntries) {
-    const opt = doc.createElement("option");
-    opt.value = k;
-    opt.textContent = `${k} — ${v}`;
-    valueSelect.appendChild(opt);
-  }
-  // Preselect: caller's initialValueParam, else auto-detect, else none.
-  const presetValueParam =
-    (typeof opts.initialValueParam === "string" && opts.initialValueParam) ||
-    detectValueParam(pageParams) ||
-    "";
-  const hasValueOpt = Array.from(valueSelect.options).some(
-    (o) => o.value === presetValueParam,
-  );
-  valueSelect.value = hasValueOpt ? presetValueParam : "";
-  valueSelectWrap.appendChild(valueSelect);
-  valueRow.appendChild(valueSelectWrap);
-  rightCol.appendChild(valueRow);
-
-  const propHeading = doc.createElement("div");
-  propHeading.textContent = propEntries.length
-    ? `Eigenschaften, die ins Symbol übernommen werden (${propEntries.length})`
-    : "Keine Metadaten auf der Produktseite gefunden";
-  propHeading.style.cssText = `margin-top:${DIALOG_SPACING.xs};color:${T.textMuted};font-weight:600;font-size:${DIALOG_TYPE.micro}`;
-  rightCol.appendChild(propHeading);
-
-  if (propEntries.length) {
-    const propList = doc.createElement("div");
-    propList.setAttribute(OVERRIDE_REGISTER_PROP_PREVIEW_ATTR, "true");
-    propList.style.cssText = [
-      "display:flex",
-      "flex-direction:column",
-      "gap:2px",
-      "max-height:180px",
-      "overflow:auto",
-      `border:1px solid ${T.borderSoft}`,
-      `border-radius:${T.radiusSm}`,
-      `padding:${DIALOG_SPACING.xs} ${DIALOG_SPACING.sm}`,
-      `background:${T.surface2}`,
-    ].join(";");
-    // Re-rendered when the Value-Param changes so the "→ Value" badge follows.
-    const renderPropPreview = () => {
-      propList.innerHTML = "";
-      const chosen = valueSelect.value;
-      for (const [k, v] of propEntries) {
-        const isValue = k === chosen;
-        const propRow = doc.createElement("div");
-        propRow.style.cssText =
-          `display:flex;justify-content:space-between;gap:${DIALOG_SPACING.md};line-height:1.4`;
-        const key = doc.createElement("span");
-        key.textContent = isValue ? `${k} → Value` : k;
-        key.style.cssText = isValue
-          ? `color:${T.accent};font-weight:600;flex:0 0 auto`
-          : `color:${T.textMuted};flex:0 0 auto`;
-        const val = doc.createElement("span");
-        val.textContent = v;
-        val.style.cssText =
-          `color:${T.textStrong};font-weight:500;text-align:right;word-break:break-word`;
-        propRow.appendChild(key);
-        propRow.appendChild(val);
-        propList.appendChild(propRow);
-      }
-    };
-    renderPropPreview();
-    valueSelect.addEventListener("change", renderPropPreview);
-    rightCol.appendChild(propList);
-  }
+  /* ----- Actions ----------------------------------------------------------- */
 
   const actions = doc.createElement("div");
   actions.style.cssText = `display:flex;gap:${DIALOG_SPACING.sm};justify-content:flex-end;margin-top:${DIALOG_SPACING.xs};border-top:1px solid ${T.borderSoft};padding-top:${DIALOG_SPACING.md}`;
@@ -986,6 +1256,66 @@ export function buildRegisterImportEditor(doc, opts = {}) {
 }
 
 /**
+ * Pad-label normalization for the Pin↔Pad Mapper's auto-default match. Strips
+ * leading zeros on digit-only labels so a footprint pad ``"01"`` lines up with a
+ * symbol pin ``"1"``. Re-authored locally (rather than imported from app.js's
+ * private ``normalizeGalleryPadLabel``) to keep cross-file extraction off the
+ * AFK risk surface; alphanumeric pad labels (``A1`` etc.) are compared as-is.
+ *
+ * @param {string} s
+ * @returns {string}
+ */
+function normalizePinMapPadLabel(s) {
+  const t = String(s ?? "").trim();
+  if (!t) return t;
+  if (/^\d+$/.test(t)) {
+    return String(parseInt(t, 10));
+  }
+  return t;
+}
+
+/**
+ * Read the Pin↔Pad Mapper selects into a flat ``{padLabel: symbolPinValue}``
+ * dict. ``symbolPinValue`` is the option's value (``"__NC__"`` for no
+ * connection, otherwise the symbol pin number).
+ *
+ * @param {HTMLElement} panel
+ * @returns {Record<string, string>}
+ */
+function readEditorPadToSymbolMap(panel) {
+  const out = {};
+  if (!panel) return out;
+  const selects = panel.querySelectorAll(`select[${OVERRIDE_REGISTER_PINMAP_PAD_ATTR}]`);
+  for (const sel of selects) {
+    const pad = sel.getAttribute(OVERRIDE_REGISTER_PINMAP_PAD_ATTR) || "";
+    if (!pad) continue;
+    out[pad] = sel.value;
+  }
+  return out;
+}
+
+/**
+ * Invert the editor's pad→symbol-pin map into the backend's
+ * ``templatePinMap`` shape (``{symbolPinNumber: footprintPadLabel}``). Mirrors
+ * ``app.js``'s ``buildTemplatePinMapFromGalleryPadMap`` last-wins semantics on
+ * duplicate symbol pins.
+ *
+ * @param {Record<string, string>} padToSymbol
+ * @returns {Record<string, string>}
+ */
+function buildEditorTemplatePinMap(padToSymbol) {
+  const out = {};
+  for (const [pad, symRaw] of Object.entries(padToSymbol || {})) {
+    const sym = String(symRaw ?? "").trim();
+    if (!sym || sym === OVERRIDE_REGISTER_PINMAP_NC) continue;
+    const p = normalizePinMapPadLabel(pad);
+    if (!p) continue;
+    out[sym] = p;
+  }
+  return out;
+}
+
+/**
  * Translate the Register Import-Editor's DOM into the ``setRule`` RPC payload.
  * The Symbol Source uses the same ``"<source>:<libPath>:<name>"`` grammar as
  * the override panel so ``parseLayer`` decodes it into the ADR-0006
@@ -1012,18 +1342,30 @@ export function collectRegisterEditorRule(panel, categoryPath) {
   );
   const vp = panel.querySelector(`[${OVERRIDE_REGISTER_VALUE_PARAM_ATTR}]`)?.value;
   const valueParam = typeof vp === "string" && vp.trim() ? vp.trim() : null;
+  // Pin↔Pad Mapper (#9): only attach ``templatePinMap`` when the symbol source
+  // is a template AND the inverted map is non-empty (matches phase2.py's
+  // ``use_template && non-empty dict`` guard). Existing fields are untouched —
+  // ``templatePinMap`` is a NEW optional key so older callers are unaffected.
+  const rule = {
+    symbolSource,
+    footprintSource,
+    // ADR-0006 (refined): metadata is auto-upserted from the page snapshot;
+    // the rule no longer carries a manual label mapping.
+    labelMapping: {},
+    hidePinNumbers,
+    hidePinNames,
+    valueParam,
+  };
+  if (symbolSource?.source === "template") {
+    const padToSym = readEditorPadToSymbolMap(panel);
+    const templatePinMap = buildEditorTemplatePinMap(padToSym);
+    if (Object.keys(templatePinMap).length > 0) {
+      rule.templatePinMap = templatePinMap;
+    }
+  }
   return {
     categoryPath: typeof categoryPath === "string" ? categoryPath : "",
-    rule: {
-      symbolSource,
-      footprintSource,
-      // ADR-0006 (refined): metadata is auto-upserted from the page snapshot;
-      // the rule no longer carries a manual label mapping.
-      labelMapping: {},
-      hidePinNumbers,
-      hidePinNames,
-      valueParam,
-    },
+    rule,
   };
 }
 
@@ -1473,7 +1815,10 @@ export function renderRegisterImportEditor(anchorRow, opts = {}) {
   let settled = false;
   const { dismiss } = mountCsModal({
     id: "k2c-register-editor-modal",
-    maxWidthPx: 720,
+    // Bumped from 720 → 880 (Issue #9) so the right-pane preview row fits two
+    // SVG cells side-by-side and the Pin-Mapper table has room for the pad +
+    // select columns without horizontal scrolling at default zoom.
+    maxWidthPx: 880,
     title: "Import-Editor",
     closeable: true,
     ariaLabel: "Import-Editor — Symbol-/Footprint-Vorlagen zuweisen",
