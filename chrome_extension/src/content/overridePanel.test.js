@@ -33,6 +33,11 @@ import {
   OVERRIDE_REGISTER_HIDE_PINNUM_ATTR,
   OVERRIDE_REGISTER_HIDE_PINNAME_ATTR,
   OVERRIDE_REGISTER_VALUE_PARAM_ATTR,
+  OVERRIDE_REGISTER_PINMAP_ATTR,
+  OVERRIDE_REGISTER_PINMAP_TABLE_ATTR,
+  OVERRIDE_REGISTER_PINMAP_PAD_ATTR,
+  OVERRIDE_REGISTER_MAPSTATUS_ATTR,
+  OVERRIDE_REGISTER_PINMAP_NC,
   OVERRIDE_IMPORT_ATTR,
   OVERRIDE_MODIFY_ATTR,
   OVERRIDE_ONECLICK_PREVIEW_ATTR,
@@ -1248,5 +1253,313 @@ describe("Override Panel — theme-aware token chrome (#43)", () => {
     valueSelect.dispatchEvent(new Event("focus"));
     expect(wrap.style.flexGrow).toBe("1");
     expect(wrap.style.minWidth).toBe("0");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  Issue #9 — Import-Editor layout overhaul + Pin↔Pad Mapper                 */
+/* -------------------------------------------------------------------------- */
+
+const PINMAP_TPL = "/home/user/templates/MyTemplates.kicad_sym";
+const PINMAP_SYM_PINS = [
+  { number: "1", name: "A" },
+  { number: "2", name: "B" },
+];
+const PINMAP_PADS = ["1", "2"];
+const flushAsync = () => new Promise((r) => setTimeout(r, 0));
+
+describe("buildRegisterImportEditor — two-pane layout (#9)", () => {
+  it("uses CSS Grid auto-fit for body and preview row so the modal collapses without a width-read", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+    });
+    // The body grid + preview row both use ``repeat(auto-fit, minmax(260px, 1fr))``
+    // so they fold to one column intrinsically; no panel.clientWidth required.
+    const grids = Array.from(panel.querySelectorAll("div")).filter(
+      (el) =>
+        el.style.gridTemplateColumns
+        && el.style.gridTemplateColumns.includes("auto-fit"),
+    );
+    expect(grids.length).toBeGreaterThanOrEqual(2);
+    for (const g of grids) {
+      expect(g.style.gridTemplateColumns).toMatch(/minmax\(\s*260px/);
+    }
+  });
+
+  it("renders the status strip + Pin-Mapper host + table in the right pane", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+    });
+    expect(panel.querySelector(`[${OVERRIDE_REGISTER_MAPSTATUS_ATTR}]`)).toBeTruthy();
+    expect(panel.querySelector(`[${OVERRIDE_REGISTER_PINMAP_ATTR}]`)).toBeTruthy();
+  });
+
+  it("places the Symbol + Footprint preview panes as siblings in the right-pane preview row", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+    });
+    const sym = panel.querySelector(`[${OVERRIDE_REGISTER_SYMBOL_PREVIEW_ATTR}]`);
+    const fp = panel.querySelector(`[${OVERRIDE_REGISTER_FOOTPRINT_PREVIEW_ATTR}]`);
+    // Each pane sits inside a labeled cell (Symbol / Footprint) whose direct
+    // parent is the preview row — so the cells (sym/fp.parentElement) share a
+    // parent.
+    expect(sym.parentElement.parentElement).toBe(fp.parentElement.parentElement);
+    const previewRow = sym.parentElement.parentElement;
+    expect(previewRow.style.display).toBe("grid");
+    expect(previewRow.style.gridTemplateColumns).toMatch(/auto-fit/);
+  });
+
+  it("the source file performs no panel.clientWidth read (intrinsic collapse only)", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const src = readFileSync(
+      resolve(process.cwd(), "src/content/overridePanel.js"),
+      "utf-8",
+    );
+    expect(src).not.toMatch(/\.clientWidth\b/);
+  });
+});
+
+describe("buildRegisterImportEditor — Pin↔Pad Mapper (#9)", () => {
+  it("shows the 'Pin-Zuordnung nur für Template-Symbole' placeholder when symbol source is EasyEDA", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+    });
+    const host = panel.querySelector(`[${OVERRIDE_REGISTER_PINMAP_ATTR}]`);
+    expect(host.textContent).toContain("nur für Template-Symbole");
+    expect(panel.querySelector(`[${OVERRIDE_REGISTER_PINMAP_TABLE_ATTR}]`)).toBeNull();
+  });
+
+  it("renders one row per footprint pad once pins+pads are fetched, with selects keyed by pad label", async () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+      initialSymbolSource: { source: "template", libPath: PINMAP_TPL, name: "R0603" },
+      fetchSymbolPreview: () => Promise.resolve({ svg: "<svg/>", pins: PINMAP_SYM_PINS }),
+      fetchFootprintPreview: () => Promise.resolve({ svg: "<svg/>", pads: PINMAP_PADS }),
+    });
+    await flushAsync();
+    expect(panel.querySelector(`[${OVERRIDE_REGISTER_PINMAP_TABLE_ATTR}]`)).toBeTruthy();
+    const selects = panel.querySelectorAll(`select[${OVERRIDE_REGISTER_PINMAP_PAD_ATTR}]`);
+    expect(selects.length).toBe(2);
+    expect(selects[0].getAttribute(OVERRIDE_REGISTER_PINMAP_PAD_ATTR)).toBe("1");
+    expect(selects[1].getAttribute(OVERRIDE_REGISTER_PINMAP_PAD_ATTR)).toBe("2");
+  });
+
+  it("auto-defaults pad→pin 1:1 when pad labels and pin numbers match (digit-normalized)", async () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+      initialSymbolSource: { source: "template", libPath: PINMAP_TPL, name: "R0603" },
+      // ``"01"`` should normalize against pin ``"1"`` so a pad with a leading
+      // zero still picks up the auto-default (parts ship both forms).
+      fetchSymbolPreview: () => Promise.resolve({ svg: "<svg/>", pins: PINMAP_SYM_PINS }),
+      fetchFootprintPreview: () => Promise.resolve({ svg: "<svg/>", pads: ["01", "2"] }),
+    });
+    await flushAsync();
+    const selects = panel.querySelectorAll(`select[${OVERRIDE_REGISTER_PINMAP_PAD_ATTR}]`);
+    expect(selects[0].value).toBe("1");
+    expect(selects[1].value).toBe("2");
+  });
+
+  it("collectRegisterEditorRule emits templatePinMap as {symbolPinNumber: footprintPadLabel}", async () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+      initialSymbolSource: { source: "template", libPath: PINMAP_TPL, name: "R0603" },
+      fetchSymbolPreview: () => Promise.resolve({ svg: "<svg/>", pins: PINMAP_SYM_PINS }),
+      fetchFootprintPreview: () => Promise.resolve({ svg: "<svg/>", pads: PINMAP_PADS }),
+    });
+    await flushAsync();
+    const payload = collectRegisterEditorRule(panel, "Passives/Resistors");
+    expect(payload.rule.templatePinMap).toEqual({ "1": "1", "2": "2" });
+  });
+
+  it("skips __NC__ / blank selections when building templatePinMap", async () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+      initialSymbolSource: { source: "template", libPath: PINMAP_TPL, name: "R0603" },
+      fetchSymbolPreview: () => Promise.resolve({ svg: "<svg/>", pins: PINMAP_SYM_PINS }),
+      fetchFootprintPreview: () => Promise.resolve({ svg: "<svg/>", pads: PINMAP_PADS }),
+    });
+    await flushAsync();
+    const selects = panel.querySelectorAll(`select[${OVERRIDE_REGISTER_PINMAP_PAD_ATTR}]`);
+    selects[0].value = OVERRIDE_REGISTER_PINMAP_NC;
+    const payload = collectRegisterEditorRule(panel, "X");
+    expect(payload.rule.templatePinMap).toEqual({ "2": "2" });
+  });
+
+  it("omits templatePinMap entirely when symbolSource.source !== 'template'", () => {
+    const panel = buildRegisterImportEditor(document, { templateLibs: ONE_LIB });
+    const payload = collectRegisterEditorRule(panel, "X");
+    expect(payload.rule.symbolSource.source).toBe("easyeda");
+    expect("templatePinMap" in payload.rule).toBe(false);
+  });
+
+  it("omits templatePinMap when the user clears every assignment (NC-only is no-op)", async () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+      initialSymbolSource: { source: "template", libPath: PINMAP_TPL, name: "R0603" },
+      fetchSymbolPreview: () => Promise.resolve({ svg: "<svg/>", pins: PINMAP_SYM_PINS }),
+      fetchFootprintPreview: () => Promise.resolve({ svg: "<svg/>", pads: PINMAP_PADS }),
+    });
+    await flushAsync();
+    for (const sel of panel.querySelectorAll(`select[${OVERRIDE_REGISTER_PINMAP_PAD_ATTR}]`)) {
+      sel.value = OVERRIDE_REGISTER_PINMAP_NC;
+    }
+    const payload = collectRegisterEditorRule(panel, "X");
+    expect("templatePinMap" in payload.rule).toBe(false);
+  });
+
+  it("updates the status strip text on every <select> change", async () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+      initialSymbolSource: { source: "template", libPath: PINMAP_TPL, name: "R0603" },
+      fetchSymbolPreview: () => Promise.resolve({ svg: "<svg/>", pins: PINMAP_SYM_PINS }),
+      fetchFootprintPreview: () => Promise.resolve({ svg: "<svg/>", pads: PINMAP_PADS }),
+    });
+    await flushAsync();
+    const status = panel.querySelector(`[${OVERRIDE_REGISTER_MAPSTATUS_ATTR}]`);
+    expect(status.textContent).toContain("2/2");
+    const first = panel.querySelector(`select[${OVERRIDE_REGISTER_PINMAP_PAD_ATTR}]`);
+    first.value = OVERRIDE_REGISTER_PINMAP_NC;
+    first.dispatchEvent(new Event("change"));
+    expect(status.textContent).toContain("1/2");
+    expect(status.textContent).toContain("1 offen");
+  });
+
+  it("template footprint selection swaps the mapper to the 'noch nicht verfügbar' placeholder", async () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+      initialSymbolSource: { source: "template", libPath: PINMAP_TPL, name: "R0603" },
+      fetchSymbolPreview: () => Promise.resolve({ svg: "<svg/>", pins: PINMAP_SYM_PINS }),
+      fetchFootprintPreview: () => Promise.resolve({ svg: "<svg/>", pads: PINMAP_PADS }),
+      fetchTemplateFootprintPreview: () => Promise.resolve({ svg: "<svg/>" }),
+    });
+    await flushAsync();
+    expect(panel.querySelector(`[${OVERRIDE_REGISTER_PINMAP_TABLE_ATTR}]`)).toBeTruthy();
+    const fp = panel.querySelector(`[${OVERRIDE_FOOTPRINT_SELECT_ATTR}]`);
+    fp.value = "template:/home/user/templates/MyTemplates.kicad_sym:R0603_HandSolder";
+    fp.dispatchEvent(new Event("change"));
+    await flushAsync();
+    expect(panel.querySelector(`[${OVERRIDE_REGISTER_PINMAP_TABLE_ATTR}]`)).toBeNull();
+    expect(
+      panel.querySelector(`[${OVERRIDE_REGISTER_PINMAP_ATTR}]`).textContent,
+    ).toContain("Template-Footprints noch nicht verfügbar");
+  });
+
+  it("preserves a still-valid user choice across a rebuild (preview swap doesn't wipe selections)", async () => {
+    let pins = PINMAP_SYM_PINS;
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+      initialSymbolSource: { source: "template", libPath: PINMAP_TPL, name: "R0603" },
+      fetchSymbolPreview: () => Promise.resolve({ svg: "<svg/>", pins }),
+      fetchFootprintPreview: () => Promise.resolve({ svg: "<svg/>", pads: PINMAP_PADS }),
+    });
+    await flushAsync();
+    // Hand-mapped pad "1" → pin "2" (intentional swap).
+    const padOne = panel.querySelector(
+      `select[${OVERRIDE_REGISTER_PINMAP_PAD_ATTR}="1"]`,
+    );
+    padOne.value = "2";
+    padOne.dispatchEvent(new Event("change"));
+    // Trigger a rebuild (e.g. re-fetch via the template list).
+    const cb = panel.querySelector(`[${OVERRIDE_REGISTER_SHOWALL_ATTR}]`);
+    cb.checked = true;
+    cb.dispatchEvent(new Event("change"));
+    await flushAsync();
+    const padOneAfter = panel.querySelector(
+      `select[${OVERRIDE_REGISTER_PINMAP_PAD_ATTR}="1"]`,
+    );
+    expect(padOneAfter.value).toBe("2");
+  });
+
+  it("provides a per-select aria-label so screen readers can announce the pad context", async () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+      initialSymbolSource: { source: "template", libPath: PINMAP_TPL, name: "R0603" },
+      fetchSymbolPreview: () => Promise.resolve({ svg: "<svg/>", pins: PINMAP_SYM_PINS }),
+      fetchFootprintPreview: () => Promise.resolve({ svg: "<svg/>", pads: PINMAP_PADS }),
+    });
+    await flushAsync();
+    const sel = panel.querySelector(`select[${OVERRIDE_REGISTER_PINMAP_PAD_ATTR}="1"]`);
+    expect(sel.getAttribute("aria-label")).toBe("Symbol-Pin für Footprint-Pad 1");
+  });
+});
+
+describe("buildRegisterImportEditor — Pin-Mapper tokens + dark theme", () => {
+  it("Pin-Mapper host uses the dark surface in dark theme (no hardcoded hex)", async () => {
+    const { getDialogTokens } = await import("./dialog.js");
+    const dark = getDialogTokens("dark");
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+      theme: "dark",
+    });
+    const host = panel.querySelector(`[${OVERRIDE_REGISTER_PINMAP_ATTR}]`);
+    expect(host.style.background).toBe(jsdomColor(dark.surface2));
+    expect(host.style.background).not.toBe(jsdomColor("#f1f5f9"));
+  });
+
+  it("status strip is themed via primarySoft / primary tokens (no hardcoded hex)", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+    });
+    const status = panel.querySelector(`[${OVERRIDE_REGISTER_MAPSTATUS_ATTR}]`);
+    expect(status.style.background).toBeTruthy();
+    expect(status.style.color).toBeTruthy();
+    // The mapper hex-literals called out in the spec (gallery table) must not
+    // leak into the panel chrome.
+    const text = status.style.cssText.toLowerCase();
+    expect(text).not.toContain("#f1f5f9");
+    expect(text).not.toContain("#0f172a");
+    expect(text).not.toContain("#94a3b8");
+  });
+
+  it("Pin-Mapper selects are styled via applyDialogStyleSelect (chevron + hover wiring)", async () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+      initialSymbolSource: { source: "template", libPath: PINMAP_TPL, name: "R0603" },
+      fetchSymbolPreview: () => Promise.resolve({ svg: "<svg/>", pins: PINMAP_SYM_PINS }),
+      fetchFootprintPreview: () => Promise.resolve({ svg: "<svg/>", pads: PINMAP_PADS }),
+    });
+    await flushAsync();
+    const sel = panel.querySelector(`select[${OVERRIDE_REGISTER_PINMAP_PAD_ATTR}="1"]`);
+    // applyDialogStyleSelect installs a custom background-image chevron.
+    expect(sel.style.backgroundImage).toContain("svg");
+  });
+});
+
+describe("renderRegisterImportEditor — Issue #9 modal width bump", () => {
+  it("mounts with maxWidthPx=880 so the two-pane workspace fits without horizontal scroll", () => {
+    const row = (() => {
+      const r = buildAnchorCardRow(document, { colSpan: 1 });
+      const table = document.createElement("table");
+      const tbody = document.createElement("tbody");
+      tbody.appendChild(r);
+      table.appendChild(tbody);
+      document.body.appendChild(table);
+      return r;
+    })();
+    renderRegisterImportEditor(row, { templateLibs: EMPTY_LIBS });
+    const modal = document.getElementById("k2c-register-editor-modal");
+    // ``mountCsModal`` writes the width onto the panel; the value comes through
+    // as either ``max-width: 880px`` or ``width: 880px`` depending on the
+    // helper. Either way the 880 token must show up in the inline cssText.
+    expect(modal).toBeTruthy();
+    const panel = modal.querySelector('[style*="880"]') || modal;
+    expect(panel.outerHTML).toContain("880");
   });
 });

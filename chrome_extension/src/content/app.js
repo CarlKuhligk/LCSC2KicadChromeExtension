@@ -4923,7 +4923,13 @@ function attachButton(lcscId) {
                   k2cRpc(1, 400),
                 );
                 if (resp?.ok && resp.data?.ok && typeof resp.data.svg === "string") {
-                  return { svg: resp.data.svg };
+                  // Pin-Mapper (#9) wants the structured pins array — the same one the
+                  // gallery consumes — so the editor can render a pad→pin table without
+                  // re-parsing the SVG. Absent ⇒ `[]` ⇒ mapper shows a placeholder.
+                  return {
+                    svg: resp.data.svg,
+                    pins: Array.isArray(resp.data.pins) ? resp.data.pins : [],
+                  };
                 }
                 const detail =
                   (resp?.data && (resp.data.error || resp.data.message))
@@ -4944,7 +4950,12 @@ function attachButton(lcscId) {
                   k2cRpc(2, 400),
                 );
                 if (resp?.ok && resp.data?.footprint_svg) {
-                  return { svg: resp.data.footprint_svg };
+                  // Pin-Mapper (#9) reads the pad labels from the footprint preview
+                  // bundle (``lcscFootprintPreview`` already returns ``pads``).
+                  return {
+                    svg: resp.data.footprint_svg,
+                    pads: Array.isArray(resp.data.pads) ? resp.data.pads : [],
+                  };
                 }
                 const detail =
                   (resp?.data && (resp.data.error || resp.data.message))
@@ -5007,6 +5018,11 @@ function attachButton(lcscId) {
                       hidePinNumbers: rule.hidePinNumbers,
                       hidePinNames: rule.hidePinNames,
                       valueParam: rule.valueParam,
+                      // Pin↔Pad Mapper (#9): forward the editor-built map so phase2.py
+                      // can hand it to ``conversion._coerce_template_pin_map`` →
+                      // ``symbol_pin_remap.apply_pin_number_map``. Backend ignores
+                      // empty / non-template cases (no-op).
+                      templatePinMap: rule.templatePinMap || {},
                     },
                     k2cRpc(2, 200),
                   );
