@@ -348,23 +348,18 @@ def count_pins_in_symbol_string(symbol_str: str) -> int:
     return len(re.findall(r"\(\s*pin\s+", symbol_str))
 
 
-def extract_symbol_from_lib(lib_path: str, symbol_name: str) -> str | None:
-    """Extract a single top-level symbol block from a .kicad_sym file by name.
+def _find_symbol_span(content: str, symbol_name: str) -> "tuple[int, int] | None":
+    """Return ``(start, end)`` of the top-level ``(symbol "name" … )`` block.
 
-    Paren-balanced rather than indent-anchored: KiCad-saved or hand-edited
-    libraries can carry inconsistent indentation (e.g. a symbol opening at 2
-    spaces but its matching close at 4) and CRLF line endings, which the old
-    ``(?P=indent)\\)`` regex could not match — it silently returned None and the
-    template merge failed. Balancing parens from the ``(symbol "Name"`` token
-    (string-aware, so ``)`` inside quoted text doesn't count) is robust to both.
+    Paren-balanced + string-aware (a ``)`` inside quoted text doesn't count) and
+    **indentation-agnostic** — the robust replacement for the brittle
+    indent-anchored ``sym_lib_regex_kicad_sym`` (``(?P=indent)\\)``), which fails
+    when a symbol's opening and closing parens carry different indentation (e.g.
+    template-merged symbols open at 2 spaces but close at 4). The trailing quote
+    in the needle means a sub-symbol ``"Name_0_1"`` never matches the parent
+    ``"Name"``. ``start`` is the index of ``(symbol``; ``end`` is just past the
+    matching ``)``. Returns ``None`` when the symbol is absent.
     """
-    try:
-        with open(lib_path, encoding="utf-8") as f:
-            content = f.read()
-    except OSError:
-        return None
-    # Exact opening token — the trailing quote means a sub-symbol "Name_0_1"
-    # does not match the parent "Name", and no regex escaping is needed.
     needle = f'(symbol "{symbol_name}"'
     start = content.find(needle)
     if start == -1:
@@ -383,26 +378,38 @@ def extract_symbol_from_lib(lib_path: str, symbol_name: str) -> str | None:
         elif c == ")":
             depth -= 1
             if depth == 0:
-                return content[start : i + 1].strip()
+                return start, i + 1
     return None
+
+
+def extract_symbol_from_lib(lib_path: str, symbol_name: str) -> str | None:
+    """Extract a single top-level symbol block from a .kicad_sym file by name.
+
+    Paren-balanced (see :func:`_find_symbol_span`) rather than indent-anchored,
+    so KiCad-saved or hand-edited libraries with inconsistent indentation or
+    CRLF line endings still resolve.
+    """
+    try:
+        with open(lib_path, encoding="utf-8") as f:
+            content = f.read()
+    except OSError:
+        return None
+    span = _find_symbol_span(content, symbol_name)
+    if span is None:
+        return None
+    return content[span[0] : span[1]].strip()
 
 
 def id_already_in_symbol_lib(lib_path: str, component_name: str) -> bool:
     with open(lib_path, encoding="utf-8") as lib_file:
         current_lib = lib_file.read()
-        for variant in _component_name_variants(component_name):
-            component = re.findall(
-                sym_lib_regex_kicad_sym.format(
-                    component_name=sanitize_for_regex(variant)
-                ),
-                current_lib,
-                flags=re.DOTALL,
-            )
-            if component:
-                logging.info(
-                    "Symbol '%s' already exists in %s", variant, lib_path
-                )
-                return True
+    # Paren-balanced lookup (indentation-agnostic): the old indent-anchored regex
+    # missed template-merged symbols (open/close at different indents), so a
+    # re-import saw "not present" and APPENDED a duplicate instead of updating.
+    for variant in _component_name_variants(component_name):
+        if _find_symbol_span(current_lib, variant) is not None:
+            logging.info("Symbol '%s' already exists in %s", variant, lib_path)
+            return True
     return False
 
 
@@ -413,16 +420,23 @@ def update_component_in_symbol_lib_file(
 ) -> None:
     with open(file=lib_path, encoding="utf-8") as lib_file:
         current_lib = lib_file.read()
-        pattern_template = sym_lib_regex_kicad_sym
 
+    # Remove every existing copy of the symbol (paren-balanced, indentation-agnostic)
+    # then re-add one fresh below. Removing ALL occurrences also self-heals a library
+    # that a previous (buggy, indent-anchored) re-import had already duplicated.
     new_lib = current_lib
     match_found = False
     for variant in _component_name_variants(component_name):
-        candidate_pattern = pattern_template.format(
-            component_name=sanitize_for_regex(variant)
-        )
-        if re.search(candidate_pattern, new_lib, flags=re.DOTALL):
-            new_lib = re.sub(candidate_pattern, "", new_lib, flags=re.DOTALL)
+        while True:
+            span = _find_symbol_span(new_lib, variant)
+            if span is None:
+                break
+            start, end = span
+            # Drop the symbol's own leading indentation + one trailing newline so
+            # no blank/indented line is left behind.
+            line_start = new_lib.rfind("\n", 0, start) + 1
+            seg_end = end + 1 if end < len(new_lib) and new_lib[end] == "\n" else end
+            new_lib = new_lib[:line_start] + new_lib[seg_end:]
             match_found = True
 
     if not match_found:
