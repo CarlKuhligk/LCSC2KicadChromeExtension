@@ -44,6 +44,9 @@ import {
   OVERRIDE_YELLOW_KEEP_EASYEDA_ATTR,
   OVERRIDE_YELLOW_OPEN_EDITOR_ATTR,
   OVERRIDE_YELLOW_HINT_ATTR,
+  OVERRIDE_CAD_UNAVAILABLE_ATTR,
+  CAD_UNAVAILABLE_MESSAGE,
+  emittedOverridesNeedEasyeda,
   buildYellowPanel,
   EASYEDA_OPTION_VALUE,
 } from "./overridePanel.js";
@@ -1539,6 +1542,290 @@ describe("buildRegisterImportEditor — Pin-Mapper tokens + dark theme", () => {
     const sel = panel.querySelector(`select[${OVERRIDE_REGISTER_PINMAP_PAD_ATTR}="1"]`);
     // applyDialogStyleSelect installs a custom background-image chevron.
     expect(sel.style.backgroundImage).toContain("svg");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  Issue #47 — EasyEDA availability pre-check (no-CAD gate)                  */
+/* -------------------------------------------------------------------------- */
+
+const CAD_UNAVAILABLE = { symbol: false, footprint: false };
+const CAD_BOTH_AVAILABLE = { symbol: true, footprint: true };
+
+const FULLY_TEMPLATE_RULE = {
+  symbolSource: {
+    source: "template",
+    libPath: "/home/user/templates/MyTemplates.kicad_sym",
+    name: "R0603",
+  },
+  footprintSource: {
+    source: "template",
+    libPath: "/home/user/templates/MyTemplates.kicad_sym",
+    name: "R0603_HandSolder",
+  },
+  labelMapping: {},
+};
+
+const MIXED_RULE = {
+  symbolSource: {
+    source: "template",
+    libPath: "/home/user/templates/MyTemplates.kicad_sym",
+    name: "R0603",
+  },
+  // No footprintSource → green import's footprint would default to EasyEDA.
+  labelMapping: {},
+};
+
+describe("emittedOverridesNeedEasyeda — front-end mirror of conversion.py:556-560", () => {
+  it("returns false when both layers are template AND no 3D requested (today's Phase 2 default)", () => {
+    expect(
+      emittedOverridesNeedEasyeda({
+        symbol: { source: "template", libPath: "/L.kicad_sym", name: "X" },
+        footprint: { source: "template", libPath: "/L.kicad_sym", name: "X" },
+      }),
+    ).toBe(false);
+  });
+
+  it("returns true when EITHER layer is EasyEDA (Phase 2 still fetches CAD)", () => {
+    expect(
+      emittedOverridesNeedEasyeda({
+        symbol: { source: "template", libPath: "/L.kicad_sym", name: "X" },
+        footprint: { source: "easyeda" },
+      }),
+    ).toBe(true);
+    expect(
+      emittedOverridesNeedEasyeda({
+        symbol: { source: "easyeda" },
+        footprint: { source: "template", libPath: "/L.kicad_sym", name: "X" },
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps the genModel term in the disjunction so the mirror stays correct when 3D is later enabled", () => {
+    expect(
+      emittedOverridesNeedEasyeda(
+        {
+          symbol: { source: "template", libPath: "/L.kicad_sym", name: "X" },
+          footprint: { source: "template", libPath: "/L.kicad_sym", name: "X" },
+        },
+        true,
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("renderOverridePanel — ⚪ white + cadAvailable gate (Issue #47)", () => {
+  it("HIDES the „nur EasyEDA\" action when EasyEDA carries no CAD", () => {
+    const row = mountAnchorRow();
+    const panel = renderOverridePanel(row, {
+      match: { state: "white" },
+      cadAvailable: CAD_UNAVAILABLE,
+    });
+    expect(panel.getAttribute(OVERRIDE_PANEL_MODE_ATTR)).toBe("white");
+    expect(panel.querySelector(`[${OVERRIDE_EASYEDA_ONLY_ATTR}]`)).toBeNull();
+    // „registrieren" is still offered — it routes into the template-only path.
+    expect(panel.querySelector(`[${OVERRIDE_REGISTER_ATTR}]`)).toBeTruthy();
+  });
+
+  it("renders the shared DE notice when EasyEDA is unavailable", () => {
+    const row = mountAnchorRow();
+    const panel = renderOverridePanel(row, {
+      match: { state: "white" },
+      cadAvailable: CAD_UNAVAILABLE,
+    });
+    const notice = panel.querySelector(`[${OVERRIDE_CAD_UNAVAILABLE_ATTR}]`);
+    expect(notice).toBeTruthy();
+    expect(notice.textContent).toBe(CAD_UNAVAILABLE_MESSAGE);
+  });
+
+  it("KEEPS the „nur EasyEDA\" action when EasyEDA is available (no regression)", () => {
+    const row = mountAnchorRow();
+    const panel = renderOverridePanel(row, {
+      match: { state: "white" },
+      cadAvailable: CAD_BOTH_AVAILABLE,
+    });
+    expect(panel.querySelector(`[${OVERRIDE_EASYEDA_ONLY_ATTR}]`)).toBeTruthy();
+    expect(panel.querySelector(`[${OVERRIDE_CAD_UNAVAILABLE_ATTR}]`)).toBeNull();
+  });
+
+  it("KEEPS the „nur EasyEDA\" action when cadAvailable is absent (back-compat with older Native Hosts)", () => {
+    const row = mountAnchorRow();
+    const panel = renderOverridePanel(row, { match: { state: "white" } });
+    expect(panel.querySelector(`[${OVERRIDE_EASYEDA_ONLY_ATTR}]`)).toBeTruthy();
+    expect(panel.querySelector(`[${OVERRIDE_CAD_UNAVAILABLE_ATTR}]`)).toBeNull();
+  });
+});
+
+describe("renderOverridePanel — 🟢 green + cadAvailable gate (Issue #47)", () => {
+  it("HIDES [Import] when EasyEDA is unavailable AND the rule is mixed (rule footprint defaults to EasyEDA)", () => {
+    const row = mountAnchorRow();
+    const panel = renderOverridePanel(row, {
+      match: { state: "green", ruleKey: "Passives/Resistors", rule: MIXED_RULE },
+      cadAvailable: CAD_UNAVAILABLE,
+    });
+    expect(panel.getAttribute(OVERRIDE_PANEL_MODE_ATTR)).toBe("green");
+    expect(panel.querySelector(`[${OVERRIDE_IMPORT_ATTR}]`)).toBeNull();
+    // [Modifizieren] stays — that's the user's escape into the editor.
+    expect(panel.querySelector(`[${OVERRIDE_MODIFY_ATTR}]`)).toBeTruthy();
+    expect(panel.querySelector(`[${OVERRIDE_CAD_UNAVAILABLE_ATTR}]`)).toBeTruthy();
+  });
+
+  it("KEEPS [Import] when EasyEDA is unavailable AND the rule is FULLY template (allowImport)", () => {
+    const row = mountAnchorRow();
+    const panel = renderOverridePanel(row, {
+      match: {
+        state: "green",
+        ruleKey: "Passives/Resistors",
+        rule: FULLY_TEMPLATE_RULE,
+      },
+      cadAvailable: CAD_UNAVAILABLE,
+    });
+    expect(panel.querySelector(`[${OVERRIDE_IMPORT_ATTR}]`)).toBeTruthy();
+    // Notice is still shown so the user knows why the rest of the actions
+    // look different (and as a safety net if they wonder).
+    expect(panel.querySelector(`[${OVERRIDE_CAD_UNAVAILABLE_ATTR}]`)).toBeTruthy();
+  });
+
+  it("KEEPS [Import] when EasyEDA is available (no regression on the mixed-rule path)", () => {
+    const row = mountAnchorRow();
+    const panel = renderOverridePanel(row, {
+      match: { state: "green", ruleKey: "Passives/Resistors", rule: MIXED_RULE },
+      cadAvailable: CAD_BOTH_AVAILABLE,
+    });
+    expect(panel.querySelector(`[${OVERRIDE_IMPORT_ATTR}]`)).toBeTruthy();
+    expect(panel.querySelector(`[${OVERRIDE_CAD_UNAVAILABLE_ATTR}]`)).toBeNull();
+  });
+});
+
+describe("renderOverridePanel — 🟡 yellow + cadAvailable gate (Issue #47)", () => {
+  it("HIDES [EasyEDA übernehmen] in the keepEasyeda branch when EasyEDA is unavailable", () => {
+    const row = mountAnchorRow();
+    const panel = renderOverridePanel(row, {
+      match: { state: "yellow", rule: {} },
+      lowConfidenceBehaviour: "keepEasyeda",
+      cadAvailable: CAD_UNAVAILABLE,
+    });
+    expect(panel.getAttribute(OVERRIDE_PANEL_MODE_ATTR)).toBe("yellow");
+    expect(panel.querySelector(`[${OVERRIDE_YELLOW_KEEP_EASYEDA_ATTR}]`)).toBeNull();
+    expect(panel.querySelector(`[${OVERRIDE_YELLOW_OPEN_EDITOR_ATTR}]`)).toBeTruthy();
+    expect(panel.querySelector(`[${OVERRIDE_CAD_UNAVAILABLE_ATTR}]`)).toBeTruthy();
+  });
+
+  it("KEEPS [EasyEDA übernehmen] when EasyEDA is available", () => {
+    const row = mountAnchorRow();
+    const panel = renderOverridePanel(row, {
+      match: { state: "yellow", rule: {} },
+      lowConfidenceBehaviour: "keepEasyeda",
+      cadAvailable: CAD_BOTH_AVAILABLE,
+    });
+    expect(panel.querySelector(`[${OVERRIDE_YELLOW_KEEP_EASYEDA_ATTR}]`)).toBeTruthy();
+    expect(panel.querySelector(`[${OVERRIDE_CAD_UNAVAILABLE_ATTR}]`)).toBeNull();
+  });
+
+  it("openEditor branch still bypasses the panel (caller forces template-on-both in onModify)", () => {
+    const row = mountAnchorRow();
+    let modifyCalled = false;
+    const panel = renderOverridePanel(row, {
+      match: { state: "yellow", rule: {} },
+      cadAvailable: CAD_UNAVAILABLE,
+      onModify: () => { modifyCalled = true; },
+    });
+    expect(panel).toBeNull();
+    expect(modifyCalled).toBe(true);
+  });
+});
+
+describe("renderOverridePanel — legacy sources picker + cadAvailable gate (Issue #47)", () => {
+  it("strips the EasyEDA option from BOTH selects when EasyEDA is unavailable", () => {
+    const row = mountAnchorRow();
+    const panel = renderOverridePanel(row, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+      cadAvailable: CAD_UNAVAILABLE,
+    });
+    expect(panel.getAttribute(OVERRIDE_PANEL_MODE_ATTR)).toBe("sources");
+    const sym = panel.querySelector(`[${OVERRIDE_SYMBOL_SELECT_ATTR}]`);
+    const fp = panel.querySelector(`[${OVERRIDE_FOOTPRINT_SELECT_ATTR}]`);
+    const symValues = Array.from(sym.options).map((o) => o.value);
+    const fpValues = Array.from(fp.options).map((o) => o.value);
+    expect(symValues).not.toContain(EASYEDA_OPTION_VALUE);
+    expect(fpValues).not.toContain(EASYEDA_OPTION_VALUE);
+    // Confirm cannot emit an EasyEDA layer.
+    let confirmed = null;
+    panel.querySelector(`[${OVERRIDE_CONFIRM_ATTR}]`).addEventListener("click", () => {
+      confirmed = selectionToOverrides({
+        symbolValue: sym.value,
+        footprintValue: fp.value,
+      });
+    });
+    panel.querySelector(`[${OVERRIDE_CONFIRM_ATTR}]`).click();
+    expect(confirmed.symbol.source).toBe("template");
+    expect(confirmed.footprint.source).toBe("template");
+  });
+
+  it("renders the shared DE notice in the sources picker", () => {
+    const row = mountAnchorRow();
+    const panel = renderOverridePanel(row, {
+      templateLibs: ONE_LIB,
+      cadAvailable: CAD_UNAVAILABLE,
+    });
+    expect(panel.querySelector(`[${OVERRIDE_CAD_UNAVAILABLE_ATTR}]`)?.textContent)
+      .toBe(CAD_UNAVAILABLE_MESSAGE);
+  });
+
+  it("leaves the EasyEDA option in place when EasyEDA is available (no regression)", () => {
+    const row = mountAnchorRow();
+    const panel = renderOverridePanel(row, {
+      templateLibs: ONE_LIB,
+      cadAvailable: CAD_BOTH_AVAILABLE,
+    });
+    const sym = panel.querySelector(`[${OVERRIDE_SYMBOL_SELECT_ATTR}]`);
+    expect(Array.from(sym.options).map((o) => o.value)).toContain(EASYEDA_OPTION_VALUE);
+    expect(sym.value).toBe(EASYEDA_OPTION_VALUE);
+    expect(panel.querySelector(`[${OVERRIDE_CAD_UNAVAILABLE_ATTR}]`)).toBeNull();
+  });
+});
+
+describe("buildRegisterImportEditor — editor forcing in unavailable mode (Issue #47)", () => {
+  const TPL_SYM = "/home/user/templates/MyTemplates.kicad_sym";
+
+  it("defaults BOTH selects to a template option when easyedaUnavailable is true and no initial source supplied", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+      easyedaUnavailable: true,
+    });
+    const sym = panel.querySelector(`[${OVERRIDE_SYMBOL_SELECT_ATTR}]`);
+    const fp = panel.querySelector(`[${OVERRIDE_FOOTPRINT_SELECT_ATTR}]`);
+    expect(sym.value).not.toBe(EASYEDA_OPTION_VALUE);
+    expect(sym.value.startsWith("template:")).toBe(true);
+    expect(fp.value).not.toBe(EASYEDA_OPTION_VALUE);
+    expect(fp.value.startsWith("template:")).toBe(true);
+  });
+
+  it("respects an initial template source even in unavailable mode", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+      easyedaUnavailable: true,
+      initialSymbolSource: { source: "template", libPath: TPL_SYM, name: "C0805" },
+      initialFootprintSource: { source: "template", libPath: TPL_SYM, name: "C0805_Std" },
+    });
+    const sym = panel.querySelector(`[${OVERRIDE_SYMBOL_SELECT_ATTR}]`);
+    const fp = panel.querySelector(`[${OVERRIDE_FOOTPRINT_SELECT_ATTR}]`);
+    expect(sym.value).toBe(`template:${TPL_SYM}:C0805`);
+    expect(fp.value).toBe(`template:${TPL_SYM}:C0805_Std`);
+  });
+
+  it("falls back to EasyEDA defaults when easyedaUnavailable is false (no regression)", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+    });
+    const sym = panel.querySelector(`[${OVERRIDE_SYMBOL_SELECT_ATTR}]`);
+    const fp = panel.querySelector(`[${OVERRIDE_FOOTPRINT_SELECT_ATTR}]`);
+    expect(sym.value).toBe(EASYEDA_OPTION_VALUE);
+    expect(fp.value).toBe(EASYEDA_OPTION_VALUE);
   });
 });
 

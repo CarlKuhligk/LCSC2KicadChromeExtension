@@ -51,6 +51,14 @@ SAMPLE_C22548_CAD = {
             "R~-7.5~-2.5~~~15~5~#000000~1~0~none~gge3~0",
         ],
     },
+    # ``packageDetail`` with NO ``title`` so ``_footprint_name_from_cad`` still
+    # returns None (the existing packageForm-empty-without-hint test depends on
+    # this). Presence of the dict still flips ``cadAvailable.footprint`` to
+    # True, since the gate mirrors the backend ``isinstance(packageDetail,
+    # dict)`` guard rather than reading the title.
+    "packageDetail": {
+        "dataStr": {"head": {}, "shape": []},
+    },
 }
 
 
@@ -156,6 +164,36 @@ def test_fetch_metadata_rejects_invalid_lcsc_id_pattern() -> None:
         fetch_metadata("X22548")
 
 
+def test_fetch_metadata_reports_cad_available_when_easyeda_carries_both_layers() -> None:
+    """V3 Issue #47 — Phase 1 surfaces ``cadAvailable`` so the Override Panel
+    can suppress EasyEDA-dependent actions for parts EasyEDA does not carry.
+    A sample LCSC payload with both ``dataStr`` (symbol) and ``packageDetail``
+    (footprint) → both flags True."""
+    result = fetch_metadata("C22548", cad_fetcher=_stub_fetcher(SAMPLE_C22548_CAD))
+    assert result["cadAvailable"] == {"symbol": True, "footprint": True}
+
+
+def test_fetch_metadata_reports_cad_unavailable_when_cad_empty() -> None:
+    """A no-CAD fetch collapses both flags to False — the gate must steer
+    the user to template-only instead of letting Phase 2 die with
+    ``"No CAD data received"``."""
+    result = fetch_metadata("C99999", cad_fetcher=_stub_fetcher({}))
+    assert result["cadAvailable"] == {"symbol": False, "footprint": False}
+
+
+def test_fetch_metadata_cad_available_split_when_only_symbol_present() -> None:
+    """The flag mirrors the backend ``needs_easyeda`` split (symbol vs.
+    footprint independently). A payload with ``dataStr`` only → symbol True,
+    footprint False; the gate can still surface the message + steer to
+    template-on-both."""
+    cad = {
+        "dataStr": {"head": {}, "shape": []},
+        # no packageDetail
+    }
+    result = fetch_metadata("C22548", cad_fetcher=_stub_fetcher(cad))
+    assert result["cadAvailable"] == {"symbol": True, "footprint": False}
+
+
 def test_fetch_metadata_does_not_propagate_cad_fetcher_errors() -> None:
     """A failing EasyEDA fetch must not break Phase 1 — the panel still wants
     the page-hint metadata. Pin count degrades to 0."""
@@ -174,6 +212,7 @@ def test_fetch_metadata_does_not_propagate_cad_fetcher_errors() -> None:
         "pinCount": 0,
         "datasheetUrl": "https://x/y.pdf",
         "packageForm": {"canonical": "", "family": None, "raw": "", "confidence": 0},
+        "cadAvailable": {"symbol": False, "footprint": False},
     }
 
 
@@ -188,6 +227,7 @@ def _ok_response(lcsc_id: str = "C22548") -> dict[str, Any]:
         "categoryPath": "Passives/Resistors",
         "pinCount": 2,
         "datasheetUrl": "https://example.com/d.pdf",
+        "cadAvailable": {"symbol": True, "footprint": True},
     }
 
 

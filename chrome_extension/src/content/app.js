@@ -4827,6 +4827,19 @@ function attachButton(lcscId) {
         // existing default-path import (no regression). 🟢/🟡 states land
         // with #29 and #31.
         const match = phase1Result?.matchResult || null;
+        // V3 Issue #47 — EasyEDA availability gate. Phase 1 surfaces the
+        // ``cadAvailable`` flag for free from its already-fetched CAD payload
+        // (mirrors the backend ``needs_easyeda`` split). When EasyEDA carries
+        // no CAD the Override Panel suppresses every EasyEDA-dependent action
+        // and the Import-Editor lands on template-on-both. Absent flag ⇒
+        // assume available (no regression on the snapshot/older-host path).
+        const cadAvailable = phase1Result?.cadAvailable || null;
+        const easyedaSymbolAvailable = cadAvailable?.symbol !== false;
+        const easyedaFootprintAvailable = cadAvailable?.footprint !== false;
+        const easyedaUnavailable =
+          cadAvailable != null
+          && !easyedaSymbolAvailable
+          && !easyedaFootprintAvailable;
         // ≤2-pin auto-heuristic: parts like R/C/L/D look cluttered with visible
         // pin numbers, so preselect "hide pin numbers" (user can override). Used
         // both for the editor prefill and the auto-🟢 (synth-rule) import path,
@@ -4898,6 +4911,10 @@ function attachButton(lcscId) {
             pageParams,
             categoryPath: phase1Result?.categoryPath || null,
             theme: editorTheme,
+            // Issue #47: in the unavailable case the editor defaults BOTH
+            // selects to template — EasyEDA cannot be the pre-selected
+            // choice for a part EasyEDA does not carry CAD for.
+            easyedaUnavailable,
             initialSymbolSource: initial.initialSymbolSource || null,
             initialFootprintSource: initial.initialFootprintSource || null,
             initialLabelMapping: initial.initialLabelMapping || null,
@@ -5080,7 +5097,12 @@ function attachButton(lcscId) {
             },
             overrides: {
               symbol: rule.symbolSource || { source: "easyeda" },
-              footprint: { source: "easyeda" },
+              // Issue #47: honor ``rule.footprintSource`` when the rule
+              // carries one — a fully-template rule emits template-on-both
+              // so the green import path never re-acquires the EasyEDA
+              // dependency. Rules without a footprintSource still fall back
+              // to EasyEDA (existing symbol-first MVP behavior).
+              footprint: rule.footprintSource || { source: "easyeda" },
             },
             log: (...args) => dbg("[phase2 green]", ...args),
           });
@@ -5110,6 +5132,10 @@ function attachButton(lcscId) {
           lowConfidenceBehaviour,
           templateLibs,
           templateLibsFootprints,
+          // Issue #47: front-end gate mirrors the backend ``needs_easyeda``
+          // split; ``renderOverridePanel`` reads this and suppresses every
+          // EasyEDA-dependent action when both layers come back unavailable.
+          cadAvailable,
           onEasyedaOnly: runEasyedaPhase2,
           onRegister: openRegisterEditor,
           onImport: runRulePhase2,

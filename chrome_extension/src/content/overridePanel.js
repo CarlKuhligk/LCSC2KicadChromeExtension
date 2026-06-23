@@ -79,9 +79,58 @@ export const OVERRIDE_ONECLICK_PREVIEW_ATTR = "data-k2c-override-oneclick-previe
 export const OVERRIDE_YELLOW_KEEP_EASYEDA_ATTR = "data-k2c-yellow-keep-easyeda";
 export const OVERRIDE_YELLOW_OPEN_EDITOR_ATTR = "data-k2c-yellow-open-editor";
 export const OVERRIDE_YELLOW_HINT_ATTR = "data-k2c-yellow-hint";
+/** EasyEDA-availability gate (Issue #47). The unavailable-message banner the
+ * Override Panel renders when EasyEDA carries no CAD data; suppresses every
+ * EasyEDA-dependent action so the user is steered into the template-only path
+ * instead of running into ``ConversionError: No CAD data received…``. */
+export const OVERRIDE_CAD_UNAVAILABLE_ATTR = "data-k2c-cad-unavailable";
+export const CAD_UNAVAILABLE_MESSAGE =
+  "EasyEDA hat keine Daten für dieses Teil — bitte eigenes Symbol- und Footprint-Template wählen.";
 
 export const EASYEDA_OPTION_VALUE = "easyeda";
 const TEMPLATE_VALUE_PREFIX = "template:";
+
+/**
+ * Build the shared ⚠ DE message banner (Issue #47). Rendered inside every panel
+ * whose EasyEDA-dependent actions had to be suppressed. Themed via
+ * ``dialog.js`` warning tokens so the styling tracks the user's chosen dialog
+ * palette.
+ */
+function buildCadUnavailableNotice(doc, theme) {
+  const T = getDialogTokens(theme);
+  const notice = doc.createElement("div");
+  notice.setAttribute(OVERRIDE_CAD_UNAVAILABLE_ATTR, "true");
+  notice.textContent = CAD_UNAVAILABLE_MESSAGE;
+  notice.style.cssText = [
+    `padding:${DIALOG_SPACING.xs} ${DIALOG_SPACING.sm}`,
+    `border:1px solid ${T.warningBorder}`,
+    `border-radius:${T.radiusSm}`,
+    `background:${T.warningSurface}`,
+    `color:${T.warningText}`,
+    `font-size:${DIALOG_TYPE.small}`,
+    "line-height:1.4",
+  ].join(";");
+  return notice;
+}
+
+/**
+ * Reduce the front-end gate to the same condition Phase 2's ``needs_easyeda``
+ * branch checks (``conversion.py:556-560``) — keep ``genModel`` in the
+ * disjunction so the gate stays correct when 3D is enabled in a later slice
+ * (ADR-0005 / Issue #6). Today Phase 2 forces ``generate_model=False`` so
+ * the third term collapses to the user's setting (defaults to false).
+ *
+ * @param {{symbol?: object|null, footprint?: object|null}} overrides
+ * @param {boolean} [generateModel]
+ * @returns {boolean}
+ */
+export function emittedOverridesNeedEasyeda(overrides, generateModel = false) {
+  const symbol = overrides?.symbol;
+  const footprint = overrides?.footprint;
+  const symbolNeeds = symbol?.source !== "template";
+  const footprintNeeds = footprint?.source !== "template";
+  return symbolNeeds || footprintNeeds || Boolean(generateModel);
+}
 
 function libBasename(libPath) {
   const tail = String(libPath || "").replace(/^.*[/\\]/, "");
@@ -130,8 +179,15 @@ function populateSelect(select, doc, templateLibs) {
  * Both buttons remove the panel after firing their callback so a second
  * click on Download re-opens a fresh prompt.
  *
+ * **EasyEDA availability gate (Issue #47).** When ``opts.easyedaUnavailable``
+ * is true the ``"nur EasyEDA"`` action is suppressed (it would route to
+ * ``run_conversion``'s ``needs_easyeda`` branch and die with
+ * ``ConversionError: No CAD data received…``) and the shared DE banner is
+ * rendered above the actions. The ``„registrieren"`` action stays so the
+ * user can still steer the part into a template-only import.
+ *
  * @param {Document} doc
- * @param {{ onEasyedaOnly?: () => void, onRegister?: () => void }} [opts]
+ * @param {{ onEasyedaOnly?: () => void, onRegister?: () => void, easyedaUnavailable?: boolean }} [opts]
  */
 export function buildRegisterPrompt(doc, opts = {}) {
   const T = getDialogTokens(opts.theme);
@@ -163,15 +219,24 @@ export function buildRegisterPrompt(doc, opts = {}) {
   body.style.cssText = "line-height:1.4";
   panel.appendChild(body);
 
+  if (opts.easyedaUnavailable) {
+    panel.appendChild(buildCadUnavailableNotice(doc, opts.theme));
+  }
+
   const actions = doc.createElement("div");
   actions.style.cssText = `display:flex;gap:${DIALOG_SPACING.sm};justify-content:flex-end;margin-top:${DIALOG_SPACING.xs}`;
 
-  const easyedaBtn = doc.createElement("button");
-  easyedaBtn.type = "button";
-  easyedaBtn.textContent = "nur EasyEDA";
-  easyedaBtn.setAttribute(OVERRIDE_EASYEDA_ONLY_ATTR, "true");
-  easyedaBtn.style.cssText = dialogButtonStyle("secondary", "dense", { theme: opts.theme });
-  actions.appendChild(easyedaBtn);
+  // Issue #47: suppress „nur EasyEDA" when EasyEDA carries no CAD — the action
+  // hard-routes through ``runEasyedaPhase2`` and the ``needs_easyeda`` branch
+  // of ``conversion.py`` would die mid-fetch.
+  if (!opts.easyedaUnavailable) {
+    const easyedaBtn = doc.createElement("button");
+    easyedaBtn.type = "button";
+    easyedaBtn.textContent = "nur EasyEDA";
+    easyedaBtn.setAttribute(OVERRIDE_EASYEDA_ONLY_ATTR, "true");
+    easyedaBtn.style.cssText = dialogButtonStyle("secondary", "dense", { theme: opts.theme });
+    actions.appendChild(easyedaBtn);
+  }
 
   const registerBtn = doc.createElement("button");
   registerBtn.type = "button";
@@ -211,6 +276,14 @@ function describeSymbolSource(symbolSource) {
  *      Register flow uses) with the Rule's current values prefilled, so
  *      the special case is one edit and a save away.
  *
+ * **EasyEDA availability gate (Issue #47).** When ``opts.easyedaUnavailable``
+ * is true the panel suppresses the ``[Import]`` action unless
+ * ``opts.allowImport`` is also true (the rule resolves to template on BOTH
+ * layers; ``runRulePhase2`` honors ``rule.footprintSource`` in that case so
+ * the convert never re-acquires the EasyEDA dependency). The shared DE
+ * banner is rendered above the actions. ``[Modifizieren]`` always stays —
+ * the editor is the user's escape hatch into the template-only path.
+ *
  * @param {Document} doc
  * @param {{
  *   ruleKey?: string | null,
@@ -218,6 +291,8 @@ function describeSymbolSource(symbolSource) {
  *   labelMapping?: Record<string, string> | null,
  *   onImport?: () => void,
  *   onModify?: () => void,
+ *   easyedaUnavailable?: boolean,
+ *   allowImport?: boolean,
  * }} [opts]
  */
 export function buildOneClickPanel(doc, opts = {}) {
@@ -319,6 +394,10 @@ export function buildOneClickPanel(doc, opts = {}) {
 
   panel.appendChild(preview);
 
+  if (opts.easyedaUnavailable) {
+    panel.appendChild(buildCadUnavailableNotice(doc, opts.theme));
+  }
+
   const actions = doc.createElement("div");
   actions.style.cssText = `display:flex;gap:${DIALOG_SPACING.sm};justify-content:flex-end;margin-top:${DIALOG_SPACING.xs}`;
 
@@ -331,12 +410,18 @@ export function buildOneClickPanel(doc, opts = {}) {
   modifyBtn.style.cssText = dialogButtonStyle("secondary", "dense", { theme: opts.theme });
   actions.appendChild(modifyBtn);
 
-  const importBtn = doc.createElement("button");
-  importBtn.type = "button";
-  importBtn.textContent = "Import";
-  importBtn.setAttribute(OVERRIDE_IMPORT_ATTR, "true");
-  importBtn.style.cssText = dialogButtonStyle("primary", "dense", { theme: opts.theme });
-  actions.appendChild(importBtn);
+  // Issue #47: in the unavailable case [Import] is only safe when the rule is
+  // FULLY template (allowImport). Otherwise the green path's
+  // ``runRulePhase2`` would emit an EasyEDA layer and Phase 2 would die.
+  const showImport = !opts.easyedaUnavailable || opts.allowImport;
+  if (showImport) {
+    const importBtn = doc.createElement("button");
+    importBtn.type = "button";
+    importBtn.textContent = "Import";
+    importBtn.setAttribute(OVERRIDE_IMPORT_ATTR, "true");
+    importBtn.style.cssText = dialogButtonStyle("primary", "dense", { theme: opts.theme });
+    actions.appendChild(importBtn);
+  }
 
   panel.appendChild(actions);
 
@@ -362,12 +447,20 @@ export function buildOneClickPanel(doc, opts = {}) {
  * branch of the setting bypasses this builder entirely and renders the
  * Import-Editor directly — see ``renderOverridePanel``.
  *
+ * **EasyEDA availability gate (Issue #47).** When ``opts.easyedaUnavailable``
+ * is true the ``[EasyEDA übernehmen]`` action is suppressed (it would route
+ * through ``runEasyedaPhase2`` and die in ``needs_easyeda``). The shared DE
+ * banner replaces the ``Vorschlag`` hint (any heuristic suggestion is moot
+ * when the upstream CAD is missing). ``[Editor öffnen]`` remains so the
+ * caller can swap in the template-on-both editor.
+ *
  * @param {Document} doc
  * @param {{
  *   ruleKey?: string | null,
  *   match?: object | null,
  *   onEasyedaOnly?: () => void,
  *   onModify?: () => void,
+ *   easyedaUnavailable?: boolean,
  * }} [opts]
  */
 export function buildYellowPanel(doc, opts = {}) {
@@ -415,12 +508,16 @@ export function buildYellowPanel(doc, opts = {}) {
   if (!hintLines.length && match?.ruleKey) {
     hintLines.push(`Regel „${match.ruleKey}" — Confidence niedrig`);
   }
-  if (hintLines.length) {
+  if (hintLines.length && !opts.easyedaUnavailable) {
     const hint = doc.createElement("div");
     hint.setAttribute(OVERRIDE_YELLOW_HINT_ATTR, "true");
     hint.style.cssText = `line-height:1.4;color:${T.warningHint}`;
     hint.textContent = hintLines.join(" · ");
     panel.appendChild(hint);
+  }
+
+  if (opts.easyedaUnavailable) {
+    panel.appendChild(buildCadUnavailableNotice(doc, opts.theme));
   }
 
   const actions = doc.createElement("div");
@@ -433,12 +530,17 @@ export function buildYellowPanel(doc, opts = {}) {
   openEditorBtn.style.cssText = dialogButtonStyle("secondary", "dense", { theme: opts.theme });
   actions.appendChild(openEditorBtn);
 
-  const keepEasyedaBtn = doc.createElement("button");
-  keepEasyedaBtn.type = "button";
-  keepEasyedaBtn.textContent = "EasyEDA übernehmen";
-  keepEasyedaBtn.setAttribute(OVERRIDE_YELLOW_KEEP_EASYEDA_ATTR, "true");
-  keepEasyedaBtn.style.cssText = dialogButtonStyle("primary", "dense", { theme: opts.theme });
-  actions.appendChild(keepEasyedaBtn);
+  // Issue #47: suppress „EasyEDA übernehmen" when EasyEDA carries no CAD —
+  // the action routes through ``runEasyedaPhase2`` and would die in
+  // ``needs_easyeda``.
+  if (!opts.easyedaUnavailable) {
+    const keepEasyedaBtn = doc.createElement("button");
+    keepEasyedaBtn.type = "button";
+    keepEasyedaBtn.textContent = "EasyEDA übernehmen";
+    keepEasyedaBtn.setAttribute(OVERRIDE_YELLOW_KEEP_EASYEDA_ATTR, "true");
+    keepEasyedaBtn.style.cssText = dialogButtonStyle("primary", "dense", { theme: opts.theme });
+    actions.appendChild(keepEasyedaBtn);
+  }
 
   panel.appendChild(actions);
 
@@ -477,6 +579,15 @@ export function buildYellowPanel(doc, opts = {}) {
  * this same component (ADR-0006: "A single, reusable Import-Editor serves all
  * three call sites — register / modify / low-confidence").
  *
+ * **EasyEDA availability gate (Issue #47).** ``opts.easyedaUnavailable`` tells
+ * the editor to default BOTH the symbol and footprint selects to a template
+ * option instead of EasyEDA — the part EasyEDA does not carry CAD for can
+ * still be imported from the user's templates. When the caller supplied no
+ * matching ``initialSymbolSource`` / ``initialFootprintSource``, the first
+ * registered template (in each layer's library map) is preselected. The user
+ * still has to confirm the concrete pick; the gate's job is only to make sure
+ * EasyEDA isn't the pre-selected/blocking choice.
+ *
  * @param {Document} doc
  * @param {{
  *   templateLibs?: Record<string, string[]>,
@@ -486,6 +597,7 @@ export function buildYellowPanel(doc, opts = {}) {
  *   initialSymbolSource?: object | null,
  *   initialFootprintSource?: object | null,
  *   initialLabelMapping?: Record<string, string> | null,
+ *   easyedaUnavailable?: boolean,
  *   fetchSymbolPreview?: (sel: {libPath: string, name: string}) => Promise<{svg: string|null, error?: string}>,
  *   fetchFootprintPreview?: () => Promise<{svg: string|null, error?: string}>,
  *   fetchTemplateFootprintPreview?: (sel: {libPath: string, name: string}) => Promise<{svg: string|null, error?: string}>,
@@ -1200,8 +1312,20 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   // unregistered between the Rule's save time and now — the candidate
   // won't appear in the populated <option>s, and `renderOverridePanel`
   // won't have routed to 🟢 in that case anyway.
+  //
+  // Issue #47 — when EasyEDA carries no CAD the fallback flips from EasyEDA
+  // to the first registered template option (Symbol-Source's <select> options
+  // are in optgroup-order; skip the EasyEDA option). The user still has to
+  // confirm a concrete pick; the gate only ensures EasyEDA isn't the default.
   const initialSym = opts.initialSymbolSource;
-  let candidate = EASYEDA_OPTION_VALUE;
+  const firstTemplateSymbolOpt = Array.from(symSelect.options).find(
+    (o) => o.value !== EASYEDA_OPTION_VALUE,
+  );
+  const symbolFallback =
+    opts.easyedaUnavailable && firstTemplateSymbolOpt
+      ? firstTemplateSymbolOpt.value
+      : EASYEDA_OPTION_VALUE;
+  let candidate = symbolFallback;
   if (initialSym?.source === "template" && initialSym.libPath && initialSym.name) {
     candidate = encodeTemplateValue(initialSym.libPath, initialSym.name);
   } else if (matched.length === 1) {
@@ -1211,7 +1335,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   const hasOption = Array.from(symSelect.options).some(
     (o) => o.value === candidate,
   );
-  symSelect.value = hasOption ? candidate : EASYEDA_OPTION_VALUE;
+  symSelect.value = hasOption ? candidate : symbolFallback;
   // If the preselected template is not in the matched shortlist, reveal the
   // full list so the user can see what's selected.
   if (
@@ -1223,12 +1347,19 @@ export function buildRegisterImportEditor(doc, opts = {}) {
 
   // Footprint prefill (Modify path): preselect the rule's template footprint
   // when it is still present in the populated options; else stay on EasyEDA.
+  // Issue #47 — unavailable mode flips the default to the first registered
+  // template footprint instead of EasyEDA.
   const initialFp = opts.initialFootprintSource;
   if (initialFp?.source === "template" && initialFp.libPath && initialFp.name) {
     const fpCandidate = encodeTemplateValue(initialFp.libPath, initialFp.name);
     if (Array.from(fpSelect.options).some((o) => o.value === fpCandidate)) {
       fpSelect.value = fpCandidate;
     }
+  } else if (opts.easyedaUnavailable) {
+    const firstTemplateFpOpt = Array.from(fpSelect.options).find(
+      (o) => o.value !== EASYEDA_OPTION_VALUE,
+    );
+    if (firstTemplateFpOpt) fpSelect.value = firstTemplateFpOpt.value;
   }
 
   renderTemplateList();
@@ -1362,6 +1493,7 @@ export function collectRegisterEditorRule(panel, categoryPath) {
  *   templateLibsFootprints?: Record<string, string[]>,
  *   onConfirm?: (overrides: object) => void,
  *   onCancel?: () => void,
+ *   easyedaUnavailable?: boolean,
  * }} opts
  */
 export function buildOverridePanel(doc, opts = {}) {
@@ -1387,6 +1519,10 @@ export function buildOverridePanel(doc, opts = {}) {
   heading.style.cssText = `font-weight:600;font-size:${DIALOG_TYPE.micro};letter-spacing:0.04em;text-transform:uppercase;color:${T.textMuted}`;
   panel.appendChild(heading);
 
+  if (opts.easyedaUnavailable) {
+    panel.appendChild(buildCadUnavailableNotice(doc, opts.theme));
+  }
+
   const symLabel = doc.createElement("label");
   symLabel.style.cssText = `display:flex;align-items:center;gap:${DIALOG_SPACING.sm}`;
   symLabel.appendChild(doc.createTextNode("Symbol"));
@@ -1404,6 +1540,19 @@ export function buildOverridePanel(doc, opts = {}) {
   populateSelect(fpSelect, doc, opts.templateLibsFootprints || opts.templateLibs);
   fpLabel.appendChild(fpSelect);
   panel.appendChild(fpLabel);
+
+  // Issue #47: in the unavailable case strip the EasyEDA option from both
+  // selects so ``selectionToOverrides`` can't emit a layer that would die in
+  // ``needs_easyeda``. Editor-style default lands on the first non-EasyEDA
+  // option (the first registered template) instead.
+  if (opts.easyedaUnavailable) {
+    for (const sel of [symSelect, fpSelect]) {
+      const easyedaOpt = Array.from(sel.options).find(
+        (o) => o.value === EASYEDA_OPTION_VALUE,
+      );
+      if (easyedaOpt) easyedaOpt.remove();
+    }
+  }
 
   const actions = doc.createElement("div");
   actions.style.cssText = `display:flex;gap:${DIALOG_SPACING.sm};justify-content:flex-end;margin-top:${DIALOG_SPACING.xs}`;
@@ -1424,8 +1573,10 @@ export function buildOverridePanel(doc, opts = {}) {
 
   panel.appendChild(actions);
 
-  symSelect.value = EASYEDA_OPTION_VALUE;
-  fpSelect.value = EASYEDA_OPTION_VALUE;
+  if (!opts.easyedaUnavailable) {
+    symSelect.value = EASYEDA_OPTION_VALUE;
+    fpSelect.value = EASYEDA_OPTION_VALUE;
+  }
 
   return panel;
 }
@@ -1512,6 +1663,15 @@ function parseLayer(raw) {
  *         and an ``[Editor öffnen]`` escape hatch (fires ``onModify``).
  *   - No match / unknown state → legacy Symbol/Footprint source picker.
  *
+ * **EasyEDA availability gate (Issue #47).** ``opts.cadAvailable`` (the
+ * ``{symbol, footprint}`` dict Phase 1 surfaces from the already-fetched CAD
+ * payload) drives the gate. When EITHER layer is unavailable the front-end
+ * mirrors Phase 2's ``needs_easyeda`` check and suppresses every action that
+ * would emit an EasyEDA layer (⚪ „nur EasyEDA", 🟡 „EasyEDA übernehmen",
+ * 🟢 [Import] for non-fully-template rules). Defense-in-depth backstop
+ * stays in ``conversion.py:590-593``. ``cadAvailable`` absent ⇒ assume
+ * available (no regression on older hosts / missing snapshots).
+ *
  * @param {HTMLElement} anchorRow
  * @param {{
  *   match?: {
@@ -1522,6 +1682,7 @@ function parseLayer(raw) {
  *   lowConfidenceBehaviour?: "openEditor" | "keepEasyeda",
  *   templateLibs?: Record<string, string[]>,
  *   templateLibsFootprints?: Record<string, string[]>,
+ *   cadAvailable?: { symbol?: boolean, footprint?: boolean } | null,
  *   onConfirm?: (overrides: object) => void,
  *   onCancel?: () => void,
  *   onEasyedaOnly?: () => void,
@@ -1541,6 +1702,15 @@ export function renderOverridePanel(anchorRow, opts = {}) {
   const isWhite = matchState === "white";
   const isGreen = matchState === "green";
   const isYellow = matchState === "yellow";
+
+  // Issue #47 — EasyEDA availability gate. Absent flag ⇒ treat as available
+  // (no regression on any path that doesn't supply the flag, including older
+  // Native Hosts that pre-date Issue #47).
+  const cad = opts.cadAvailable;
+  const easyedaSymbolAvailable = cad?.symbol !== false;
+  const easyedaFootprintAvailable = cad?.footprint !== false;
+  const easyedaUnavailable =
+    cad != null && !easyedaSymbolAvailable && !easyedaFootprintAvailable;
 
   // Inline idempotency for the non-modal states (🟢/🟡/sources). ⚪ white now
   // mounts as a modal overlay; mountCsModal dismisses any existing prompt modal
@@ -1570,9 +1740,20 @@ export function renderOverridePanel(anchorRow, opts = {}) {
     return null;
   }
 
+  // Issue #47 green-state gate: read the EMITTED overrides, not the rule.
+  // ``runRulePhase2`` honors ``rule.footprintSource`` when the rule is fully
+  // template (app.js fix), so [Import] is safe iff both layers resolve to a
+  // template. ``emittedOverridesNeedEasyeda`` is the same disjunction Phase 2
+  // uses (``conversion.py:556-560``) — keeping it factored makes the mirror
+  // stay correct if 3D is enabled later (ADR-0005).
+  const rule = opts.match?.rule || null;
+  const ruleFullyTemplate =
+    rule?.symbolSource?.source === "template"
+    && rule?.footprintSource?.source === "template";
+
   let panel;
   if (isWhite) {
-    panel = buildRegisterPrompt(doc, opts);
+    panel = buildRegisterPrompt(doc, { ...opts, easyedaUnavailable });
   } else if (isGreen) {
     panel = buildOneClickPanel(doc, {
       ruleKey: opts.match?.ruleKey ?? null,
@@ -1582,6 +1763,8 @@ export function renderOverridePanel(anchorRow, opts = {}) {
       hidePinNames: opts.match?.rule?.hidePinNames ?? false,
       valueParam: opts.match?.rule?.valueParam ?? null,
       theme: opts.theme,
+      easyedaUnavailable,
+      allowImport: ruleFullyTemplate,
     });
   } else if (isYellow) {
     // ``keepEasyeda`` branch — Hinweis + EasyEDA default + editor escape.
@@ -1589,9 +1772,10 @@ export function renderOverridePanel(anchorRow, opts = {}) {
       ruleKey: opts.match?.ruleKey ?? null,
       match: opts.match || null,
       theme: opts.theme,
+      easyedaUnavailable,
     });
   } else {
-    panel = buildOverridePanel(doc, opts);
+    panel = buildOverridePanel(doc, { ...opts, easyedaUnavailable });
   }
 
   // ⚪ white Register-Prompt mounts as a modal overlay (ADR-0006 refined, user
