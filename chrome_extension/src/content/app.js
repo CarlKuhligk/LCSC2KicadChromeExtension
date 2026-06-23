@@ -60,6 +60,7 @@ import { runPhase2Convert, subscribeConvertProgress } from "./phase2Convert.js";
 import {
   renderOverridePanel,
   renderRegisterImportEditor,
+  isEasyedaUnavailable,
   OVERRIDE_PANEL_ROW_ATTR,
 } from "./overridePanel.js";
 /** Datasheet panel / PDF.js pipeline — always on; filter DevTools console by `[KiCad datasheet]`. */
@@ -4834,12 +4835,7 @@ function attachButton(lcscId) {
         // and the Import-Editor lands on template-on-both. Absent flag ⇒
         // assume available (no regression on the snapshot/older-host path).
         const cadAvailable = phase1Result?.cadAvailable || null;
-        const easyedaSymbolAvailable = cadAvailable?.symbol !== false;
-        const easyedaFootprintAvailable = cadAvailable?.footprint !== false;
-        const easyedaUnavailable =
-          cadAvailable != null
-          && !easyedaSymbolAvailable
-          && !easyedaFootprintAvailable;
+        const easyedaUnavailable = isEasyedaUnavailable(cadAvailable);
         // ≤2-pin auto-heuristic: parts like R/C/L/D look cluttered with visible
         // pin numbers, so preselect "hide pin numbers" (user can override). Used
         // both for the editor prefill and the auto-🟢 (synth-rule) import path,

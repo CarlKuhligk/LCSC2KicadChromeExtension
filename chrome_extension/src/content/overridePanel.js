@@ -132,6 +132,20 @@ export function emittedOverridesNeedEasyeda(overrides, generateModel = false) {
   return symbolNeeds || footprintNeeds || Boolean(generateModel);
 }
 
+/**
+ * Reduce Phase 1's ``cadAvailable`` flag to the single boolean the Issue #47
+ * gate consumes: true iff EasyEDA carries neither a symbol nor a footprint
+ * (the "No CAD data received" failure mode of ``conversion.py:590-593``).
+ * Absent flag ⇒ false (no regression on older Native Hosts / snapshot path).
+ *
+ * @param {{symbol?: boolean, footprint?: boolean} | null | undefined} cadAvailable
+ * @returns {boolean}
+ */
+export function isEasyedaUnavailable(cadAvailable) {
+  if (cadAvailable == null) return false;
+  return cadAvailable.symbol === false && cadAvailable.footprint === false;
+}
+
 function libBasename(libPath) {
   const tail = String(libPath || "").replace(/^.*[/\\]/, "");
   return tail.replace(/\.kicad_sym$/i, "") || libPath;
@@ -1665,12 +1679,14 @@ function parseLayer(raw) {
  *
  * **EasyEDA availability gate (Issue #47).** ``opts.cadAvailable`` (the
  * ``{symbol, footprint}`` dict Phase 1 surfaces from the already-fetched CAD
- * payload) drives the gate. When EITHER layer is unavailable the front-end
- * mirrors Phase 2's ``needs_easyeda`` check and suppresses every action that
- * would emit an EasyEDA layer (⚪ „nur EasyEDA", 🟡 „EasyEDA übernehmen",
- * 🟢 [Import] for non-fully-template rules). Defense-in-depth backstop
- * stays in ``conversion.py:590-593``. ``cadAvailable`` absent ⇒ assume
- * available (no regression on older hosts / missing snapshots).
+ * payload) drives the gate. When BOTH layers are unavailable the front-end
+ * pre-empts Phase 2's "No CAD data received" failure (``conversion.py:590-593``)
+ * and suppresses every action that would emit an EasyEDA layer (⚪ „nur
+ * EasyEDA", 🟡 „EasyEDA übernehmen", 🟢 [Import] for non-fully-template
+ * rules). When only one layer is missing the gate stays off — a mixed
+ * template/EasyEDA import for the surviving layer can still succeed.
+ * ``cadAvailable`` absent ⇒ assume available (no regression on older hosts
+ * / missing snapshots).
  *
  * @param {HTMLElement} anchorRow
  * @param {{
@@ -1703,14 +1719,7 @@ export function renderOverridePanel(anchorRow, opts = {}) {
   const isGreen = matchState === "green";
   const isYellow = matchState === "yellow";
 
-  // Issue #47 — EasyEDA availability gate. Absent flag ⇒ treat as available
-  // (no regression on any path that doesn't supply the flag, including older
-  // Native Hosts that pre-date Issue #47).
-  const cad = opts.cadAvailable;
-  const easyedaSymbolAvailable = cad?.symbol !== false;
-  const easyedaFootprintAvailable = cad?.footprint !== false;
-  const easyedaUnavailable =
-    cad != null && !easyedaSymbolAvailable && !easyedaFootprintAvailable;
+  const easyedaUnavailable = isEasyedaUnavailable(opts.cadAvailable);
 
   // Inline idempotency for the non-modal states (🟢/🟡/sources). ⚪ white now
   // mounts as a modal overlay; mountCsModal dismisses any existing prompt modal
