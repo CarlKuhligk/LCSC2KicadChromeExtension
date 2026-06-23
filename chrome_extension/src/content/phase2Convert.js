@@ -21,6 +21,12 @@
  */
 
 import { PHASE1_STATUS_ATTR, ensurePhase1StatusNode } from "./phase1Fetch.js";
+import {
+  ensurePhase2ProgressUi,
+  setPhase2Progress,
+  setPhase2State,
+  playPhase2Completion,
+} from "./phase2Progress.js";
 
 /** Marker for the inline status node the wiring reuses (same node as
  *  Phase 1 — the button has a single status surface across both phases). */
@@ -142,9 +148,17 @@ export async function runPhase2Convert(anchorRow, lcscId, deps) {
   const log = typeof deps.log === "function" ? deps.log : () => {};
   const subscribe = typeof deps.subscribe === "function" ? deps.subscribe : subscribeConvertProgress;
 
+  // Lovingly-designed progress surface: a real bar with the status line as its
+  // caption underneath (see phase2Progress.js). Falls back gracefully to the
+  // plain status text if the bar cannot be built.
+  const progressUi = ensurePhase2ProgressUi(actionsCell, doc, status);
   setStatus(status, "loading", "Phase 2: starting…");
+  setPhase2State(progressUi, "loading");
+  setPhase2Progress(progressUi, 0);
+
   const unsubscribe = subscribe(lcscId, (frame) => {
     setStatus(status, "loading", formatPhase2Progress(frame));
+    if (frame && frame.progress != null) setPhase2Progress(progressUi, frame.progress);
     log("phase2: progress", frame);
   });
 
@@ -160,9 +174,11 @@ export async function runPhase2Convert(anchorRow, lcscId, deps) {
   if (envelope && envelope.ok === true) {
     log("phase2: ok", envelope.result);
     setStatus(status, "ok", formatPhase2Terminal(envelope));
+    playPhase2Completion(progressUi, doc); // spectacular finish (fill + ✓ + burst)
   } else {
     log("phase2: error", envelope?.error);
     setStatus(status, "error", formatPhase2Terminal(envelope || { ok: false }));
+    setPhase2State(progressUi, "error");
   }
   return envelope;
 }
