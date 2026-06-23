@@ -708,16 +708,28 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   // selected accent, optional category tag. Click wiring is passed in because
   // the symbol list re-renders only, while the footprint list also kicks off
   // ``loadFootprintPreview`` after the value change.
-  const mkChoiceRow = (item, { itemAttr, selected, onClick }) => {
+  const mkChoiceRow = (item, { itemAttr, selected, matched = false, original = false, onClick }) => {
     const row = doc.createElement("div");
     row.setAttribute(itemAttr, "true");
     row.dataset.value = item.value;
+    if (matched) row.dataset.k2cMatched = "true";
+    if (original) row.dataset.k2cOriginal = "true";
+    // Subtle left accent bar: a system-MATCHED entry (category match for symbols,
+    // package match for footprints) gets the accent color; the EasyEDA "ORIGINAL"
+    // entry a muted bar. Drawn as an inset box-shadow so the hover/selected
+    // background never wipes it — quiet but perceptible.
+    const accentBar = matched
+      ? `box-shadow:inset 3px 0 0 ${T.accent}`
+      : original
+        ? `box-shadow:inset 3px 0 0 ${T.textFaint}`
+        : "";
     row.style.cssText = [
       "display:flex", "justify-content:space-between", `gap:${DIALOG_SPACING.sm}`,
       `padding:${DIALOG_SPACING.xs} ${DIALOG_SPACING.xs}`, "border-radius:3px", "cursor:pointer",
       selected ? `background:${T.selectedSurface}` : "background:transparent",
       "transition:background 0.12s ease",
-    ].join(";");
+      accentBar,
+    ].filter(Boolean).join(";");
     const left = doc.createElement("span");
     left.textContent = item.label;
     left.style.cssText = selected
@@ -1410,6 +1422,8 @@ export function buildRegisterImportEditor(doc, opts = {}) {
       listHost.appendChild(mkChoiceRow(it, {
         itemAttr: OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR,
         selected: symSelect.value === it.value,
+        matched: matchedKeys.has(it.value),
+        original: it.value === EASYEDA_OPTION_VALUE,
         onClick: () => {
           symSelect.value = it.value;
           renderTemplateList();
@@ -1451,6 +1465,11 @@ export function buildRegisterImportEditor(doc, opts = {}) {
       fpListHost.appendChild(mkChoiceRow(it, {
         itemAttr: OVERRIDE_REGISTER_FOOTPRINT_ITEM_ATTR,
         selected: fpSelect.value === it.value,
+        matched:
+          it.value !== EASYEDA_OPTION_VALUE
+          && Boolean(packageHintLower)
+          && it.label.toLowerCase().includes(packageHintLower),
+        original: it.value === EASYEDA_OPTION_VALUE,
         onClick: () => {
           fpSelect.value = it.value;
           renderFootprintList();

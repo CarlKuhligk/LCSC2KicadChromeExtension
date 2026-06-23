@@ -1307,6 +1307,54 @@ describe("buildRegisterImportEditor — 4-column layout (#49)", () => {
     expect(panel.querySelector(`[${OVERRIDE_REGISTER_PINMAP_ATTR}]`)).toBeTruthy();
   });
 
+  it("marks the category-matched symbol + the EasyEDA original in the symbol list", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+      templateCategoriesByLib: {
+        "/home/user/templates/MyTemplates.kicad_sym": { R0603: "Resistors" },
+      },
+      categoryPath: "Resistors/Chip Resistor",
+    });
+    const byVal = {};
+    panel
+      .querySelectorAll(`[${OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR}]`)
+      .forEach((r) => { byVal[r.dataset.value] = r; });
+    // EasyEDA "Original" row is flagged original, never matched.
+    expect(byVal[EASYEDA_OPTION_VALUE].dataset.k2cOriginal).toBe("true");
+    expect(byVal[EASYEDA_OPTION_VALUE].dataset.k2cMatched).toBeUndefined();
+    // The category-matched template is flagged matched.
+    const r0603 = byVal["template:/home/user/templates/MyTemplates.kicad_sym:R0603"];
+    expect(r0603).toBeTruthy();
+    expect(r0603.dataset.k2cMatched).toBe("true");
+  });
+
+  it("marks the packageHint-matched footprint + the EasyEDA original (show-all view)", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+      packageHint: "R0603",
+    });
+    // Reveal ALL footprints (the default view already hides non-matching ones via
+    // the packageHint filter) so both the matching + non-matching rows render.
+    const showAll = panel.querySelector(`[${OVERRIDE_REGISTER_FP_SHOWALL_ATTR}]`);
+    showAll.checked = true;
+    showAll.dispatchEvent(new Event("change"));
+    const byVal = {};
+    panel
+      .querySelectorAll(`[${OVERRIDE_REGISTER_FOOTPRINT_ITEM_ATTR}]`)
+      .forEach((r) => { byVal[r.dataset.value] = r; });
+    expect(byVal[EASYEDA_OPTION_VALUE].dataset.k2cOriginal).toBe("true");
+    // "R0603_HandSolder" contains the package hint "R0603" → matched.
+    const fp = byVal["template:/home/user/templates/MyTemplates.kicad_sym:R0603_HandSolder"];
+    expect(fp).toBeTruthy();
+    expect(fp.dataset.k2cMatched).toBe("true");
+    // "C0805_Std" does not → not matched.
+    const c0805 = byVal["template:/home/user/templates/MyTemplates.kicad_sym:C0805_Std"];
+    expect(c0805).toBeTruthy();
+    expect(c0805.dataset.k2cMatched).toBeUndefined();
+  });
+
   it("puts the viewers in row 1 (cols 2 & 3) with metadata/Pin-Mapper in row 2 below them", () => {
     const panel = buildRegisterImportEditor(document, {
       templateLibs: ONE_LIB,
