@@ -144,6 +144,18 @@ def fetch_metadata(
     except Exception:
         cad = {}
 
+    # EasyEDA-availability flag (Issue #47). Mirrors the backend ``needs_easyeda``
+    # split — symbol depends on ``dataStr`` (same guard ``_pin_count_from_cad``
+    # uses), footprint depends on ``packageDetail`` (same guard
+    # ``_footprint_name_from_cad`` uses). A no-CAD fetch / exception collapses
+    # both to False so the front-end gate steers the user into the template-only
+    # path instead of letting Phase 2 die with "No CAD data received".
+    cad_available = {
+        "symbol": isinstance(cad, dict) and isinstance(cad.get("dataStr"), dict),
+        "footprint": isinstance(cad, dict)
+        and isinstance(cad.get("packageDetail"), dict),
+    }
+
     pin_count = _pin_count_from_cad(cad) or 0
     easyeda_datasheet = _datasheet_from_cad(cad)
 
@@ -178,4 +190,5 @@ def fetch_metadata(
         "pinCount": pin_count,
         "datasheetUrl": datasheet_url,
         "packageForm": package_form,
+        "cadAvailable": cad_available,
     }
