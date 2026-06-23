@@ -694,6 +694,45 @@ export function buildRegisterImportEditor(doc, opts = {}) {
     return input;
   };
 
+  // Build a clickable choice row for either list (#49). Shared so the symbol
+  // and footprint lists render with byte-identical styling — hover affordance,
+  // selected accent, optional category tag. Click wiring is passed in because
+  // the symbol list re-renders only, while the footprint list also kicks off
+  // ``loadFootprintPreview`` after the value change.
+  const mkChoiceRow = (item, { itemAttr, selected, onClick }) => {
+    const row = doc.createElement("div");
+    row.setAttribute(itemAttr, "true");
+    row.dataset.value = item.value;
+    row.style.cssText = [
+      "display:flex", "justify-content:space-between", `gap:${DIALOG_SPACING.sm}`,
+      `padding:${DIALOG_SPACING.xs} ${DIALOG_SPACING.xs}`, "border-radius:3px", "cursor:pointer",
+      selected ? `background:${T.selectedSurface}` : "background:transparent",
+      "transition:background 0.12s ease",
+    ].join(";");
+    const left = doc.createElement("span");
+    left.textContent = item.label;
+    left.style.cssText = selected
+      ? `font-weight:600;color:${T.accent}`
+      : `color:${T.text}`;
+    row.appendChild(left);
+    if (item.category) {
+      const tag = doc.createElement("span");
+      tag.textContent = item.category;
+      tag.style.cssText = `color:${T.textFaint};font-size:${DIALOG_TYPE.micro}`;
+      row.appendChild(tag);
+    }
+    if (!selected) {
+      row.addEventListener("mouseenter", () => {
+        row.style.background = T.surface3;
+      });
+      row.addEventListener("mouseleave", () => {
+        row.style.background = "transparent";
+      });
+    }
+    row.addEventListener("click", onClick);
+    return row;
+  };
+
   const heading = doc.createElement("div");
   heading.textContent = "Registrieren";
   heading.style.cssText =
@@ -1306,9 +1345,10 @@ export function buildRegisterImportEditor(doc, opts = {}) {
     opts.templateLibsFootprints && typeof opts.templateLibsFootprints === "object"
       ? opts.templateLibsFootprints
       : {};
-  const packageHintRaw =
-    typeof opts.packageHint === "string" ? opts.packageHint.trim() : "";
-  const packageHintLower = packageHintRaw.toLowerCase();
+  const packageHintLower =
+    typeof opts.packageHint === "string"
+      ? opts.packageHint.trim().toLowerCase()
+      : "";
 
   function renderTemplateList() {
     listHost.innerHTML = "";
@@ -1355,43 +1395,14 @@ export function buildRegisterImportEditor(doc, opts = {}) {
       listHost.appendChild(none);
     }
     for (const it of items) {
-      const row = doc.createElement("div");
-      row.setAttribute(OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR, "true");
-      row.dataset.value = it.value;
-      const selected = symSelect.value === it.value;
-      row.style.cssText = [
-        "display:flex", "justify-content:space-between", `gap:${DIALOG_SPACING.sm}`,
-        `padding:${DIALOG_SPACING.xs} ${DIALOG_SPACING.xs}`, "border-radius:3px", "cursor:pointer",
-        selected ? `background:${T.selectedSurface}` : "background:transparent",
-        "transition:background 0.12s ease",
-      ].join(";");
-      const left = doc.createElement("span");
-      left.textContent = it.label;
-      left.style.cssText = selected
-        ? `font-weight:600;color:${T.accent}`
-        : `color:${T.text}`;
-      row.appendChild(left);
-      if (it.category) {
-        const tag = doc.createElement("span");
-        tag.textContent = it.category;
-        tag.style.cssText = `color:${T.textFaint};font-size:${DIALOG_TYPE.micro}`;
-        row.appendChild(tag);
-      }
-      // Hover affordance for unselected rows; selected rows keep their
-      // accent highlight.
-      if (!selected) {
-        row.addEventListener("mouseenter", () => {
-          row.style.background = T.surface3;
-        });
-        row.addEventListener("mouseleave", () => {
-          row.style.background = "transparent";
-        });
-      }
-      row.addEventListener("click", () => {
-        symSelect.value = it.value;
-        renderTemplateList();
-      });
-      listHost.appendChild(row);
+      listHost.appendChild(mkChoiceRow(it, {
+        itemAttr: OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR,
+        selected: symSelect.value === it.value,
+        onClick: () => {
+          symSelect.value = it.value;
+          renderTemplateList();
+        },
+      }));
     }
     updateSymbolPreview();
   }
@@ -1407,55 +1418,33 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   function renderFootprintList() {
     fpListHost.innerHTML = "";
     const query = fpSearch.value.trim().toLowerCase();
+    // Hint filter only applies in the default state: checkbox off, no hint
+    // override from search, and a hint string exists in the first place.
+    const filterByHint = !query && !fpShowAllCb.checked && Boolean(packageHintLower);
     const items = [
       { value: EASYEDA_OPTION_VALUE, label: "EasyEDA (kein Template)" },
     ];
-    const useShowAll = Boolean(fpShowAllCb.checked) || !packageHintLower;
     for (const libPath of Object.keys(allFootprintLibs)) {
       const names = Array.isArray(allFootprintLibs[libPath])
         ? allFootprintLibs[libPath]
         : [];
       for (const name of names) {
         const nameLower = name.toLowerCase();
-        if (query) {
-          if (!nameLower.includes(query)) continue;
-        } else if (!useShowAll) {
-          if (!nameLower.includes(packageHintLower)) continue;
-        }
+        if (query && !nameLower.includes(query)) continue;
+        if (filterByHint && !nameLower.includes(packageHintLower)) continue;
         items.push({ value: encodeTemplateValue(libPath, name), label: name });
       }
     }
     for (const it of items) {
-      const row = doc.createElement("div");
-      row.setAttribute(OVERRIDE_REGISTER_FOOTPRINT_ITEM_ATTR, "true");
-      row.dataset.value = it.value;
-      const selected = fpSelect.value === it.value;
-      row.style.cssText = [
-        "display:flex", "justify-content:space-between", `gap:${DIALOG_SPACING.sm}`,
-        `padding:${DIALOG_SPACING.xs} ${DIALOG_SPACING.xs}`, "border-radius:3px", "cursor:pointer",
-        selected ? `background:${T.selectedSurface}` : "background:transparent",
-        "transition:background 0.12s ease",
-      ].join(";");
-      const left = doc.createElement("span");
-      left.textContent = it.label;
-      left.style.cssText = selected
-        ? `font-weight:600;color:${T.accent}`
-        : `color:${T.text}`;
-      row.appendChild(left);
-      if (!selected) {
-        row.addEventListener("mouseenter", () => {
-          row.style.background = T.surface3;
-        });
-        row.addEventListener("mouseleave", () => {
-          row.style.background = "transparent";
-        });
-      }
-      row.addEventListener("click", () => {
-        fpSelect.value = it.value;
-        renderFootprintList();
-        loadFootprintPreview();
-      });
-      fpListHost.appendChild(row);
+      fpListHost.appendChild(mkChoiceRow(it, {
+        itemAttr: OVERRIDE_REGISTER_FOOTPRINT_ITEM_ATTR,
+        selected: fpSelect.value === it.value,
+        onClick: () => {
+          fpSelect.value = it.value;
+          renderFootprintList();
+          loadFootprintPreview();
+        },
+      }));
     }
   }
   fpShowAllCb.addEventListener("change", renderFootprintList);
