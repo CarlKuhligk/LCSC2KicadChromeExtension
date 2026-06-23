@@ -1277,23 +1277,25 @@ const PINMAP_PADS = ["1", "2"];
 const flushAsync = () => new Promise((r) => setTimeout(r, 0));
 
 describe("buildRegisterImportEditor — 4-column layout (#49)", () => {
-  it("uses CSS Grid auto-fit for the body so the modal collapses without a width-read", () => {
+  it("uses an explicit 4-column × 2-row grid; the side lists span the full height", () => {
     const panel = buildRegisterImportEditor(document, {
       templateLibs: ONE_LIB,
       templateLibsFootprints: ONE_LIB_FP,
     });
-    // The body grid uses ``repeat(auto-fit, minmax(220px, 1fr))`` so the
-    // 4-column layout folds intrinsically (4 → 2 → 1) without
-    // panel.clientWidth.
-    const grids = Array.from(panel.querySelectorAll("div")).filter(
-      (el) =>
-        el.style.gridTemplateColumns
-        && el.style.gridTemplateColumns.includes("auto-fit"),
-    );
-    expect(grids.length).toBeGreaterThanOrEqual(1);
-    for (const g of grids) {
-      expect(g.style.gridTemplateColumns).toMatch(/minmax\(\s*220px/);
-    }
+    const symList = panel.querySelector(`[${OVERRIDE_REGISTER_TEMPLATE_LIST_ATTR}]`);
+    const fpList = panel.querySelector(`[${OVERRIDE_REGISTER_FOOTPRINT_LIST_ATTR}]`);
+    const symbolCol = symList.parentElement;
+    const footprintCol = fpList.parentElement;
+    const body = symbolCol.parentElement;
+    expect(body.style.display).toBe("grid");
+    // Explicit 4 columns (NOT auto-fit) + 2 rows, so the lists can span both rows.
+    expect(body.style.gridTemplateColumns).not.toMatch(/auto-fit/);
+    expect((body.style.gridTemplateColumns.match(/minmax/g) || []).length).toBe(4);
+    expect(body.style.gridTemplateRows).toBeTruthy();
+    // Slice 1 (symbol list) + slice 4 (footprint list) span BOTH rows → full height,
+    // never shortened by the metadata that sits under the viewers.
+    expect(symbolCol.style.gridRow.replace(/\s/g, "")).toBe("1/span2");
+    expect(footprintCol.style.gridRow.replace(/\s/g, "")).toBe("1/span2");
   });
 
   it("renders the status strip + Pin-Mapper host + table in the right pane", () => {
@@ -1305,19 +1307,32 @@ describe("buildRegisterImportEditor — 4-column layout (#49)", () => {
     expect(panel.querySelector(`[${OVERRIDE_REGISTER_PINMAP_ATTR}]`)).toBeTruthy();
   });
 
-  it("places the Symbol + Footprint preview panes as columns of the same 4-column body grid", () => {
+  it("puts the viewers in row 1 (cols 2 & 3) with metadata/Pin-Mapper in row 2 below them", () => {
     const panel = buildRegisterImportEditor(document, {
       templateLibs: ONE_LIB,
       templateLibsFootprints: ONE_LIB_FP,
     });
     const sym = panel.querySelector(`[${OVERRIDE_REGISTER_SYMBOL_PREVIEW_ATTR}]`);
     const fp = panel.querySelector(`[${OVERRIDE_REGISTER_FOOTPRINT_PREVIEW_ATTR}]`);
-    // Each pane sits inside a labeled cell (Symbol / Footprint); the cells
-    // themselves are columns of the single body grid (the 4-col layout).
-    expect(sym.parentElement.parentElement).toBe(fp.parentElement.parentElement);
-    const bodyGrid = sym.parentElement.parentElement;
-    expect(bodyGrid.style.display).toBe("grid");
-    expect(bodyGrid.style.gridTemplateColumns).toMatch(/auto-fit/);
+    const symCell = sym.parentElement;
+    const fpCell = fp.parentElement;
+    // Both viewer cells live in the same body grid.
+    expect(symCell.parentElement).toBe(fpCell.parentElement);
+    const body = symCell.parentElement;
+    expect(body.style.display).toBe("grid");
+    expect(body.style.gridTemplateColumns).not.toMatch(/auto-fit/);
+    // Viewers: row 1, middle columns.
+    expect(symCell.style.gridColumn).toBe("2");
+    expect(symCell.style.gridRow).toBe("1");
+    expect(fpCell.style.gridColumn).toBe("3");
+    expect(fpCell.style.gridRow).toBe("1");
+    // The metadata + Pin-Mapper block is a grid child in row 2 spanning cols 2–3.
+    const pinmap = panel.querySelector(`[${OVERRIDE_REGISTER_PINMAP_ATTR}]`);
+    let metaCell = pinmap;
+    while (metaCell && metaCell.parentElement !== body) metaCell = metaCell.parentElement;
+    expect(metaCell).toBeTruthy();
+    expect(metaCell.style.gridColumn.replace(/\s/g, "")).toBe("2/span2");
+    expect(metaCell.style.gridRow).toBe("2");
   });
 
   it("the source file performs no panel.clientWidth read (intrinsic collapse only)", async () => {

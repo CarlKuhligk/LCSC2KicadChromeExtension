@@ -664,8 +664,17 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   panel.appendChild(topBar);
 
   const body = doc.createElement("div");
-  body.style.cssText =
-    `display:grid;grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));gap:${DIALOG_SPACING.lg};align-items:start`;
+  // 4 vertical slices: [symbol list | symbol viewer | footprint viewer | footprint list].
+  // The two side LISTS span BOTH rows (full height); the viewers sit in row 1, and the
+  // metadata + Pin-Mapper block fills row 2 UNDER the viewers (cols 2–3) — so the lists
+  // are never shortened by it.
+  body.style.cssText = [
+    "display:grid",
+    "grid-template-columns:minmax(170px,0.8fr) minmax(210px,1.1fr) minmax(210px,1.1fr) minmax(170px,0.8fr)",
+    "grid-template-rows:auto auto",
+    `gap:${DIALOG_SPACING.lg}`,
+    "align-items:stretch",
+  ].join(";");
   panel.appendChild(body);
 
   const mkColLabel = (text) => {
@@ -767,7 +776,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   /* ----- COLUMN 1 — Symbol list -------------------------------------------- */
 
   const symbolCol = doc.createElement("div");
-  symbolCol.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.sm};min-width:0`;
+  symbolCol.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.sm};min-width:0;min-height:0;grid-column:1;grid-row:1 / span 2`;
   body.appendChild(symbolCol);
 
   // Hidden <select> is the source of truth — parseLayer / collectRegisterEditorRule
@@ -803,7 +812,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   listHost.setAttribute(OVERRIDE_REGISTER_TEMPLATE_LIST_ATTR, "true");
   listHost.style.cssText = [
     "display:flex", "flex-direction:column", "gap:2px",
-    "max-height:160px", "overflow:auto",
+    "flex:1 1 0", "min-height:120px", "overflow:auto",
     `border:1px solid ${T.borderStrong}`, `border-radius:${T.radiusSm}`,
     `padding:${DIALOG_SPACING.xs}`,
     `background:${T.surface2}`,
@@ -821,7 +830,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   ].join(";");
 
   const symPreviewCell = doc.createElement("div");
-  symPreviewCell.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.xs};min-width:0`;
+  symPreviewCell.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.xs};min-width:0;grid-column:2;grid-row:1`;
   symPreviewCell.appendChild(mkColLabel("Symbol"));
   const previewPane = doc.createElement("div");
   previewPane.setAttribute(OVERRIDE_REGISTER_SYMBOL_PREVIEW_ATTR, "true");
@@ -832,7 +841,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   /* ----- COLUMN 3 — Footprint viewer --------------------------------------- */
 
   const fpPreviewCell = doc.createElement("div");
-  fpPreviewCell.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.xs};min-width:0`;
+  fpPreviewCell.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.xs};min-width:0;grid-column:3;grid-row:1`;
   fpPreviewCell.appendChild(mkColLabel("Footprint"));
   const footprintPane = doc.createElement("div");
   footprintPane.setAttribute(OVERRIDE_REGISTER_FOOTPRINT_PREVIEW_ATTR, "true");
@@ -843,7 +852,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   /* ----- COLUMN 4 — Footprint list ----------------------------------------- */
 
   const footprintCol = doc.createElement("div");
-  footprintCol.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.sm};min-width:0`;
+  footprintCol.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.sm};min-width:0;min-height:0;grid-column:4;grid-row:1 / span 2`;
   body.appendChild(footprintCol);
 
   // Hidden <select> is the source of truth (kept for collectRegisterEditorRule
@@ -882,7 +891,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   fpListHost.setAttribute(OVERRIDE_REGISTER_FOOTPRINT_LIST_ATTR, "true");
   fpListHost.style.cssText = [
     "display:flex", "flex-direction:column", "gap:2px",
-    "max-height:160px", "overflow:auto",
+    "flex:1 1 0", "min-height:120px", "overflow:auto",
     `border:1px solid ${T.borderStrong}`, `border-radius:${T.radiusSm}`,
     `padding:${DIALOG_SPACING.xs}`,
     `background:${T.surface2}`,
@@ -891,16 +900,19 @@ export function buildRegisterImportEditor(doc, opts = {}) {
 
   /* ----- BOTTOM BLOCK — METADATA + Pin↔Pad Mapper (centered) --------------- */
 
+  // Metadata + Pin-Mapper sit in ROW 2 of the middle two slices — directly UNDER the
+  // symbol & footprint viewers — spanning cols 2–3. The side lists (cols 1 & 4) keep
+  // their full height because they span both rows.
   const bottomBlock = doc.createElement("div");
   bottomBlock.style.cssText = [
     "display:flex",
     "flex-direction:column",
     `gap:${DIALOG_SPACING.sm}`,
-    "max-width:720px",
-    "width:100%",
-    "margin:0 auto",
+    "min-width:0",
+    "grid-column:2 / span 2",
+    "grid-row:2",
   ].join(";");
-  panel.appendChild(bottomBlock);
+  body.appendChild(bottomBlock);
 
   // Pin-label visibility (V2 carry-over): hide pin numbers / names in the
   // written symbol — typical for 2-pin parts (R/C/L/D) where they clutter the
