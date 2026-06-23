@@ -4882,10 +4882,14 @@ function attachButton(lcscId) {
         // register / modify / low-confidence).
         const openRegisterEditor = async (initial = {}) => {
           let pageParams = {};
+          let packageHint = null;
           try {
             const snap = extractPageData(document) || {};
             if (snap.params && typeof snap.params === "object") {
               pageParams = snap.params;
+            }
+            if (typeof snap.package === "string" && snap.package.trim()) {
+              packageHint = snap.package.trim();
             }
           } catch (e) {
             dbg("[register] snapshot for editor failed", e);
@@ -4905,6 +4909,11 @@ function attachButton(lcscId) {
             templateLibsFootprints,
             templateCategoriesByLib,
             pageParams,
+            // Issue #49: package hint (e.g. "0603", "SOIC-8") narrows the
+            // default Footprint list to template names containing the hint so
+            // the user does not have to wade through every footprint. Falsy
+            // hint ⇒ list defaults to show-all (no surprise hiding).
+            packageHint,
             categoryPath: phase1Result?.categoryPath || null,
             theme: editorTheme,
             // Issue #47: in the unavailable case the editor defaults BOTH

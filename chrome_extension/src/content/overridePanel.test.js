@@ -38,6 +38,11 @@ import {
   OVERRIDE_REGISTER_PINMAP_PAD_ATTR,
   OVERRIDE_REGISTER_MAPSTATUS_ATTR,
   OVERRIDE_REGISTER_PINMAP_NC,
+  OVERRIDE_REGISTER_FOOTPRINT_LIST_ATTR,
+  OVERRIDE_REGISTER_FOOTPRINT_ITEM_ATTR,
+  OVERRIDE_REGISTER_FP_SHOWALL_ATTR,
+  OVERRIDE_REGISTER_SYMBOL_SEARCH_ATTR,
+  OVERRIDE_REGISTER_FOOTPRINT_SEARCH_ATTR,
   OVERRIDE_IMPORT_ATTR,
   OVERRIDE_MODIFY_ATTR,
   OVERRIDE_ONECLICK_PREVIEW_ATTR,
@@ -1271,22 +1276,23 @@ const PINMAP_SYM_PINS = [
 const PINMAP_PADS = ["1", "2"];
 const flushAsync = () => new Promise((r) => setTimeout(r, 0));
 
-describe("buildRegisterImportEditor — two-pane layout (#9)", () => {
-  it("uses CSS Grid auto-fit for body and preview row so the modal collapses without a width-read", () => {
+describe("buildRegisterImportEditor — 4-column layout (#49)", () => {
+  it("uses CSS Grid auto-fit for the body so the modal collapses without a width-read", () => {
     const panel = buildRegisterImportEditor(document, {
       templateLibs: ONE_LIB,
       templateLibsFootprints: ONE_LIB_FP,
     });
-    // The body grid + preview row both use ``repeat(auto-fit, minmax(260px, 1fr))``
-    // so they fold to one column intrinsically; no panel.clientWidth required.
+    // The body grid uses ``repeat(auto-fit, minmax(220px, 1fr))`` so the
+    // 4-column layout folds intrinsically (4 → 2 → 1) without
+    // panel.clientWidth.
     const grids = Array.from(panel.querySelectorAll("div")).filter(
       (el) =>
         el.style.gridTemplateColumns
         && el.style.gridTemplateColumns.includes("auto-fit"),
     );
-    expect(grids.length).toBeGreaterThanOrEqual(2);
+    expect(grids.length).toBeGreaterThanOrEqual(1);
     for (const g of grids) {
-      expect(g.style.gridTemplateColumns).toMatch(/minmax\(\s*260px/);
+      expect(g.style.gridTemplateColumns).toMatch(/minmax\(\s*220px/);
     }
   });
 
@@ -1299,20 +1305,19 @@ describe("buildRegisterImportEditor — two-pane layout (#9)", () => {
     expect(panel.querySelector(`[${OVERRIDE_REGISTER_PINMAP_ATTR}]`)).toBeTruthy();
   });
 
-  it("places the Symbol + Footprint preview panes as siblings in the right-pane preview row", () => {
+  it("places the Symbol + Footprint preview panes as columns of the same 4-column body grid", () => {
     const panel = buildRegisterImportEditor(document, {
       templateLibs: ONE_LIB,
       templateLibsFootprints: ONE_LIB_FP,
     });
     const sym = panel.querySelector(`[${OVERRIDE_REGISTER_SYMBOL_PREVIEW_ATTR}]`);
     const fp = panel.querySelector(`[${OVERRIDE_REGISTER_FOOTPRINT_PREVIEW_ATTR}]`);
-    // Each pane sits inside a labeled cell (Symbol / Footprint) whose direct
-    // parent is the preview row — so the cells (sym/fp.parentElement) share a
-    // parent.
+    // Each pane sits inside a labeled cell (Symbol / Footprint); the cells
+    // themselves are columns of the single body grid (the 4-col layout).
     expect(sym.parentElement.parentElement).toBe(fp.parentElement.parentElement);
-    const previewRow = sym.parentElement.parentElement;
-    expect(previewRow.style.display).toBe("grid");
-    expect(previewRow.style.gridTemplateColumns).toMatch(/auto-fit/);
+    const bodyGrid = sym.parentElement.parentElement;
+    expect(bodyGrid.style.display).toBe("grid");
+    expect(bodyGrid.style.gridTemplateColumns).toMatch(/auto-fit/);
   });
 
   it("the source file performs no panel.clientWidth read (intrinsic collapse only)", async () => {
@@ -1829,8 +1834,8 @@ describe("buildRegisterImportEditor — editor forcing in unavailable mode (Issu
   });
 });
 
-describe("renderRegisterImportEditor — Issue #9 modal width bump", () => {
-  it("mounts with maxWidthPx=880 so the two-pane workspace fits without horizontal scroll", () => {
+describe("renderRegisterImportEditor — Issue #49 modal width bump", () => {
+  it("mounts with maxWidthPx=1080 so the 4-column layout fits without horizontal scroll", () => {
     const row = (() => {
       const r = buildAnchorCardRow(document, { colSpan: 1 });
       const table = document.createElement("table");
@@ -1843,10 +1848,305 @@ describe("renderRegisterImportEditor — Issue #9 modal width bump", () => {
     renderRegisterImportEditor(row, { templateLibs: EMPTY_LIBS });
     const modal = document.getElementById("k2c-register-editor-modal");
     // ``mountCsModal`` writes the width onto the panel; the value comes through
-    // as either ``max-width: 880px`` or ``width: 880px`` depending on the
-    // helper. Either way the 880 token must show up in the inline cssText.
+    // as either ``max-width: 1080px`` or ``width: 1080px`` depending on the
+    // helper. Either way the 1080 token must show up in the inline cssText.
     expect(modal).toBeTruthy();
-    const panel = modal.querySelector('[style*="880"]') || modal;
-    expect(panel.outerHTML).toContain("880");
+    const panel = modal.querySelector('[style*="1080"]') || modal;
+    expect(panel.outerHTML).toContain("1080");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  Issue #49 — 4-column Import-Editor (symbol/footprint LIST + search)       */
+/* -------------------------------------------------------------------------- */
+
+const FP_TPL = "/home/user/templates/MyTemplates.kicad_sym";
+const FP_MANY = {
+  [FP_TPL]: ["R0603_1608Metric", "C0805_2012Metric", "SOIC-8_3.9x4.9mm", "QFN-16_3x3mm"],
+};
+
+describe("buildRegisterImportEditor — footprint LIST (#49)", () => {
+  it("renders the footprint list host + one item per footprint plus the EasyEDA row", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+    });
+    const host = panel.querySelector(`[${OVERRIDE_REGISTER_FOOTPRINT_LIST_ATTR}]`);
+    expect(host).toBeTruthy();
+    const values = Array.from(
+      panel.querySelectorAll(`[${OVERRIDE_REGISTER_FOOTPRINT_ITEM_ATTR}]`),
+    ).map((i) => i.dataset.value);
+    expect(values[0]).toBe(EASYEDA_OPTION_VALUE);
+    expect(values).toContain(`template:${FP_TPL}:R0603_HandSolder`);
+    expect(values).toContain(`template:${FP_TPL}:C0805_Std`);
+  });
+
+  it("clicking a footprint LIST row updates the hidden fp <select> + footprintSource round-trips through collectRegisterEditorRule", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+    });
+    const target = Array.from(
+      panel.querySelectorAll(`[${OVERRIDE_REGISTER_FOOTPRINT_ITEM_ATTR}]`),
+    ).find((i) => i.dataset.value === `template:${FP_TPL}:R0603_HandSolder`);
+    expect(target).toBeTruthy();
+    target.click();
+    const fp = panel.querySelector(`[${OVERRIDE_FOOTPRINT_SELECT_ATTR}]`);
+    expect(fp.value).toBe(`template:${FP_TPL}:R0603_HandSolder`);
+    const payload = collectRegisterEditorRule(panel, "Passives");
+    expect(payload.rule.footprintSource).toEqual({
+      source: "template",
+      libPath: FP_TPL,
+      name: "R0603_HandSolder",
+    });
+  });
+
+  it("hides the visible footprint <select> — the LIST replaces it as the user-facing chooser", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+    });
+    const fp = panel.querySelector(`[${OVERRIDE_FOOTPRINT_SELECT_ATTR}]`);
+    expect(fp.style.display).toBe("none");
+  });
+
+  it("clicking the EasyEDA row routes back to the EasyEDA footprint default", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+      initialFootprintSource: { source: "template", libPath: FP_TPL, name: "C0805_Std" },
+    });
+    const easyedaRow = Array.from(
+      panel.querySelectorAll(`[${OVERRIDE_REGISTER_FOOTPRINT_ITEM_ATTR}]`),
+    ).find((i) => i.dataset.value === EASYEDA_OPTION_VALUE);
+    easyedaRow.click();
+    const fp = panel.querySelector(`[${OVERRIDE_FOOTPRINT_SELECT_ATTR}]`);
+    expect(fp.value).toBe(EASYEDA_OPTION_VALUE);
+    expect(collectRegisterEditorRule(panel, "X").rule.footprintSource).toEqual({
+      source: "easyeda",
+    });
+  });
+});
+
+describe("buildRegisterImportEditor — footprint show-all + packageHint (#49)", () => {
+  it("with no packageHint, the default subset IS show-all (no surprise hiding)", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: FP_MANY,
+    });
+    const values = Array.from(
+      panel.querySelectorAll(`[${OVERRIDE_REGISTER_FOOTPRINT_ITEM_ATTR}]`),
+    ).map((i) => i.dataset.value);
+    // Every footprint should appear when no hint is supplied.
+    expect(values).toContain(`template:${FP_TPL}:R0603_1608Metric`);
+    expect(values).toContain(`template:${FP_TPL}:SOIC-8_3.9x4.9mm`);
+    expect(values).toContain(`template:${FP_TPL}:QFN-16_3x3mm`);
+  });
+
+  it("packageHint narrows the default subset to footprints whose name contains the hint", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: FP_MANY,
+      packageHint: "SOIC",
+    });
+    const values = Array.from(
+      panel.querySelectorAll(`[${OVERRIDE_REGISTER_FOOTPRINT_ITEM_ATTR}]`),
+    ).map((i) => i.dataset.value);
+    expect(values).toContain(`template:${FP_TPL}:SOIC-8_3.9x4.9mm`);
+    expect(values).not.toContain(`template:${FP_TPL}:R0603_1608Metric`);
+    expect(values).not.toContain(`template:${FP_TPL}:QFN-16_3x3mm`);
+    // EasyEDA row always present.
+    expect(values).toContain(EASYEDA_OPTION_VALUE);
+  });
+
+  it("packageHint matches case-insensitively", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: FP_MANY,
+      packageHint: "soic",
+    });
+    const values = Array.from(
+      panel.querySelectorAll(`[${OVERRIDE_REGISTER_FOOTPRINT_ITEM_ATTR}]`),
+    ).map((i) => i.dataset.value);
+    expect(values).toContain(`template:${FP_TPL}:SOIC-8_3.9x4.9mm`);
+  });
+
+  it("'alle Footprints anzeigen' overrides the packageHint subset", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: FP_MANY,
+      packageHint: "SOIC",
+    });
+    const showAll = panel.querySelector(`[${OVERRIDE_REGISTER_FP_SHOWALL_ATTR}]`);
+    showAll.checked = true;
+    showAll.dispatchEvent(new Event("change"));
+    const values = Array.from(
+      panel.querySelectorAll(`[${OVERRIDE_REGISTER_FOOTPRINT_ITEM_ATTR}]`),
+    ).map((i) => i.dataset.value);
+    expect(values).toContain(`template:${FP_TPL}:R0603_1608Metric`);
+    expect(values).toContain(`template:${FP_TPL}:QFN-16_3x3mm`);
+  });
+
+  it("auto-ticks 'alle Footprints anzeigen' when the prefilled footprint is outside the packageHint subset", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: FP_MANY,
+      packageHint: "SOIC",
+      initialFootprintSource: {
+        source: "template",
+        libPath: FP_TPL,
+        name: "QFN-16_3x3mm",
+      },
+    });
+    const showAll = panel.querySelector(`[${OVERRIDE_REGISTER_FP_SHOWALL_ATTR}]`);
+    expect(showAll.checked).toBe(true);
+    const values = Array.from(
+      panel.querySelectorAll(`[${OVERRIDE_REGISTER_FOOTPRINT_ITEM_ATTR}]`),
+    ).map((i) => i.dataset.value);
+    expect(values).toContain(`template:${FP_TPL}:QFN-16_3x3mm`);
+  });
+});
+
+describe("buildRegisterImportEditor — symbol search (#49)", () => {
+  const SYM_MANY = {
+    [FP_TPL]: ["R0603", "C0805", "L_Inductor", "Op_Amp_Generic"],
+    "/home/user/templates/Other.kicad_sym": ["LED_RED", "Diode_Schottky"],
+  };
+
+  it("the symbol search input has the expected attr + placeholder", () => {
+    const panel = buildRegisterImportEditor(document, { templateLibs: SYM_MANY });
+    const input = panel.querySelector(`[${OVERRIDE_REGISTER_SYMBOL_SEARCH_ATTR}]`);
+    expect(input).toBeTruthy();
+    expect(input.tagName).toBe("INPUT");
+    expect(input.placeholder).toContain("Symbol");
+  });
+
+  it("substring-filters the template LIST live on each input event, EasyEDA row always shown", () => {
+    const panel = buildRegisterImportEditor(document, { templateLibs: SYM_MANY });
+    // Reveal all templates first so we have something to filter from.
+    const showAll = panel.querySelector(`[${OVERRIDE_REGISTER_SHOWALL_ATTR}]`);
+    showAll.checked = true;
+    showAll.dispatchEvent(new Event("change"));
+    const input = panel.querySelector(`[${OVERRIDE_REGISTER_SYMBOL_SEARCH_ATTR}]`);
+    input.value = "diode";
+    input.dispatchEvent(new Event("input"));
+    const values = Array.from(
+      panel.querySelectorAll(`[${OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR}]`),
+    ).map((i) => i.dataset.value);
+    expect(values).toContain(EASYEDA_OPTION_VALUE);
+    expect(values).toContain(
+      `template:/home/user/templates/Other.kicad_sym:Diode_Schottky`,
+    );
+    expect(values).not.toContain(`template:${FP_TPL}:R0603`);
+    expect(values).not.toContain(`template:${FP_TPL}:C0805`);
+  });
+
+  it("non-empty query searches the FULL library pool — category match shortlist is ignored", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: SYM_MANY,
+      // Category shortlist only includes R0603; without search the list
+      // collapses to ``EasyEDA + R0603``.
+      templateCategoriesByLib: { [FP_TPL]: { R0603: "Resistors" } },
+      categoryPath: "Resistors",
+    });
+    // Confirm the default-shortlist behavior before searching.
+    const beforeValues = Array.from(
+      panel.querySelectorAll(`[${OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR}]`),
+    ).map((i) => i.dataset.value);
+    expect(beforeValues).not.toContain(`template:${FP_TPL}:Op_Amp_Generic`);
+    // A query for "op_amp" must reach into the full pool, NOT just the
+    // category-matched shortlist.
+    const input = panel.querySelector(`[${OVERRIDE_REGISTER_SYMBOL_SEARCH_ATTR}]`);
+    input.value = "op_amp";
+    input.dispatchEvent(new Event("input"));
+    const values = Array.from(
+      panel.querySelectorAll(`[${OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR}]`),
+    ).map((i) => i.dataset.value);
+    expect(values).toContain(`template:${FP_TPL}:Op_Amp_Generic`);
+  });
+
+  it("clearing the query restores the category-matched default", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: SYM_MANY,
+      templateCategoriesByLib: { [FP_TPL]: { R0603: "Resistors" } },
+      categoryPath: "Resistors",
+    });
+    const input = panel.querySelector(`[${OVERRIDE_REGISTER_SYMBOL_SEARCH_ATTR}]`);
+    input.value = "op_amp";
+    input.dispatchEvent(new Event("input"));
+    input.value = "";
+    input.dispatchEvent(new Event("input"));
+    const values = Array.from(
+      panel.querySelectorAll(`[${OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR}]`),
+    ).map((i) => i.dataset.value);
+    expect(values).toContain(`template:${FP_TPL}:R0603`);
+    expect(values).not.toContain(`template:${FP_TPL}:Op_Amp_Generic`);
+  });
+});
+
+describe("buildRegisterImportEditor — footprint search (#49)", () => {
+  it("the footprint search input has the expected attr + placeholder", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: FP_MANY,
+    });
+    const input = panel.querySelector(`[${OVERRIDE_REGISTER_FOOTPRINT_SEARCH_ATTR}]`);
+    expect(input).toBeTruthy();
+    expect(input.tagName).toBe("INPUT");
+    expect(input.placeholder).toContain("Footprint");
+  });
+
+  it("substring-filters the footprint LIST live, EasyEDA row always shown", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: FP_MANY,
+    });
+    const input = panel.querySelector(`[${OVERRIDE_REGISTER_FOOTPRINT_SEARCH_ATTR}]`);
+    input.value = "QFN";
+    input.dispatchEvent(new Event("input"));
+    const values = Array.from(
+      panel.querySelectorAll(`[${OVERRIDE_REGISTER_FOOTPRINT_ITEM_ATTR}]`),
+    ).map((i) => i.dataset.value);
+    expect(values).toContain(EASYEDA_OPTION_VALUE);
+    expect(values).toContain(`template:${FP_TPL}:QFN-16_3x3mm`);
+    expect(values).not.toContain(`template:${FP_TPL}:R0603_1608Metric`);
+    expect(values).not.toContain(`template:${FP_TPL}:SOIC-8_3.9x4.9mm`);
+  });
+
+  it("non-empty query overrides the packageHint default subset", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: FP_MANY,
+      packageHint: "SOIC",
+    });
+    const input = panel.querySelector(`[${OVERRIDE_REGISTER_FOOTPRINT_SEARCH_ATTR}]`);
+    input.value = "QFN";
+    input.dispatchEvent(new Event("input"));
+    const values = Array.from(
+      panel.querySelectorAll(`[${OVERRIDE_REGISTER_FOOTPRINT_ITEM_ATTR}]`),
+    ).map((i) => i.dataset.value);
+    expect(values).toContain(`template:${FP_TPL}:QFN-16_3x3mm`);
+    // Default SOIC subset would have hidden QFN; the search lifted that.
+    expect(values).not.toContain(`template:${FP_TPL}:R0603_1608Metric`);
+  });
+});
+
+describe("buildRegisterImportEditor — easyedaUnavailable forcing on BOTH lists (#49 + #47)", () => {
+  it("neither hidden select carries EasyEDA as the selected value, both lists render the forced row as selected", () => {
+    const panel = buildRegisterImportEditor(document, {
+      templateLibs: ONE_LIB,
+      templateLibsFootprints: ONE_LIB_FP,
+      easyedaUnavailable: true,
+    });
+    const sym = panel.querySelector(`[${OVERRIDE_SYMBOL_SELECT_ATTR}]`);
+    const fp = panel.querySelector(`[${OVERRIDE_FOOTPRINT_SELECT_ATTR}]`);
+    expect(sym.value).not.toBe(EASYEDA_OPTION_VALUE);
+    expect(fp.value).not.toBe(EASYEDA_OPTION_VALUE);
+    // The FORCED row carries the accent treatment in both lists.
+    const fpRows = panel.querySelectorAll(`[${OVERRIDE_REGISTER_FOOTPRINT_ITEM_ATTR}]`);
+    const selectedFp = Array.from(fpRows).find(
+      (r) => r.dataset.value === fp.value,
+    );
+    expect(selectedFp).toBeTruthy();
   });
 });
