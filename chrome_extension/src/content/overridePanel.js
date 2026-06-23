@@ -69,6 +69,12 @@ export const OVERRIDE_REGISTER_PINMAP_ATTR = "data-k2c-register-pinmap";
 export const OVERRIDE_REGISTER_PINMAP_TABLE_ATTR = "data-k2c-register-pinmap-table";
 export const OVERRIDE_REGISTER_PINMAP_PAD_ATTR = "data-k2c-register-pinmap-pad";
 export const OVERRIDE_REGISTER_MAPSTATUS_ATTR = "data-k2c-register-mapstatus";
+/** Import-Editor 4-column layout — symbol/footprint lists + search (Issue #49). */
+export const OVERRIDE_REGISTER_FOOTPRINT_LIST_ATTR = "data-k2c-register-footprint-list";
+export const OVERRIDE_REGISTER_FOOTPRINT_ITEM_ATTR = "data-k2c-register-footprint-item";
+export const OVERRIDE_REGISTER_FP_SHOWALL_ATTR = "data-k2c-register-fp-showall";
+export const OVERRIDE_REGISTER_SYMBOL_SEARCH_ATTR = "data-k2c-register-symbol-search";
+export const OVERRIDE_REGISTER_FOOTPRINT_SEARCH_ATTR = "data-k2c-register-footprint-search";
 /** Backend sentinel for "no connection" — mirrors the gallery's K2C_GALLERY_PAD_NC. */
 export const OVERRIDE_REGISTER_PINMAP_NC = "__NC__";
 /** 🟢 One-Click panel controls (Issue #29). */
@@ -638,39 +644,102 @@ export function buildRegisterImportEditor(doc, opts = {}) {
     `color:${T.text}`,
   ].join(";");
 
-  // Two-pane workspace (Issue #9 redesign).
+  // Import-Editor 4-column layout (Issue #49 redesign of the #9 two-pane).
   //
   // TOP BAR (full width, above the grid): heading "Registrieren", category line,
   // live Pin-Mapper status strip. The intent is one glanceable "what's happening"
   // line above every control.
   //
-  // BODY (CSS Grid): intrinsic collapse via ``repeat(auto-fit, minmax(260px, 1fr))``
-  // so the layout reflows without any post-mount width-read (a width-read would
-  // race ``mountCsModal``'s own layout pass). Left pane collects every INPUT in
-  // import order; the right pane carries the two SVG previews + the Pin↔Pad
-  // mapper table.
+  // BODY (CSS Grid): four columns — SYMBOL list · SYMBOL viewer · FOOTPRINT viewer
+  // · FOOTPRINT list — built with ``repeat(auto-fit, minmax(220px, 1fr))`` so the
+  // layout collapses intrinsically (4→2→1 columns) without any post-mount
+  // width-read (a width-read would race ``mountCsModal``'s own layout pass).
+  //
+  // BOTTOM BLOCK (centered under the two viewers): the read-only METADATA
+  // preview (``Value-Feld`` + ``OVERRIDE_REGISTER_PROP_PREVIEW_ATTR`` list) and
+  // the Pin↔Pad Mapper sit here, ``max-width:720px;margin:0 auto`` so they read
+  // as a single centered block beneath the viewers.
   const topBar = doc.createElement("div");
   topBar.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.xs}`;
   panel.appendChild(topBar);
 
   const body = doc.createElement("div");
-  body.style.cssText =
-    `display:grid;grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));gap:${DIALOG_SPACING.lg};align-items:start`;
+  // 4 vertical slices: [symbol list | symbol viewer | footprint viewer | footprint list].
+  // The two side LISTS span BOTH rows (full height); the viewers sit in row 1, and the
+  // metadata + Pin-Mapper block fills row 2 UNDER the viewers (cols 2–3) — so the lists
+  // are never shortened by it.
+  body.style.cssText = [
+    "display:grid",
+    "grid-template-columns:minmax(170px,0.8fr) minmax(210px,1.1fr) minmax(210px,1.1fr) minmax(170px,0.8fr)",
+    "grid-template-rows:auto auto",
+    `gap:${DIALOG_SPACING.lg}`,
+    "align-items:stretch",
+  ].join(";");
   panel.appendChild(body);
-
-  const leftPane = doc.createElement("div");
-  leftPane.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.sm};min-width:0`;
-  body.appendChild(leftPane);
-
-  const rightPane = doc.createElement("div");
-  rightPane.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.sm};min-width:0`;
-  body.appendChild(rightPane);
 
   const mkColLabel = (text) => {
     const el = doc.createElement("div");
     el.textContent = text;
     el.style.cssText = `color:${T.textMuted};font-weight:600;font-size:${DIALOG_TYPE.micro}`;
     return el;
+  };
+
+  const mkSearchInput = (attr, placeholder) => {
+    const input = doc.createElement("input");
+    input.type = "text";
+    input.placeholder = placeholder;
+    input.setAttribute(attr, "true");
+    input.style.cssText = [
+      `border:1px solid ${T.borderSoft}`,
+      `background:${T.surface}`,
+      `color:${T.text}`,
+      `font-size:${DIALOG_TYPE.small}`,
+      `border-radius:${T.radiusSm}`,
+      `padding:${DIALOG_SPACING.xs} ${DIALOG_SPACING.sm}`,
+      "min-width:0",
+      "width:100%",
+      "box-sizing:border-box",
+    ].join(";");
+    return input;
+  };
+
+  // Build a clickable choice row for either list (#49). Shared so the symbol
+  // and footprint lists render with byte-identical styling — hover affordance,
+  // selected accent, optional category tag. Click wiring is passed in because
+  // the symbol list re-renders only, while the footprint list also kicks off
+  // ``loadFootprintPreview`` after the value change.
+  const mkChoiceRow = (item, { itemAttr, selected, onClick }) => {
+    const row = doc.createElement("div");
+    row.setAttribute(itemAttr, "true");
+    row.dataset.value = item.value;
+    row.style.cssText = [
+      "display:flex", "justify-content:space-between", `gap:${DIALOG_SPACING.sm}`,
+      `padding:${DIALOG_SPACING.xs} ${DIALOG_SPACING.xs}`, "border-radius:3px", "cursor:pointer",
+      selected ? `background:${T.selectedSurface}` : "background:transparent",
+      "transition:background 0.12s ease",
+    ].join(";");
+    const left = doc.createElement("span");
+    left.textContent = item.label;
+    left.style.cssText = selected
+      ? `font-weight:600;color:${T.accent}`
+      : `color:${T.text}`;
+    row.appendChild(left);
+    if (item.category) {
+      const tag = doc.createElement("span");
+      tag.textContent = item.category;
+      tag.style.cssText = `color:${T.textFaint};font-size:${DIALOG_TYPE.micro}`;
+      row.appendChild(tag);
+    }
+    if (!selected) {
+      row.addEventListener("mouseenter", () => {
+        row.style.background = T.surface3;
+      });
+      row.addEventListener("mouseleave", () => {
+        row.style.background = "transparent";
+      });
+    }
+    row.addEventListener("click", onClick);
+    return row;
   };
 
   const heading = doc.createElement("div");
@@ -704,21 +773,29 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   mapStatus.textContent = "Standard (1:1)";
   topBar.appendChild(mapStatus);
 
-  /* ----- LEFT PANE — Quellen + Steuerung ----------------------------------- */
+  /* ----- COLUMN 1 — Symbol list -------------------------------------------- */
 
-  // Symbol-Source: a hidden <select> stays the source of truth (parseLayer /
-  // collectRegisterEditorRule read it; prefill sets it). The visible UI is a
-  // selectable TEMPLATE LIST — Category-matched templates shown by default with
-  // a "show all" toggle — that drives the hidden select on click.
+  const symbolCol = doc.createElement("div");
+  symbolCol.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.sm};min-width:0;min-height:0;grid-column:1;grid-row:1 / span 2`;
+  body.appendChild(symbolCol);
+
+  // Hidden <select> is the source of truth — parseLayer / collectRegisterEditorRule
+  // read it, prefill sets it, the visible LIST drives it on click.
   const symSelect = doc.createElement("select");
   symSelect.setAttribute(OVERRIDE_SYMBOL_SELECT_ATTR, "true");
   populateSelect(symSelect, doc, opts.templateLibs);
   symSelect.style.cssText = "display:none";
-  leftPane.appendChild(symSelect);
+  symbolCol.appendChild(symSelect);
+
+  const symSearch = mkSearchInput(
+    OVERRIDE_REGISTER_SYMBOL_SEARCH_ATTR,
+    "Symbol suchen …",
+  );
+  symbolCol.appendChild(symSearch);
 
   const symHeadRow = doc.createElement("div");
   symHeadRow.style.cssText =
-    `display:flex;align-items:center;justify-content:space-between;gap:${DIALOG_SPACING.sm}`;
+    `display:flex;align-items:center;justify-content:space-between;gap:${DIALOG_SPACING.sm};flex-wrap:wrap`;
   symHeadRow.appendChild(mkColLabel("Symbol-Vorlage"));
   const showAllLabel = doc.createElement("label");
   showAllLabel.style.cssText =
@@ -729,37 +806,119 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   showAllLabel.appendChild(showAllCb);
   showAllLabel.appendChild(doc.createTextNode("alle Templates anzeigen"));
   symHeadRow.appendChild(showAllLabel);
-  leftPane.appendChild(symHeadRow);
+  symbolCol.appendChild(symHeadRow);
 
   const listHost = doc.createElement("div");
   listHost.setAttribute(OVERRIDE_REGISTER_TEMPLATE_LIST_ATTR, "true");
   listHost.style.cssText = [
     "display:flex", "flex-direction:column", "gap:2px",
-    "max-height:160px", "overflow:auto",
+    "flex:1 1 0", "min-height:120px", "overflow:auto",
     `border:1px solid ${T.borderStrong}`, `border-radius:${T.radiusSm}`,
     `padding:${DIALOG_SPACING.xs}`,
     `background:${T.surface2}`,
   ].join(";");
-  leftPane.appendChild(listHost);
+  symbolCol.appendChild(listHost);
 
-  // Footprint-Source selector (#9). EasyEDA default OR a curated template
-  // footprint from a template library's sibling .pretty. The visible <select>
-  // is the source of truth (collectRegisterEditorRule reads it via parseLayer);
-  // changing it re-renders the footprint preview in the right pane. Only the
-  // chooser sits here; the preview moved into the right pane preview row.
-  leftPane.appendChild(mkColLabel("Footprint-Quelle"));
+  /* ----- COLUMN 2 — Symbol viewer ------------------------------------------ */
+
+  const paneStyle = [
+    "display:flex", "align-items:center", "justify-content:center",
+    "min-height:120px", "max-height:240px", `padding:${DIALOG_SPACING.xs}`,
+    `border:1px solid ${T.borderStrong}`, `border-radius:${T.radiusSm}`,
+    `background:${T.surface2}`,
+    "overflow:hidden",
+  ].join(";");
+
+  const symPreviewCell = doc.createElement("div");
+  symPreviewCell.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.xs};min-width:0;grid-column:2;grid-row:1`;
+  symPreviewCell.appendChild(mkColLabel("Symbol"));
+  const previewPane = doc.createElement("div");
+  previewPane.setAttribute(OVERRIDE_REGISTER_SYMBOL_PREVIEW_ATTR, "true");
+  previewPane.style.cssText = paneStyle;
+  symPreviewCell.appendChild(previewPane);
+  body.appendChild(symPreviewCell);
+
+  /* ----- COLUMN 3 — Footprint viewer --------------------------------------- */
+
+  const fpPreviewCell = doc.createElement("div");
+  fpPreviewCell.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.xs};min-width:0;grid-column:3;grid-row:1`;
+  fpPreviewCell.appendChild(mkColLabel("Footprint"));
+  const footprintPane = doc.createElement("div");
+  footprintPane.setAttribute(OVERRIDE_REGISTER_FOOTPRINT_PREVIEW_ATTR, "true");
+  footprintPane.style.cssText = paneStyle;
+  fpPreviewCell.appendChild(footprintPane);
+  body.appendChild(fpPreviewCell);
+
+  /* ----- COLUMN 4 — Footprint list ----------------------------------------- */
+
+  const footprintCol = doc.createElement("div");
+  footprintCol.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.sm};min-width:0;min-height:0;grid-column:4;grid-row:1 / span 2`;
+  body.appendChild(footprintCol);
+
+  // Hidden <select> is the source of truth (kept for collectRegisterEditorRule
+  // and ``OVERRIDE_FOOTPRINT_SELECT_ATTR`` round-trips). The visible LIST drives
+  // its ``.value`` on click; the existing change-listener still re-renders the
+  // footprint preview + Pin-Mapper.
   const fpSelect = doc.createElement("select");
   fpSelect.setAttribute(OVERRIDE_FOOTPRINT_SELECT_ATTR, "true");
   populateSelect(fpSelect, doc, opts.templateLibsFootprints);
-  applyDialogStyleSelect(fpSelect, { theme: opts.theme });
+  fpSelect.style.cssText = "display:none";
   fpSelect.addEventListener("change", () => loadFootprintPreview());
-  leftPane.appendChild(fpSelect);
+  footprintCol.appendChild(fpSelect);
+
+  const fpSearch = mkSearchInput(
+    OVERRIDE_REGISTER_FOOTPRINT_SEARCH_ATTR,
+    "Footprint suchen …",
+  );
+  footprintCol.appendChild(fpSearch);
+
+  const fpHeadRow = doc.createElement("div");
+  fpHeadRow.style.cssText =
+    `display:flex;align-items:center;justify-content:space-between;gap:${DIALOG_SPACING.sm};flex-wrap:wrap`;
+  fpHeadRow.appendChild(mkColLabel("Footprint-Vorlage"));
+  const fpShowAllLabel = doc.createElement("label");
+  fpShowAllLabel.style.cssText =
+    `display:flex;align-items:center;gap:${DIALOG_SPACING.xs};font-size:${DIALOG_TYPE.micro};color:${T.textFaint};cursor:pointer`;
+  const fpShowAllCb = doc.createElement("input");
+  fpShowAllCb.type = "checkbox";
+  fpShowAllCb.setAttribute(OVERRIDE_REGISTER_FP_SHOWALL_ATTR, "true");
+  fpShowAllLabel.appendChild(fpShowAllCb);
+  fpShowAllLabel.appendChild(doc.createTextNode("alle Footprints anzeigen"));
+  fpHeadRow.appendChild(fpShowAllLabel);
+  footprintCol.appendChild(fpHeadRow);
+
+  const fpListHost = doc.createElement("div");
+  fpListHost.setAttribute(OVERRIDE_REGISTER_FOOTPRINT_LIST_ATTR, "true");
+  fpListHost.style.cssText = [
+    "display:flex", "flex-direction:column", "gap:2px",
+    "flex:1 1 0", "min-height:120px", "overflow:auto",
+    `border:1px solid ${T.borderStrong}`, `border-radius:${T.radiusSm}`,
+    `padding:${DIALOG_SPACING.xs}`,
+    `background:${T.surface2}`,
+  ].join(";");
+  footprintCol.appendChild(fpListHost);
+
+  /* ----- BOTTOM BLOCK — METADATA + Pin↔Pad Mapper (centered) --------------- */
+
+  // Metadata + Pin-Mapper sit in ROW 2 of the middle two slices — directly UNDER the
+  // symbol & footprint viewers — spanning cols 2–3. The side lists (cols 1 & 4) keep
+  // their full height because they span both rows.
+  const bottomBlock = doc.createElement("div");
+  bottomBlock.style.cssText = [
+    "display:flex",
+    "flex-direction:column",
+    `gap:${DIALOG_SPACING.sm}`,
+    "min-width:0",
+    "grid-column:2 / span 2",
+    "grid-row:2",
+  ].join(";");
+  body.appendChild(bottomBlock);
 
   // Pin-label visibility (V2 carry-over): hide pin numbers / names in the
   // written symbol — typical for 2-pin parts (R/C/L/D) where they clutter the
   // schematic. The caller auto-prefills "hide numbers" for ≤2-pin parts via
   // opts.initialHidePinNumbers; the engine applies it on both symbol paths.
-  leftPane.appendChild(mkColLabel("Pin-Beschriftung"));
+  bottomBlock.appendChild(mkColLabel("Pin-Beschriftung"));
 
   const pinRow = doc.createElement("div");
   pinRow.style.cssText = `display:flex;gap:${DIALOG_SPACING.lg};flex-wrap:wrap`;
@@ -785,7 +944,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
     "Pin-Namen ausblenden",
     opts.initialHidePinNames,
   );
-  leftPane.appendChild(pinRow);
+  bottomBlock.appendChild(pinRow);
 
   // Value-Param + Metadata preview (ADR-0006 refined). The Value dropdown picks
   // the one param whose value fills the KiCad Value field; the read-only preview
@@ -832,9 +991,9 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   valueSelect.value = hasValueOpt ? presetValueParam : "";
   valueSelectWrap.appendChild(valueSelect);
   valueRow.appendChild(valueSelectWrap);
-  leftPane.appendChild(valueRow);
+  bottomBlock.appendChild(valueRow);
 
-  leftPane.appendChild(mkColLabel(
+  bottomBlock.appendChild(mkColLabel(
     propEntries.length
       ? `Eigenschaften, die ins Symbol übernommen werden (${propEntries.length})`
       : "Keine Metadaten auf der Produktseite gefunden",
@@ -879,44 +1038,8 @@ export function buildRegisterImportEditor(doc, opts = {}) {
     };
     renderPropPreview();
     valueSelect.addEventListener("change", renderPropPreview);
-    leftPane.appendChild(propList);
+    bottomBlock.appendChild(propList);
   }
-
-  /* ----- RIGHT PANE — Vorschau + Pin-Mapper -------------------------------- */
-
-  // Preview row — symbol and footprint side-by-side. Same intrinsic
-  // ``auto-fit, minmax(260px, 1fr)`` collapse rule as the body grid so a narrow
-  // modal folds the panes onto two rows without a media-query or width-read.
-  const previewRow = doc.createElement("div");
-  previewRow.style.cssText =
-    `display:grid;grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));gap:${DIALOG_SPACING.md}`;
-  rightPane.appendChild(previewRow);
-
-  const paneStyle = [
-    "display:flex", "align-items:center", "justify-content:center",
-    "min-height:120px", "max-height:240px", `padding:${DIALOG_SPACING.xs}`,
-    `border:1px solid ${T.borderStrong}`, `border-radius:${T.radiusSm}`,
-    `background:${T.surface2}`,
-    "overflow:hidden",
-  ].join(";");
-
-  const symPreviewCell = doc.createElement("div");
-  symPreviewCell.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.xs};min-width:0`;
-  symPreviewCell.appendChild(mkColLabel("Symbol"));
-  const previewPane = doc.createElement("div");
-  previewPane.setAttribute(OVERRIDE_REGISTER_SYMBOL_PREVIEW_ATTR, "true");
-  previewPane.style.cssText = paneStyle;
-  symPreviewCell.appendChild(previewPane);
-  previewRow.appendChild(symPreviewCell);
-
-  const fpPreviewCell = doc.createElement("div");
-  fpPreviewCell.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.xs};min-width:0`;
-  fpPreviewCell.appendChild(mkColLabel("Footprint"));
-  const footprintPane = doc.createElement("div");
-  footprintPane.setAttribute(OVERRIDE_REGISTER_FOOTPRINT_PREVIEW_ATTR, "true");
-  footprintPane.style.cssText = paneStyle;
-  fpPreviewCell.appendChild(footprintPane);
-  previewRow.appendChild(fpPreviewCell);
 
   // Pin↔Pad Mapper (#9). A pad-driven assignment table — one <tr> per footprint
   // pad with a native <select> picking which template symbol pin connects to it.
@@ -938,7 +1061,7 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   const pinMapBody = doc.createElement("div");
   pinMapBody.style.cssText = "max-height:240px;overflow:auto";
   pinMapHost.appendChild(pinMapBody);
-  rightPane.appendChild(pinMapHost);
+  bottomBlock.appendChild(pinMapHost);
 
   /* ----- Preview fetch helpers --------------------------------------------- */
 
@@ -1218,23 +1341,50 @@ export function buildRegisterImportEditor(doc, opts = {}) {
     );
   }
 
-  /* ----- Category-matched template list ----------------------------------- */
+  /* ----- Category-matched template list + search (Issue #49) -------------- */
 
   // Category-matched templates for the current LCSC category (self-describing
-  // templates) — the default shortlist. "show all" reveals every template.
+  // templates) — the default shortlist. "show all" reveals every template,
+  // and the symbol search (when non-empty) expands the candidate pool to the
+  // full library set regardless of category match / show-all.
   const matched = templatesMatchingCategory(categoryPath, opts.templateCategoriesByLib);
   const matchedKeys = new Set(
     matched.map((m) => encodeTemplateValue(m.libPath, m.name)),
   );
   const allLibs =
     opts.templateLibs && typeof opts.templateLibs === "object" ? opts.templateLibs : {};
+  const allFootprintLibs =
+    opts.templateLibsFootprints && typeof opts.templateLibsFootprints === "object"
+      ? opts.templateLibsFootprints
+      : {};
+  const packageHintLower =
+    typeof opts.packageHint === "string"
+      ? opts.packageHint.trim().toLowerCase()
+      : "";
 
   function renderTemplateList() {
     listHost.innerHTML = "";
+    const query = symSearch.value.trim().toLowerCase();
+    // EasyEDA row is always present so the user can return to the default
+    // regardless of search/show-all state.
     const items = [
       { value: EASYEDA_OPTION_VALUE, label: "EasyEDA (kein Template)", category: "" },
     ];
-    if (showAllCb.checked) {
+    if (query) {
+      // Non-empty query expands the pool to every registered template; the
+      // category-matched shortlist is irrelevant when the user is searching.
+      for (const libPath of Object.keys(allLibs)) {
+        const names = Array.isArray(allLibs[libPath]) ? allLibs[libPath] : [];
+        for (const name of names) {
+          if (!name.toLowerCase().includes(query)) continue;
+          items.push({
+            value: encodeTemplateValue(libPath, name),
+            label: name,
+            category: "",
+          });
+        }
+      }
+    } else if (showAllCb.checked) {
       for (const libPath of Object.keys(allLibs)) {
         const names = Array.isArray(allLibs[libPath]) ? allLibs[libPath] : [];
         for (const name of names) {
@@ -1250,54 +1400,67 @@ export function buildRegisterImportEditor(doc, opts = {}) {
         });
       }
     }
-    if (!showAllCb.checked && matched.length === 0) {
+    if (!query && !showAllCb.checked && matched.length === 0) {
       const none = doc.createElement("div");
       none.style.cssText = `color:${T.placeholder};padding:${DIALOG_SPACING.xs} ${DIALOG_SPACING.xs};font-style:italic`;
       none.textContent = "Kein passendes Template — „alle Templates anzeigen“ aktivieren";
       listHost.appendChild(none);
     }
     for (const it of items) {
-      const row = doc.createElement("div");
-      row.setAttribute(OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR, "true");
-      row.dataset.value = it.value;
-      const selected = symSelect.value === it.value;
-      row.style.cssText = [
-        "display:flex", "justify-content:space-between", `gap:${DIALOG_SPACING.sm}`,
-        `padding:${DIALOG_SPACING.xs} ${DIALOG_SPACING.xs}`, "border-radius:3px", "cursor:pointer",
-        selected ? `background:${T.selectedSurface}` : "background:transparent",
-        "transition:background 0.12s ease",
-      ].join(";");
-      const left = doc.createElement("span");
-      left.textContent = it.label;
-      left.style.cssText = selected
-        ? `font-weight:600;color:${T.accent}`
-        : `color:${T.text}`;
-      row.appendChild(left);
-      if (it.category) {
-        const tag = doc.createElement("span");
-        tag.textContent = it.category;
-        tag.style.cssText = `color:${T.textFaint};font-size:${DIALOG_TYPE.micro}`;
-        row.appendChild(tag);
-      }
-      // Hover affordance for unselected rows; selected rows keep their
-      // accent highlight.
-      if (!selected) {
-        row.addEventListener("mouseenter", () => {
-          row.style.background = T.surface3;
-        });
-        row.addEventListener("mouseleave", () => {
-          row.style.background = "transparent";
-        });
-      }
-      row.addEventListener("click", () => {
-        symSelect.value = it.value;
-        renderTemplateList();
-      });
-      listHost.appendChild(row);
+      listHost.appendChild(mkChoiceRow(it, {
+        itemAttr: OVERRIDE_REGISTER_TEMPLATE_ITEM_ATTR,
+        selected: symSelect.value === it.value,
+        onClick: () => {
+          symSelect.value = it.value;
+          renderTemplateList();
+        },
+      }));
     }
     updateSymbolPreview();
   }
   showAllCb.addEventListener("change", renderTemplateList);
+  symSearch.addEventListener("input", renderTemplateList);
+
+  // Footprint list (Issue #49) — mirrors the symbol list. EasyEDA always shown.
+  // Default subset filters by ``opts.packageHint`` (case-insensitive substring
+  // of the footprint name) when the show-all toggle is off; when no package
+  // hint is supplied, the default IS show-all (no surprise hiding). A non-empty
+  // search query overrides both: it walks the full footprint pool and filters
+  // by substring.
+  function renderFootprintList() {
+    fpListHost.innerHTML = "";
+    const query = fpSearch.value.trim().toLowerCase();
+    // Hint filter only applies in the default state: checkbox off, no hint
+    // override from search, and a hint string exists in the first place.
+    const filterByHint = !query && !fpShowAllCb.checked && Boolean(packageHintLower);
+    const items = [
+      { value: EASYEDA_OPTION_VALUE, label: "EasyEDA (kein Template)" },
+    ];
+    for (const libPath of Object.keys(allFootprintLibs)) {
+      const names = Array.isArray(allFootprintLibs[libPath])
+        ? allFootprintLibs[libPath]
+        : [];
+      for (const name of names) {
+        const nameLower = name.toLowerCase();
+        if (query && !nameLower.includes(query)) continue;
+        if (filterByHint && !nameLower.includes(packageHintLower)) continue;
+        items.push({ value: encodeTemplateValue(libPath, name), label: name });
+      }
+    }
+    for (const it of items) {
+      fpListHost.appendChild(mkChoiceRow(it, {
+        itemAttr: OVERRIDE_REGISTER_FOOTPRINT_ITEM_ATTR,
+        selected: fpSelect.value === it.value,
+        onClick: () => {
+          fpSelect.value = it.value;
+          renderFootprintList();
+          loadFootprintPreview();
+        },
+      }));
+    }
+  }
+  fpShowAllCb.addEventListener("change", renderFootprintList);
+  fpSearch.addEventListener("input", renderFootprintList);
 
   /* ----- Actions ----------------------------------------------------------- */
 
@@ -1376,7 +1539,25 @@ export function buildRegisterImportEditor(doc, opts = {}) {
     if (firstTemplateFpOpt) fpSelect.value = firstTemplateFpOpt.value;
   }
 
+  // If the selected footprint is outside the default subset (package-hint
+  // filter), auto-tick "alle Footprints anzeigen" so the user can see what's
+  // selected — same auto-reveal pattern the symbol show-all uses above.
+  if (
+    fpSelect.value !== EASYEDA_OPTION_VALUE
+    && packageHintLower
+    && !fpShowAllCb.checked
+  ) {
+    const fpLayer = parseLayer(fpSelect.value);
+    if (
+      fpLayer.source === "template"
+      && !String(fpLayer.name || "").toLowerCase().includes(packageHintLower)
+    ) {
+      fpShowAllCb.checked = true;
+    }
+  }
+
   renderTemplateList();
+  renderFootprintList();
   loadFootprintPreview();
 
   return panel;
@@ -1990,10 +2171,12 @@ export function renderRegisterImportEditor(anchorRow, opts = {}) {
   let settled = false;
   const { dismiss } = mountCsModal({
     id: "k2c-register-editor-modal",
-    // Bumped from 720 → 880 (Issue #9) so the right-pane preview row fits two
-    // SVG cells side-by-side and the Pin-Mapper table has room for the pad +
-    // select columns without horizontal scrolling at default zoom.
-    maxWidthPx: 880,
+    // Bumped from 880 → 1080 (Issue #49) so the 4-column layout (symbol LIST ·
+    // symbol viewer · footprint viewer · footprint LIST) fits comfortably with
+    // both lists' search boxes visible. The body grid keeps its
+    // ``auto-fit, minmax(220px, 1fr)`` rule so a narrow viewport still
+    // collapses intrinsically — 4 → 2 → 1 column — without a media-query.
+    maxWidthPx: 1080,
     title: "Import-Editor",
     closeable: true,
     ariaLabel: "Import-Editor — Symbol-/Footprint-Vorlagen zuweisen",
