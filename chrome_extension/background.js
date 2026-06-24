@@ -975,6 +975,30 @@ async function nativeHostLcscFootprintPreview(lcscId) {
 }
 
 /**
+ * V3 — render an LCSC part's EasyEDA **symbol** as SVG via the Native Host's
+ * ``lcscSymbolPreview`` verb (symbol-side analogue of
+ * ``nativeHostLcscFootprintPreview``). Network-bound (EasyEDA fetch). Resolves
+ * ``{ ok, result | error }`` where ``result`` is ``{ svg, name, pins }`` or a
+ * soft ``{ svg: null, error }``.
+ */
+async function nativeHostLcscSymbolPreview(lcscId, theme) {
+  let envelope;
+  try {
+    envelope = await getWarmNativePort().send(
+      "lcscSymbolPreview",
+      { lcscId, theme },
+      { timeoutMs: 30000 },
+    );
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+  if (envelope && envelope.ok === true && envelope.result && typeof envelope.result === "object") {
+    return { ok: true, result: envelope.result };
+  }
+  return { ok: false, error: envelope?.error || "no result" };
+}
+
+/**
  * V3 — batch pin-count summary for the template gallery via the Native Host's
  * ``templateGalleryPinSummary`` verb (replaces the V2 WebSocket
  * ``templates_gallery_pin_summary``). One EasyEDA fetch, N template compares;
@@ -2113,6 +2137,29 @@ const RUNTIME_MESSAGE_HANDLERS = {
       footprint_svg: typeof result.svg === "string" ? result.svg : null,
       footprint_name: result.name || "",
       pads: Array.isArray(result.pads) ? result.pads : [],
+      error: result.error,
+    };
+  },
+  /**
+   * V3 — render this LCSC part's EasyEDA symbol as SVG (the "Keep EasyEDA"
+   * symbol option in the Import-Editor). Symbol-side analogue of
+   * ``lcscFootprintPreview``; returns ``{ ok, svg, name, pins }``.
+   */
+  lcscSymbolPreview: async (message) => {
+    const lcscId = (message.lcscId || "").trim().toUpperCase();
+    if (!lcscId || !lcscId.startsWith("C")) {
+      throw new Error("lcscSymbolPreview requires a valid lcscId.");
+    }
+    const res = await nativeHostLcscSymbolPreview(lcscId, message.theme);
+    if (!res.ok) {
+      return { ok: false, svg: null, error: res.error || "Symbol preview unavailable" };
+    }
+    const result = res.result || {};
+    return {
+      ok: typeof result.svg === "string",
+      svg: typeof result.svg === "string" ? result.svg : null,
+      name: result.name || "",
+      pins: Array.isArray(result.pins) ? result.pins : [],
       error: result.error,
     };
   },

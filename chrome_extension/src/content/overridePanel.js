@@ -1028,21 +1028,23 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   let previewReq = 0;
   function updateSymbolPreview() {
     const layer = parseLayer(symSelect.value);
-    if (layer.source !== "template") {
-      setPaneText(previewPane, "EasyEDA-Standardsymbol — keine Vorschau");
-      editorSymbolPins = [];
-      rebuildPinMap();
-      return;
-    }
-    if (typeof opts.fetchSymbolPreview !== "function") {
-      setPaneText(previewPane, "Vorschau nicht verfügbar");
-      editorSymbolPins = [];
-      rebuildPinMap();
-      return;
-    }
     const reqId = ++previewReq;
     setPaneText(previewPane, "Lade Vorschau …");
-    Promise.resolve(opts.fetchSymbolPreview({ libPath: layer.libPath, name: layer.name }))
+    let fetchP;
+    if (layer.source === "template") {
+      fetchP =
+        typeof opts.fetchSymbolPreview === "function"
+          ? Promise.resolve(opts.fetchSymbolPreview({ libPath: layer.libPath, name: layer.name }))
+          : Promise.resolve({ svg: null, error: "Vorschau nicht verfügbar" });
+    } else {
+      // EasyEDA default symbol — render this part's own EasyEDA symbol (the
+      // symbol-side analogue of the EasyEDA footprint preview).
+      fetchP =
+        typeof opts.fetchEasyedaSymbolPreview === "function"
+          ? Promise.resolve(opts.fetchEasyedaSymbolPreview())
+          : Promise.resolve({ svg: null, error: "EasyEDA-Standardsymbol — keine Vorschau" });
+    }
+    fetchP
       .then((res) => {
         if (reqId !== previewReq) return; // a newer selection superseded this one
         if (res && typeof res.svg === "string" && res.svg) {
@@ -1504,6 +1506,9 @@ export function buildRegisterImportEditor(doc, opts = {}) {
   renderTemplateList();
   renderFootprintList();
   loadFootprintPreview();
+  // Show the correct Pin-Mapper placeholder synchronously on build (the symbol
+  // and footprint previews refine it once their async fetches resolve).
+  rebuildPinMap();
 
   return panel;
 }

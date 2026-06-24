@@ -1010,21 +1010,36 @@ describe("buildRegisterImportEditor — symbol preview (Etappe B)", () => {
   const TPL = "/home/user/templates/MyTemplates.kicad_sym";
   const flush = () => new Promise((r) => setTimeout(r, 0));
 
-  it("renders a preview pane; EasyEDA default shows a placeholder and does not fetch", () => {
-    let calls = 0;
+  it("EasyEDA default fetches the EasyEDA symbol preview (not the template fetcher) and renders it", async () => {
+    let tplCalls = 0;
+    let easyCalls = 0;
     const panel = buildRegisterImportEditor(document, {
       templateLibs: ONE_LIB,
       fetchSymbolPreview: () => {
-        calls += 1;
+        tplCalls += 1;
         return Promise.resolve({ svg: "<svg></svg>" });
+      },
+      fetchEasyedaSymbolPreview: () => {
+        easyCalls += 1;
+        return Promise.resolve({ svg: "<svg id='e'></svg>", pins: [] });
       },
     });
     const pane = panel.querySelector(`[${OVERRIDE_REGISTER_SYMBOL_PREVIEW_ATTR}]`);
     expect(pane).toBeTruthy();
-    // Default selection is EasyEDA → placeholder text, fetcher untouched.
+    // Synchronously shows the loading hint, then resolves to the EasyEDA symbol.
+    expect(pane.textContent).toContain("Lade");
+    await flush();
+    expect(easyCalls).toBe(1);
+    expect(tplCalls).toBe(0); // the template fetcher is NOT used for EasyEDA
+    expect(pane.querySelector("img")).toBeTruthy();
+  });
+
+  it("EasyEDA default falls back to a placeholder when no EasyEDA fetcher is wired", async () => {
+    const panel = buildRegisterImportEditor(document, { templateLibs: ONE_LIB });
+    const pane = panel.querySelector(`[${OVERRIDE_REGISTER_SYMBOL_PREVIEW_ATTR}]`);
+    await flush();
     expect(pane.querySelector("img")).toBeNull();
     expect(pane.textContent).toContain("EasyEDA");
-    expect(calls).toBe(0);
   });
 
   it("fetches and renders the SVG for a preselected template symbol", async () => {

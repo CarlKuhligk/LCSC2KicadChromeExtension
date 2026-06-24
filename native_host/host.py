@@ -80,7 +80,7 @@ from native_host.fs import (  # noqa: E402
     validate_library,
 )
 from native_host.phase1 import fetch_metadata  # noqa: E402  (after sys.path setup)
-from native_host.preview import lcsc_footprint_preview  # noqa: E402
+from native_host.preview import lcsc_footprint_preview, lcsc_symbol_preview  # noqa: E402
 from native_host.phase2 import run_phase2_conversion  # noqa: E402
 from native_host.rules import get_rule, set_rule  # noqa: E402
 from native_host.templates import (  # noqa: E402
@@ -309,6 +309,21 @@ def handle(
         params = raw_params if isinstance(raw_params, dict) else {}
         try:
             result = lcsc_footprint_preview(params)
+        except ValueError as exc:
+            return {"id": request_id, "ok": False, "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "id": request_id,
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        return {"id": request_id, "ok": True, "result": result}
+
+    if verb == "lcscSymbolPreview":
+        raw_params = request.get("params")
+        params = raw_params if isinstance(raw_params, dict) else {}
+        try:
+            result = lcsc_symbol_preview(params)
         except ValueError as exc:
             return {"id": request_id, "ok": False, "error": str(exc)}
         except Exception as exc:  # noqa: BLE001

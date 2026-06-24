@@ -4961,6 +4961,31 @@ function attachButton(lcscId) {
                 return { svg: null, error: err?.message || "Vorschau fehlgeschlagen" };
               }
             },
+            // EasyEDA symbol preview = this LCSC part's own EasyEDA symbol (the
+            // "Keep EasyEDA" symbol option) — the symbol-side analogue of
+            // fetchFootprintPreview. Renders the same block Phase 2 would export.
+            fetchEasyedaSymbolPreview: async () => {
+              try {
+                const resp = await contentRpc(
+                  "lcscSymbolPreview",
+                  { lcscId, theme: editorTheme },
+                  k2cRpc(2, 400),
+                );
+                if (resp?.ok && resp.data?.ok && typeof resp.data.svg === "string") {
+                  return {
+                    svg: resp.data.svg,
+                    pins: Array.isArray(resp.data.pins) ? resp.data.pins : [],
+                  };
+                }
+                const detail =
+                  (resp?.data && (resp.data.error || resp.data.message))
+                  || resp?.error
+                  || "Vorschau nicht verfügbar";
+                return { svg: null, error: String(detail) };
+              } catch (err) {
+                return { svg: null, error: err?.message || "Vorschau fehlgeschlagen" };
+              }
+            },
             // Footprint preview = the EasyEDA footprint of this LCSC part (the
             // default-source preview). One-shot; reuses the gallery RPC.
             fetchFootprintPreview: async () => {
