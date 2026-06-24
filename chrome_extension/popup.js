@@ -1895,11 +1895,49 @@ function loadDirectory(path, options = {}) {
     });
 }
 
+/** Split an absolute path into clickable breadcrumb segments {name, path}. */
+function pathCrumbs(full) {
+  const s = String(full || "");
+  if (!s) return [];
+  const sep = s.includes("\\") ? "\\" : "/";
+  const parts = s.split(/[\\/]+/).filter(Boolean);
+  const out = [];
+  let accum = "";
+  parts.forEach((part, i) => {
+    if (i === 0) {
+      accum = /^[A-Za-z]:$/.test(part) ? part + sep : (s.startsWith("/") ? sep + part : part);
+    } else {
+      accum = accum.endsWith(sep) ? accum + part : accum + sep + part;
+    }
+    out.push({ name: part, path: accum });
+  });
+  return out;
+}
+
+/**
+ * Navigate the picker to an arbitrary path. Whitelists it first (addUserRoot)
+ * — the same explicit opt-in the manual Path field uses — so the Native-Host
+ * boundary accepts it, then lists it. This lets breadcrumb segments ABOVE the
+ * current root be clickable without weakening the host-side whitelist.
+ */
+async function navigatePickerTo(path) {
+  if (!path) return;
+  try {
+    await sendMessage("addUserRoot", { path });
+    state.picker.roots = [];
+  } catch (_e) {
+    // fall through — loadDirectory surfaces a precise error if needed
+  }
+  loadDirectory(path);
+}
+
 function renderPickerPathBreadcrumb() {
   if (!elements.pickerPathBreadcrumb) return;
   const wrapper = document.createElement("div");
   wrapper.className = "picker-breadcrumb-row d-flex flex-wrap align-items-center gap-2";
-  const crumbs = Array.isArray(state.picker.breadcrumbs) ? state.picker.breadcrumbs : [];
+  // Build from the FULL current path so every segment is clickable (the last
+  // one is the current dir). Clicking an ancestor whitelists + navigates there.
+  const crumbs = pathCrumbs(state.picker.currentPath);
 
   if (!crumbs.length) {
     const none = document.createElement("span");
@@ -1911,12 +1949,13 @@ function renderPickerPathBreadcrumb() {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "btn btn-sm btn-secondary";
-      button.textContent = crumb?.name || crumb?.label || crumb?.path || "";
+      button.textContent = crumb.name;
+      button.title = crumb.path;
       if (index === crumbs.length - 1) {
         button.disabled = true;
         button.classList.add("active");
-      } else if (crumb?.path) {
-        button.addEventListener("click", () => loadDirectory(crumb.path));
+      } else {
+        button.addEventListener("click", () => navigatePickerTo(crumb.path));
       }
       wrapper.appendChild(button);
     });

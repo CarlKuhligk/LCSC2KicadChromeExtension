@@ -1024,9 +1024,9 @@ async function nativeHostTemplateGalleryPinSummary(lcscId, templates) {
 
 /**
  * V3 Issue #24 — generic Native-Host RPC bridge for the FS picker verbs
- * (`fsRoots`, `fsList`, `fsCheck`, `validateLibrary`). Mirrors the
- * connect-postMessage-await-disconnect pattern in `nativeHostListTemplates`
- * but stays generic so the four picker calls share one timeout/error path.
+ * (`fsRoots`, `fsList`, `fsCheck`, `validateLibrary`). Routes through the warm
+ * persistent port (`getWarmNativePort`) so picker navigation reuses one host
+ * process instead of spawning a fresh one per call.
  * Resolves `{ ok, result | error }` exactly like the Native Host responds.
  *
  * @param {string} verb
@@ -1035,40 +1035,17 @@ async function nativeHostTemplateGalleryPinSummary(lcscId, templates) {
  * @returns {Promise<{ok: true, result: any} | {ok: false, error: string}>}
  */
 async function nativeHostFsRpc(verb, params, timeoutMs = 10000) {
-  let port;
-  try {
-    port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
-  } catch (e) {
-    return { ok: false, error: e?.message || "connectNative threw" };
+  // Route through the WARM persistent port (same one previews/convert use)
+  // instead of connectNative() per call. The old throwaway-port pattern spawned
+  // a fresh Native-Host process — Python startup + ``import easyeda2kicad`` —
+  // for EVERY picker navigation (open/close a folder), then tore it down: that
+  // boot cost was the picker's reported lag. ``send()`` always resolves with the
+  // host envelope, so no extra error plumbing is needed here.
+  const envelope = await getWarmNativePort().send(verb, params || {}, { timeoutMs });
+  if (envelope && envelope.ok === true) {
+    return { ok: true, result: envelope.result };
   }
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      try { port.disconnect(); } catch (_e) { /* already gone */ }
-      resolve(result);
-    };
-    const timer = setTimeout(() => finish({ ok: false, error: "timeout" }), timeoutMs);
-    port.onMessage.addListener((msg) => {
-      clearTimeout(timer);
-      if (msg && msg.ok === true) {
-        finish({ ok: true, result: msg.result });
-      } else {
-        finish({ ok: false, error: (msg && msg.error) || "no result" });
-      }
-    });
-    port.onDisconnect.addListener(() => {
-      clearTimeout(timer);
-      const err = chrome.runtime.lastError;
-      finish({ ok: false, error: err?.message || "disconnected" });
-    });
-    try {
-      port.postMessage({ id: Date.now(), verb, params: params || {} });
-    } catch (e) {
-      finish({ ok: false, error: e?.message || "postMessage threw" });
-    }
-  });
+  return { ok: false, error: (envelope && envelope.error) || "no result" };
 }
 
 /**
