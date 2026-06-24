@@ -1852,7 +1852,7 @@ function loadRoots() {
 }
 
 function loadDirectory(path, options = {}) {
-  const { retainSelection = false } = options;
+  const { retainSelection = false, silent = false } = options;
   const previousSelection = retainSelection ? state.picker.selectedPath : "";
   const previousType = retainSelection ? state.picker.selectedType : "";
   return sendMessage("fs:listDirectory", { path })
@@ -1882,7 +1882,12 @@ function loadDirectory(path, options = {}) {
       return data;
     })
     .catch((error) => {
-      showToast(error.message || "Failed to load path.", "danger");
+      // Silent while the user is still typing a manual path (debounced live
+      // preview) — a half-typed "D:\\li" would otherwise spam error toasts.
+      // Committing the path (Enter/blur) loads non-silently so real errors show.
+      if (!silent) {
+        showToast(error.message || "Failed to load path.", "danger");
+      }
       renderPickerPathBreadcrumb();
       renderPickerList([]);
       modals.picker?.show();
@@ -2003,7 +2008,7 @@ function handlePickerListKeydown(event) {
   }
 }
 
-function scheduleManualPathLoad(path, { immediate = false } = {}) {
+function scheduleManualPathLoad(path, { immediate = false, silent = false } = {}) {
   clearTimeout(pickerManualTimer);
   if (!path) {
     return;
@@ -2016,7 +2021,7 @@ function scheduleManualPathLoad(path, { immediate = false } = {}) {
   }
   state.picker.selectedPath = "";
   state.picker.selectedType = "";
-  const perform = () => loadDirectory(path);
+  const perform = () => loadDirectory(path, { silent });
   if (immediate) {
     perform();
     return;
@@ -2028,18 +2033,63 @@ function scheduleManualPathLoad(path, { immediate = false } = {}) {
   }, 400);
 }
 
+/** Parent directory of a path (handles both \\ and / separators). */
+function parentDirOf(p) {
+  const parts = String(p || "").split(/[\\/]/);
+  parts.pop();
+  return parts.join(String(p).includes("\\") ? "\\" : "/");
+}
+
+/**
+ * Commit a manually-typed path. Adds the pointed-at directory to the
+ * Native-Host whitelist (`addUserRoot`) — the explicit opt-in that lets the
+ * picker reach libraries outside the default Documents/KiCad roots, e.g. on a
+ * D: drive — then lists it. When a `.kicad_sym` file was typed, its parent dir
+ * is whitelisted and the file is pre-selected.
+ */
+async function commitManualPath(raw) {
+  const path = (raw || "").trim();
+  if (!path) return;
+  const isFile = /\.kicad_sym$/i.test(path);
+  const rootDir = isFile ? parentDirOf(path) : path;
+  if (rootDir) {
+    try {
+      await sendMessage("addUserRoot", { path: rootDir });
+      state.picker.roots = []; // force re-fetch so the new root shows in the list
+    } catch (_e) {
+      // Non-fatal: fall through; the load below surfaces a precise error.
+    }
+  }
+  const dirToList = isFile ? rootDir : path;
+  if (!dirToList) {
+    scheduleManualPathLoad(path, { immediate: true });
+    return;
+  }
+  const data = await loadDirectory(dirToList);
+  if (isFile && data) {
+    state.picker.selectedPath = path;
+    state.picker.selectedType = "file";
+    elements.pickerManual.value = path;
+    const match = Array.from(elements.pickerList.querySelectorAll("li[data-path]"))
+      .find((node) => node.dataset.path === path);
+    match?.classList.add("active");
+  }
+}
+
 function handlePickerManualInput() {
-  scheduleManualPathLoad(elements.pickerManual.value.trim());
+  // Debounced live preview while typing — silent so a half-typed path never
+  // spams error toasts (the commit below is where errors surface).
+  scheduleManualPathLoad(elements.pickerManual.value.trim(), { silent: true });
 }
 
 function handlePickerManualChange() {
-  scheduleManualPathLoad(elements.pickerManual.value.trim(), { immediate: true });
+  commitManualPath(elements.pickerManual.value.trim());
 }
 
 function handlePickerManualKeydown(event) {
   if (event.key !== "Enter") return;
   event.preventDefault();
-  scheduleManualPathLoad(elements.pickerManual.value.trim(), { immediate: true });
+  commitManualPath(elements.pickerManual.value.trim());
 }
 
 function selectPickerItem(item) {
