@@ -25,6 +25,7 @@ import {
   ensurePhase2ProgressUi,
   setPhase2Progress,
   setPhase2State,
+  setPhase2Indeterminate,
   playPhase2Completion,
 } from "./phase2Progress.js";
 
@@ -155,6 +156,10 @@ export async function runPhase2Convert(anchorRow, lcscId, deps) {
   setStatus(status, "loading", "Phase 2: starting…");
   setPhase2State(progressUi, "loading");
   setPhase2Progress(progressUi, 0);
+  // Show a moving indeterminate bar right away — the backend streams free-form
+  // frames and may not include a percent for a while; the first percent frame
+  // (or completion) flips it to determinate.
+  setPhase2Indeterminate(progressUi, true);
 
   const unsubscribe = subscribe(lcscId, (frame) => {
     setStatus(status, "loading", formatPhase2Progress(frame));
@@ -179,6 +184,7 @@ export async function runPhase2Convert(anchorRow, lcscId, deps) {
     log("phase2: error", envelope?.error);
     setStatus(status, "error", formatPhase2Terminal(envelope || { ok: false }));
     setPhase2State(progressUi, "error");
+    setPhase2Progress(progressUi, 100); // full red bar (also clears indeterminate)
   }
   return envelope;
 }

@@ -4,6 +4,7 @@ import {
   ensurePhase2ProgressUi,
   setPhase2Progress,
   setPhase2State,
+  setPhase2Indeterminate,
   playPhase2Completion,
   PHASE2_PROGRESS_ATTR,
   PHASE2_BAR_ATTR,
@@ -59,31 +60,31 @@ describe("ensurePhase2ProgressUi", () => {
     const ui2 = ensurePhase2ProgressUi(cell, document, status);
     expect(cell.querySelectorAll(`[${PHASE2_PROGRESS_ATTR}]`)).toHaveLength(1); // reused
     expect(ui2.container.getAttribute("data-state")).toBe("loading"); // reset
-    expect(ui2.fill.style.width).toBe("0%"); // reset
+    expect(ui2.fill.style.transform).toBe("scaleX(0)"); // reset
     expect(ui2.fx.children.length).toBe(0); // FX cleared
   });
 });
 
 describe("setPhase2Progress", () => {
-  it("sets the fill width and clamps to 0..100", () => {
+  it("sets the fill scale and clamps to 0..100", () => {
     const { cell, status } = scaffold();
     const ui = ensurePhase2ProgressUi(cell, document, status);
     setPhase2Progress(ui, 42.6);
-    expect(ui.fill.style.width).toBe("43%");
+    expect(ui.fill.style.transform).toBe("scaleX(0.43)");
     expect(ui.track.getAttribute("aria-valuenow")).toBe("43");
     setPhase2Progress(ui, 250);
-    expect(ui.fill.style.width).toBe("100%");
+    expect(ui.fill.style.transform).toBe("scaleX(1)");
     setPhase2Progress(ui, -10);
-    expect(ui.fill.style.width).toBe("0%");
+    expect(ui.fill.style.transform).toBe("scaleX(0)");
   });
 
-  it("ignores non-finite progress (keeps the last width)", () => {
+  it("ignores non-finite progress (keeps the last scale)", () => {
     const { cell, status } = scaffold();
     const ui = ensurePhase2ProgressUi(cell, document, status);
     setPhase2Progress(ui, 30);
     setPhase2Progress(ui, NaN);
     setPhase2Progress(ui, null);
-    expect(ui.fill.style.width).toBe("30%");
+    expect(ui.fill.style.transform).toBe("scaleX(0.3)");
   });
 });
 
@@ -96,13 +97,32 @@ describe("setPhase2State", () => {
   });
 });
 
+describe("setPhase2Indeterminate", () => {
+  it("toggles the is-indeterminate class on the track", () => {
+    const { cell, status } = scaffold();
+    const ui = ensurePhase2ProgressUi(cell, document, status);
+    setPhase2Indeterminate(ui, true);
+    expect(ui.track.classList.contains("is-indeterminate")).toBe(true);
+    setPhase2Indeterminate(ui, false);
+    expect(ui.track.classList.contains("is-indeterminate")).toBe(false);
+  });
+
+  it("is cleared by the first determinate progress update", () => {
+    const { cell, status } = scaffold();
+    const ui = ensurePhase2ProgressUi(cell, document, status);
+    setPhase2Indeterminate(ui, true);
+    setPhase2Progress(ui, 40);
+    expect(ui.track.classList.contains("is-indeterminate")).toBe(false);
+  });
+});
+
 describe("playPhase2Completion", () => {
   it("fills to 100, flips to ok, and spawns the ✓ + ring + confetti burst", () => {
     const { cell, status } = scaffold();
     const ui = ensurePhase2ProgressUi(cell, document, status);
     playPhase2Completion(ui, document);
     expect(ui.container.getAttribute("data-state")).toBe("ok");
-    expect(ui.fill.style.width).toBe("100%");
+    expect(ui.fill.style.transform).toBe("scaleX(1)");
     expect(ui.fx.querySelector(".k2c-p2-check")).toBeTruthy();
     expect(ui.fx.querySelector(".k2c-p2-check").textContent).toBe("✓");
     expect(ui.fx.querySelector(".k2c-p2-ring")).toBeTruthy();

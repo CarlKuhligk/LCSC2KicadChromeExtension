@@ -6,7 +6,6 @@ import {
   markAnchorCardImported,
   LCSC_ID_LABELS,
   ANCHOR_ROW_ATTR,
-  ANCHOR_EXISTS_CHIP_ATTR,
 } from "./anchorCard.js";
 
 /**
@@ -177,7 +176,7 @@ describe("buildAnchorCardRow", () => {
 });
 
 describe("markAnchorCardImported", () => {
-  it("adds a green chip and relabels Download → Re-Import with a persist override", () => {
+  it("relabels Download → Re-Import with a persist override (no separate badge)", () => {
     const tr = buildAnchorCardRow(document);
     expect(markAnchorCardImported(tr)).toBe(true);
 
@@ -185,20 +184,20 @@ describe("markAnchorCardImported", () => {
     expect(dl.textContent).toBe("Re-Import");
     // The dataset hook makes the label survive the Native-Host status re-paint.
     expect(dl.dataset.k2cLabelOverride).toBe("Re-Import");
-
-    const chip = tr.querySelector(`[${ANCHOR_EXISTS_CHIP_ATTR}]`);
-    expect(chip).toBeTruthy();
-    expect(chip.textContent).toContain("Library");
+    // The button label alone conveys "already in library" — no chip/badge.
+    expect(tr.querySelector("[data-k2c-exists-chip]")).toBeNull();
   });
 
-  it("is idempotent — a second call does not add a second chip", () => {
+  it("is idempotent — a second call keeps a single Re-Import button", () => {
     const tr = buildAnchorCardRow(document);
     markAnchorCardImported(tr);
     markAnchorCardImported(tr);
-    expect(tr.querySelectorAll(`[${ANCHOR_EXISTS_CHIP_ATTR}]`)).toHaveLength(1);
+    const buttons = tr.querySelectorAll('button[data-k2c-action="download"]');
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0].textContent).toBe("Re-Import");
   });
 
-  it("returns false for a row without an actions cell", () => {
+  it("returns false for a row without a download button", () => {
     const tr = document.createElement("tr");
     expect(markAnchorCardImported(tr)).toBe(false);
     expect(markAnchorCardImported(null)).toBe(false);

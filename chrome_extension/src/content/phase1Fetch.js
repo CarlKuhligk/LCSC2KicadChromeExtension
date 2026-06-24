@@ -17,6 +17,7 @@
  */
 
 import { extractPageData } from "./lcscPageSnapshot.js";
+import { injectAnchorCardStyles } from "./anchorCard.js";
 
 /** Marker attribute for the inline status node the click handler updates. */
 export const PHASE1_STATUS_ATTR = "data-k2c-phase1-status";
@@ -53,15 +54,15 @@ export function ensurePhase1StatusNode(actionsCell, doc = document) {
   if (!actionsCell) return null;
   let node = actionsCell.querySelector(`[${PHASE1_STATUS_ATTR}]`);
   if (node) return node;
+  injectAnchorCardStyles(doc);
   node = doc.createElement("span");
   node.setAttribute(PHASE1_STATUS_ATTR, "idle");
-  node.style.cssText = [
-    "display:inline-block",
-    "margin-left:12px",
-    "font-size:12px",
-    "color:#475569",
-    "vertical-align:middle",
-  ].join(";");
+  // Bulletproof the caption size against LCSC's inherited table font: the
+  // scoped [data-k2c-phase1-status] rule also sets this, but an inline value
+  // guarantees a small line even if a page rule would otherwise win. phase2
+  // clears this inline cssText when it adopts the node as the .k2c-p2-cap bar
+  // caption, so it only governs the Phase-1 line.
+  node.style.cssText = ["display:block", "margin-top:4px", "font-size:12px", "line-height:1.35"].join(";");
   actionsCell.appendChild(node);
   return node;
 }
@@ -113,7 +114,32 @@ export function wirePhase1Download(anchorRow, lcscId, deps) {
     status.textContent = text;
   };
 
+  const removeRetry = () => {
+    const r = actionsCell.querySelector(".k2c-ac-retry");
+    if (r) r.remove();
+  };
+  // Restrained, text-only recovery on Phase-1 error — re-fires the same click.
+  const addRetry = () => {
+    if (actionsCell.querySelector(".k2c-ac-retry")) return;
+    const btn = doc.createElement("button");
+    btn.type = "button";
+    btn.className = "k2c-ac-retry";
+    btn.textContent = "Erneut versuchen";
+    btn.addEventListener("click", () => {
+      btn.remove();
+      downloadBtn.click();
+    });
+    if (status && status.parentNode && status.nextSibling) {
+      status.parentNode.insertBefore(btn, status.nextSibling);
+    } else {
+      actionsCell.appendChild(btn);
+    }
+  };
+
   downloadBtn.addEventListener("click", async () => {
+    removeRetry();
+    // Spinner-in-button with a FIXED label (no width jump) instead of a box.
+    downloadBtn.setAttribute("aria-busy", "true");
     renderStatus("loading", "Phase 1: fetching metadata…");
     let pageHints = null;
     try {
@@ -148,10 +174,14 @@ export function wirePhase1Download(anchorRow, lcscId, deps) {
         const err = (resp && resp.error) || "unknown error";
         log("phase1: error", err);
         renderStatus("error", `Phase 1 error: ${err}`);
+        addRetry();
       }
     } catch (e) {
       log("phase1: rpc threw", e);
       renderStatus("error", `Phase 1 error: ${e?.message || String(e)}`);
+      addRetry();
+    } finally {
+      downloadBtn.removeAttribute("aria-busy");
     }
   });
   return true;

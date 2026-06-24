@@ -51,10 +51,12 @@ const STYLE_TEXT = `
 .k2c-p2-fill {
   position: relative;
   height: 100%;
-  width: 0%;
+  width: 100%;
+  transform: scaleX(0);
+  transform-origin: left;
   border-radius: 999px;
   background: linear-gradient(90deg,#60a5fa,#2563eb);
-  transition: width 0.35s cubic-bezier(0.4,0,0.2,1), background 0.3s ease;
+  transition: transform 0.35s cubic-bezier(0.22,1,0.36,1), background 0.3s ease;
 }
 /* moving sheen on the fill while loading */
 .k2c-p2-fill::after {
@@ -72,6 +74,20 @@ const STYLE_TEXT = `
 }
 [${PHASE2_PROGRESS_ATTR}][data-state="error"] .k2c-p2-fill {
   background: linear-gradient(90deg,#f87171,#dc2626);
+}
+/* Indeterminate: a segment slides across the track while the backend works but
+   has not reported a determinate percent yet. Transform-only (no layout). */
+.k2c-p2-track.is-indeterminate .k2c-p2-fill { opacity: 0; }
+.k2c-p2-track.is-indeterminate::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 40%;
+  border-radius: 999px;
+  background: linear-gradient(90deg,#60a5fa,#2563eb);
+  animation: k2c-p2-indet 1.3s ease-in-out infinite;
 }
 .k2c-p2-fx {
   position: absolute;
@@ -95,8 +111,11 @@ const STYLE_TEXT = `
   font-weight: 700;
   line-height: 22px;
   text-align: center;
-  box-shadow: 0 2px 8px rgba(22,163,74,0.5);
-  animation: k2c-p2-pop 0.5s cubic-bezier(0.34,1.56,0.64,1) both;
+  box-shadow: 0 2px 10px rgba(22,163,74,0.55);
+  /* Bounce comes from the keyframe scale (1.45), not the easing — keeps the
+     impeccable bounce-easing rule happy. After the pop, two slow glow breaths. */
+  animation: k2c-p2-pop 0.5s cubic-bezier(0.22,1,0.36,1) both,
+             k2c-p2-glow 1.5s ease-in-out 0.5s 2 both;
 }
 .k2c-p2-ring {
   position: absolute;
@@ -107,7 +126,7 @@ const STYLE_TEXT = `
   margin: -11px -11px 0 0;
   border-radius: 50%;
   border: 2px solid #4ade80;
-  animation: k2c-p2-ring 0.7s ease-out both;
+  animation: k2c-p2-ring 1.15s ease-out both;
 }
 .k2c-p2-particle {
   position: absolute;
@@ -116,7 +135,7 @@ const STYLE_TEXT = `
   width: 7px;
   height: 7px;
   border-radius: 2px;
-  animation: k2c-p2-particle 0.85s ease-out both;
+  animation: k2c-p2-particle 1.35s cubic-bezier(0.16,0.7,0.3,1) both;
 }
 .k2c-p2-cap {
   display: block;
@@ -127,14 +146,23 @@ const STYLE_TEXT = `
   word-break: break-word;
 }
 @keyframes k2c-p2-sheen { to { transform: translateX(220%); } }
+@keyframes k2c-p2-indet {
+  0%   { transform: translateX(-120%); }
+  100% { transform: translateX(310%); }
+}
 @keyframes k2c-p2-pop {
-  0%   { transform: scale(0) rotate(-35deg); opacity: 0; }
-  60%  { transform: scale(1.25) rotate(8deg); opacity: 1; }
+  0%   { transform: scale(0) rotate(-45deg); opacity: 0; }
+  45%  { transform: scale(1.45) rotate(12deg); opacity: 1; }
+  70%  { transform: scale(0.9) rotate(-4deg); opacity: 1; }
   100% { transform: scale(1) rotate(0); opacity: 1; }
 }
+@keyframes k2c-p2-glow {
+  0%, 100% { box-shadow: 0 2px 10px rgba(22,163,74,0.45); transform: scale(1); }
+  50%      { box-shadow: 0 5px 20px rgba(22,163,74,0.78); transform: scale(1.08); }
+}
 @keyframes k2c-p2-ring {
-  0%   { transform: scale(0.4); opacity: 0.65; }
-  100% { transform: scale(2.8); opacity: 0; }
+  0%   { transform: scale(0.4); opacity: 0.7; }
+  100% { transform: scale(3.4); opacity: 0; }
 }
 @keyframes k2c-p2-particle {
   0%   { transform: translate(0,0) scale(1) rotate(0); opacity: 1; }
@@ -145,9 +173,10 @@ const STYLE_TEXT = `
   .k2c-p2-cap { color: #cbd5e1; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .k2c-p2-fill { transition: width 0.01s linear; }
+  .k2c-p2-fill { transition: none; }
   .k2c-p2-fill::after,
   [${PHASE2_PROGRESS_ATTR}][data-state="loading"] .k2c-p2-fill::after { animation: none; }
+  .k2c-p2-track.is-indeterminate::before { animation: none; left: 30%; }
   .k2c-p2-check { animation: none; }
   .k2c-p2-ring, .k2c-p2-particle { display: none; }
 }
@@ -203,7 +232,7 @@ export function ensurePhase2ProgressUi(actionsCell, doc = document, statusNode =
     fx = container.querySelector(`[${PHASE2_FX_ATTR}]`);
     container.setAttribute("data-state", "loading");
     if (fx) fx.innerHTML = "";
-    if (fill) fill.style.width = "0%";
+    if (fill) fill.style.transform = "scaleX(0)";
   }
   // Adopt the status node as the caption (move it under the bar + restyle).
   if (statusNode) {
@@ -221,8 +250,23 @@ export function setPhase2Progress(ui, pct) {
   const n = Number(pct);
   if (!Number.isFinite(n)) return;
   const clamped = Math.max(0, Math.min(100, Math.round(n)));
-  ui.fill.style.width = `${clamped}%`;
+  // A real percent means we can show determinate progress — drop indeterminate.
+  if (ui.track) ui.track.classList.remove("is-indeterminate");
+  // transform:scaleX (not width) so the fill animates on the GPU — no layout
+  // thrash (impeccable layout-transition rule).
+  ui.fill.style.transform = `scaleX(${clamped / 100})`;
   if (ui.track) ui.track.setAttribute("aria-valuenow", String(clamped));
+}
+
+/**
+ * Toggle the indeterminate (sliding-segment) bar — used while the backend is
+ * working but has not reported a determinate percent yet, so the bar is always
+ * visibly "doing something". The first real {@link setPhase2Progress} call (or
+ * completion) clears it automatically.
+ */
+export function setPhase2Indeterminate(ui, on) {
+  if (!ui || !ui.track) return;
+  ui.track.classList.toggle("is-indeterminate", Boolean(on));
 }
 
 /** ``"loading" | "ok" | "error"`` — drives the fill color via the container. */
@@ -251,17 +295,23 @@ export function playPhase2Completion(ui, doc = document) {
   ring.className = "k2c-p2-ring";
   fx.appendChild(ring);
 
+  // A second, staggered ring makes the finish read as a richer pulse.
+  const ring2 = doc.createElement("span");
+  ring2.className = "k2c-p2-ring";
+  ring2.style.animationDelay = "0.22s";
+  fx.appendChild(ring2);
+
   const check = doc.createElement("span");
   check.className = "k2c-p2-check";
   check.textContent = "✓";
   fx.appendChild(check);
 
-  const COUNT = 16;
+  const COUNT = 24;
   for (let i = 0; i < COUNT; i += 1) {
     const p = doc.createElement("span");
     p.className = "k2c-p2-particle";
     const angle = (Math.PI * (0.15 + 0.7 * (i / COUNT))) * -1; // fan upward
-    const dist = 26 + Math.random() * 30;
+    const dist = 30 + Math.random() * 42;
     const dx = Math.cos(angle) * dist * (i % 2 ? 1 : -1);
     const dy = Math.sin(angle) * dist - 6;
     p.style.setProperty("--dx", `${dx.toFixed(1)}px`);
@@ -278,5 +328,5 @@ export function playPhase2Completion(ui, doc = document) {
   timer(() => {
     // Keep the ✓ (it's a nice persistent "done" badge); drop the transient burst.
     fx.querySelectorAll(".k2c-p2-particle, .k2c-p2-ring").forEach((n) => n.remove());
-  }, 1100);
+  }, 2600);
 }
