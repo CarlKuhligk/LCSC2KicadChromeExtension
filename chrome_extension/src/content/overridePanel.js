@@ -320,112 +320,38 @@ export function buildOneClickPanel(doc, opts = {}) {
   const panel = doc.createElement("div");
   panel.setAttribute(OVERRIDE_PANEL_ATTR, "true");
   panel.setAttribute(OVERRIDE_PANEL_MODE_ATTR, "green");
+  // Slim, neutral line that blends into the LCSC page — no loud green surface,
+  // no preview text wall. Just the matched rule name + two LCSC-style actions;
+  // clicking [Import] IS the confirm (ADR-0006 §U3.3).
   panel.style.cssText = [
     "display:flex",
-    "flex-direction:column",
+    "flex-wrap:wrap",
+    "align-items:center",
     `gap:${DIALOG_SPACING.sm}`,
-    `padding:${DIALOG_SPACING.md} ${DIALOG_SPACING.md}`,
-    `border:1px solid ${T.successBorder}`,
-    `border-radius:${T.radiusSm}`,
-    `background:${T.successSurface}`,
     `margin-top:${DIALOG_SPACING.xs}`,
+    `font-family:${T.fontUi}`,
     `font-size:${DIALOG_TYPE.small}`,
-    `color:${T.successText}`,
+    `color:${T.textMuted}`,
   ].join(";");
 
-  const heading = doc.createElement("div");
+  const label = doc.createElement("span");
   const ruleKey = typeof opts.ruleKey === "string" && opts.ruleKey ? opts.ruleKey : "";
-  heading.textContent = ruleKey
-    ? `Registriert: "${ruleKey}" — Ein-Klick`
-    : "Registriert — Ein-Klick";
-  heading.style.cssText =
-    `font-weight:600;font-size:${DIALOG_TYPE.micro};letter-spacing:0.04em;text-transform:uppercase;color:${T.success}`;
-  panel.appendChild(heading);
-
-  // Preview — Symbol Source + Label-Mapping summary so the user can see
-  // what will be applied before clicking [Import] (ADR-0006: "the
-  // resolved result is shown before the click").
-  const preview = doc.createElement("div");
-  preview.setAttribute(OVERRIDE_ONECLICK_PREVIEW_ATTR, "true");
-  preview.style.cssText = `display:flex;flex-direction:column;gap:${DIALOG_SPACING.xs}`;
-
-  const lblStyle = `color:${T.success};font-weight:500;min-width:64px`;
-  const valStyle = `color:${T.successText}`;
-
-  const symbolLine = doc.createElement("div");
-  symbolLine.style.cssText = `display:flex;gap:${DIALOG_SPACING.xs};align-items:baseline`;
-  const symLabel = doc.createElement("span");
-  symLabel.textContent = "Symbol:";
-  symLabel.style.cssText = lblStyle;
-  const symValue = doc.createElement("span");
-  symValue.textContent = describeSymbolSource(opts.symbolSource);
-  symValue.style.cssText = valStyle;
-  symbolLine.appendChild(symLabel);
-  symbolLine.appendChild(symValue);
-  preview.appendChild(symbolLine);
-
-  const mapping = opts.labelMapping && typeof opts.labelMapping === "object"
-    ? opts.labelMapping
-    : {};
-  const mappingEntries = Object.entries(mapping);
-  if (mappingEntries.length) {
-    const mappingLine = doc.createElement("div");
-    mappingLine.style.cssText = `display:flex;gap:${DIALOG_SPACING.xs};align-items:baseline`;
-    const mapLabel = doc.createElement("span");
-    mapLabel.textContent = "Mapping:";
-    mapLabel.style.cssText = lblStyle;
-    const mapValue = doc.createElement("span");
-    mapValue.textContent = mappingEntries
-      .map(([k, v]) => `${k} → ${v}`)
-      .join(", ");
-    mapValue.style.cssText = `${valStyle};word-break:break-word`;
-    mappingLine.appendChild(mapLabel);
-    mappingLine.appendChild(mapValue);
-    preview.appendChild(mappingLine);
-  }
-
-  // Pin-visibility + Value-Param are part of the resolved result, so they must
-  // be visible BEFORE the one-click [Import] (ADR-0006: "the resolved result is
-  // shown before the click"). Only rendered when set, to keep the green panel
-  // terse for the common default case.
-  const addPreviewLine = (labelText, valueText) => {
-    const line = doc.createElement("div");
-    line.style.cssText = `display:flex;gap:${DIALOG_SPACING.xs};align-items:baseline`;
-    const lbl = doc.createElement("span");
-    lbl.textContent = labelText;
-    lbl.style.cssText = lblStyle;
-    const val = doc.createElement("span");
-    val.textContent = valueText;
-    val.style.cssText = `${valStyle};word-break:break-word`;
-    line.appendChild(lbl);
-    line.appendChild(val);
-    preview.appendChild(line);
-  };
-
-  const hiddenPins = [];
-  if (opts.hidePinNumbers) hiddenPins.push("Nummern");
-  if (opts.hidePinNames) hiddenPins.push("Namen");
-  if (hiddenPins.length) {
-    addPreviewLine("Pins:", `${hiddenPins.join(" + ")} ausgeblendet`);
-  }
-  if (typeof opts.valueParam === "string" && opts.valueParam.trim()) {
-    addPreviewLine("Value:", opts.valueParam.trim());
-  }
-
-  panel.appendChild(preview);
+  label.textContent = ruleKey ? `Vorlage „${ruleKey}“ erkannt` : "Vorlage erkannt";
+  label.style.cssText = `color:${T.textMuted}`;
+  panel.appendChild(label);
 
   if (opts.easyedaUnavailable) {
     panel.appendChild(buildCadUnavailableNotice(doc, opts.theme));
   }
 
-  const actions = doc.createElement("div");
-  actions.style.cssText = `display:flex;gap:${DIALOG_SPACING.sm};justify-content:flex-end;margin-top:${DIALOG_SPACING.xs}`;
+  const actions = doc.createElement("span");
+  actions.style.cssText = `display:inline-flex;gap:${DIALOG_SPACING.sm};margin-left:auto`;
 
-  // [Modifizieren] sits to the LEFT of [Import] so the visual cursor
-  // ends on the primary action (one-click ergonomics).
+  // [Bearbeiten] sits to the LEFT of [Import] so the cursor ends on the
+  // primary action (one-click ergonomics).
   const modifyBtn = doc.createElement("button");
   modifyBtn.type = "button";
-  modifyBtn.textContent = "Modifizieren";
+  modifyBtn.textContent = "Bearbeiten";
   modifyBtn.setAttribute(OVERRIDE_MODIFY_ATTR, "true");
   modifyBtn.style.cssText = dialogButtonStyle("secondary", "dense", { theme: opts.theme });
   actions.appendChild(modifyBtn);

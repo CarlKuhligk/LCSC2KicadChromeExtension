@@ -786,59 +786,28 @@ describe("buildOneClickPanel (green state)", () => {
     expect(panel.querySelector(`[${OVERRIDE_MODIFY_ATTR}]`)).toBeTruthy();
   });
 
-  it("renders a preview block (the resolved result is shown BEFORE the click — ADR-0006)", () => {
-    const panel = buildOneClickPanel(document, {
-      ruleKey: "Passives/Resistors",
-      symbolSource: GREEN_RULE.symbolSource,
-      labelMapping: GREEN_RULE.labelMapping,
-    });
-    const preview = panel.querySelector(`[${OVERRIDE_ONECLICK_PREVIEW_ATTR}]`);
-    expect(preview).toBeTruthy();
-    expect(preview.textContent).toContain("R0603");
-    expect(preview.textContent).toContain("Resistance");
-    expect(preview.textContent).toContain("Value");
-  });
-
   it("does NOT render a Confirm button — the [Import] click IS the confirm (ADR-0006 §U3.3)", () => {
     const panel = buildOneClickPanel(document, {});
     expect(panel.querySelector(`[${OVERRIDE_CONFIRM_ATTR}]`)).toBeNull();
     expect(panel.querySelector(`[${OVERRIDE_CANCEL_ATTR}]`)).toBeNull();
   });
 
-  it("shows the registered Category Path in the heading so the user can tell what was matched", () => {
-    const panel = buildOneClickPanel(document, { ruleKey: "Passives/Resistors" });
-    expect(panel.textContent).toContain("Passives/Resistors");
-    expect(panel.textContent).toContain("Ein-Klick");
-  });
-
-  it("renders pin-visibility + value-param settings in the preview (transparency before one-click)", () => {
+  it("shows the matched rule in a slim neutral line — no green box, no preview text wall", () => {
     const panel = buildOneClickPanel(document, {
       ruleKey: "Passives/Resistors",
       symbolSource: GREEN_RULE.symbolSource,
+      labelMapping: GREEN_RULE.labelMapping,
       hidePinNumbers: true,
-      hidePinNames: true,
       valueParam: "Resistance",
     });
-    const preview = panel.querySelector(`[${OVERRIDE_ONECLICK_PREVIEW_ATTR}]`);
-    expect(preview.textContent).toContain("Pins:");
-    expect(preview.textContent).toContain("Nummern + Namen ausgeblendet");
-    expect(preview.textContent).toContain("Value:");
-    expect(preview.textContent).toContain("Resistance");
-  });
-
-  it("shows only the pin line that applies (numbers hidden, names shown)", () => {
-    const panel = buildOneClickPanel(document, { hidePinNumbers: true });
-    const preview = panel.querySelector(`[${OVERRIDE_ONECLICK_PREVIEW_ATTR}]`);
-    expect(preview.textContent).toContain("Nummern ausgeblendet");
-    expect(preview.textContent).not.toContain("Namen");
-  });
-
-  it("omits pin/value lines when not configured (terse default)", () => {
-    const panel = buildOneClickPanel(document, { symbolSource: GREEN_RULE.symbolSource });
-    const preview = panel.querySelector(`[${OVERRIDE_ONECLICK_PREVIEW_ATTR}]`);
-    expect(preview.textContent).not.toContain("Pins:");
-    expect(preview.textContent).not.toContain("ausgeblendet");
-    expect(preview.textContent).not.toContain("Value:");
+    expect(panel.textContent).toContain("Passives/Resistors");
+    expect(panel.textContent).toContain("erkannt");
+    // The verbose Symbol/Mapping/Pins/Value preview wall is gone.
+    expect(panel.querySelector(`[${OVERRIDE_ONECLICK_PREVIEW_ATTR}]`)).toBeNull();
+    expect(panel.textContent).not.toContain("Mapping:");
+    expect(panel.textContent).not.toContain("Pins:");
+    // No loud green fill — it blends into the page as a line, not a box.
+    expect(panel.style.background).toBe("");
   });
 });
 
@@ -1198,17 +1167,14 @@ describe("Override Panel — theme-aware token chrome (#43)", () => {
     expect(panel.style.background).toBe(jsdomColor(dark.surface2));
   });
 
-  it("buildOneClickPanel keeps the green-state semantic surface in dark theme", async () => {
+  it("buildOneClickPanel is a slim neutral line (no green surface) in dark theme too", async () => {
     const { getDialogTokens } = await import("./dialog.js");
-    const light = getDialogTokens("light");
     const dark = getDialogTokens("dark");
-    const panel = buildOneClickPanel(document, { theme: "dark" });
-    // ``successSurface`` for the green state is the semantic anchor — its
-    // dark-theme value differs from the light-theme one. Asserting on
-    // ``style.background`` (the JSDOM-normalized form) skips the rgba-comma
-    // mangling problem that ``cssText`` would have.
-    expect(panel.style.background).toBe(jsdomColor(dark.successSurface));
-    expect(panel.style.background).not.toBe(jsdomColor(light.successSurface));
+    const panel = buildOneClickPanel(document, { theme: "dark", ruleKey: "X" });
+    // No filled surface — it blends into the page as a line, not a green box.
+    expect(panel.style.background).toBe("");
+    expect(panel.style.background).not.toBe(jsdomColor(dark.successSurface));
+    expect(panel.getAttribute(OVERRIDE_PANEL_MODE_ATTR)).toBe("green");
   });
 
   it("buildYellowPanel in dark theme honors the dark warning surface", async () => {
