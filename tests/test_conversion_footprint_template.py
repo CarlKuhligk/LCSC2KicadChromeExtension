@@ -128,6 +128,69 @@ def test_preserves_3d_model_reference(tmp_path: Path) -> None:
     assert "${KIPRJMOD}/3d/R0603.step" in content
 
 
+def test_carries_3d_model_into_target_and_repoints_ref(tmp_path: Path) -> None:
+    """Part B: with a target context, the template's referenced 3D model is
+    copied into the target library's ``.3dshapes`` and the ``(model …)`` ref is
+    repointed there — so the imported library is self-contained."""
+    pretty = tmp_path / "Templates.pretty"
+    pretty.mkdir()
+    mod = (
+        '(footprint "x" (layer "F.Cu")\n'
+        '  (pad "1" smd roundrect (at 0 0) (size 0.6 0.6) (layers "F.Cu"))\n'
+        '  (model "${KIPRJMOD}/../library/templates/Templates.3dshapes/R0603.wrl"'
+        " (offset (xyz 0 0 0)) (scale (xyz 1 1 1)) (rotate (xyz 0 0 0)))\n"
+        ")\n"
+    )
+    (pretty / "R0603_Custom.kicad_mod").write_text(mod, encoding="utf-8")
+    (tmp_path / "Templates.kicad_sym").write_text("(kicad_symbol_lib)\n", encoding="utf-8")
+    tpl_shapes = tmp_path / "Templates.3dshapes"
+    tpl_shapes.mkdir()
+    (tpl_shapes / "R0603.wrl").write_text("wrl", encoding="utf-8")
+    (tpl_shapes / "R0603.step").write_text("step", encoding="utf-8")
+
+    fp_dir = tmp_path / "MyLib.pretty"
+    fp_dir.mkdir()
+    model_dir = tmp_path / "MyLib.3dshapes"
+    request = _make_request(tmp_path, lib_path=str(tmp_path / "Templates.kicad_sym"))
+
+    written = _export_footprint_from_template(
+        request, str(fp_dir), model_dir=str(model_dir), output_path=tmp_path / "MyLib"
+    )
+
+    # 3D files copied into the TARGET library's .3dshapes …
+    assert (model_dir / "R0603.wrl").is_file()
+    assert (model_dir / "R0603.step").is_file()
+    # … and the ref repointed there, away from the template's own path.
+    content = Path(written).read_text(encoding="utf-8")
+    assert "MyLib.3dshapes/R0603.wrl" in content
+    assert "Templates.3dshapes" not in content
+
+
+def test_no_3d_carry_when_model_file_missing(tmp_path: Path) -> None:
+    """If the referenced 3D file isn't beside the template, the ref rides along
+    verbatim (no copy, no rewrite) — the prior carry-over behavior."""
+    pretty = tmp_path / "Templates.pretty"
+    pretty.mkdir()
+    (pretty / "R0603_Custom.kicad_mod").write_text(_TEMPLATE_MOD, encoding="utf-8")
+    (tmp_path / "Templates.kicad_sym").write_text("(kicad_symbol_lib)\n", encoding="utf-8")
+    fp_dir = tmp_path / "MyLib.pretty"
+    fp_dir.mkdir()
+    request = _make_request(tmp_path, lib_path=str(tmp_path / "Templates.kicad_sym"))
+
+    written = _export_footprint_from_template(
+        request,
+        str(fp_dir),
+        model_dir=str(tmp_path / "MyLib.3dshapes"),
+        output_path=tmp_path / "MyLib",
+    )
+
+    content = Path(written).read_text(encoding="utf-8")
+    # _TEMPLATE_MOD references ${KIPRJMOD}/3d/R0603.step, which has no file beside
+    # the template (no Templates.3dshapes) → unchanged, nothing copied.
+    assert "${KIPRJMOD}/3d/R0603.step" in content
+    assert not (tmp_path / "MyLib.3dshapes" / "R0603.step").exists()
+
+
 def test_rewrites_identity_to_destination_name(tmp_path: Path) -> None:
     """The embedded ``(footprint "…")`` token is synced to the file stem so
     KiCad never sees a stem ↔ identity mismatch."""

@@ -382,6 +382,61 @@ def _find_symbol_span(content: str, symbol_name: str) -> "tuple[int, int] | None
     return None
 
 
+def _iter_top_level_symbol_spans(content: str):
+    """Yield ``(name, start, end)`` for each TOP-LEVEL ``(symbol "name" …)``
+    block (paren-balanced + string-aware). Iteration resumes past each block's
+    closing paren, so nested unit sub-symbols are not re-yielded."""
+    name_re = re.compile(r'\(symbol\s+"([^"]+)"')
+    n = len(content)
+    i = 0
+    while True:
+        m = name_re.search(content, i)
+        if not m:
+            return
+        start = m.start()
+        depth = 0
+        in_string = False
+        end = None
+        j = start
+        while j < n:
+            c = content[j]
+            if in_string:
+                if c == '"' and content[j - 1] != "\\":
+                    in_string = False
+            elif c == '"':
+                in_string = True
+            elif c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+                if depth == 0:
+                    end = j + 1
+                    break
+            j += 1
+        if end is None:
+            return
+        yield m.group(1), start, end
+        i = end
+
+
+_LCSC_PART_PROP_RE = re.compile(r'\(property\s+"LCSC Part"\s+"([^"]*)"')
+
+
+def _find_symbol_span_by_lcsc(content: str, lcsc_id: str) -> "tuple[int, int] | None":
+    """Span of the top-level symbol whose ``(property "LCSC Part" "<id>")``
+    matches ``lcsc_id`` (case-insensitive). A name-independent re-import anchor:
+    the part is found (and thus overwritten) even if its symbol was renamed —
+    e.g. an older import named by the LCSC id, re-imported under the MPN."""
+    want = str(lcsc_id).strip().upper() if isinstance(lcsc_id, str) else ""
+    if not want:
+        return None
+    for _name, start, end in _iter_top_level_symbol_spans(content):
+        m = _LCSC_PART_PROP_RE.search(content[start:end])
+        if m and m.group(1).strip().upper() == want:
+            return start, end
+    return None
+
+
 def extract_symbol_from_lib(lib_path: str, symbol_name: str) -> str | None:
     """Extract a single top-level symbol block from a .kicad_sym file by name.
 
@@ -400,9 +455,17 @@ def extract_symbol_from_lib(lib_path: str, symbol_name: str) -> str | None:
     return content[span[0] : span[1]].strip()
 
 
-def id_already_in_symbol_lib(lib_path: str, component_name: str) -> bool:
+def id_already_in_symbol_lib(
+    lib_path: str, component_name: str, lcsc_id: str | None = None
+) -> bool:
     with open(lib_path, encoding="utf-8") as lib_file:
         current_lib = lib_file.read()
+    # Prefer the stable LCSC Part property so a re-import finds the part even when
+    # its symbol was renamed (LCSC id → MPN) — matches the popup's "in library"
+    # badge, which also keys on LCSC Part.
+    if lcsc_id and _find_symbol_span_by_lcsc(current_lib, lcsc_id) is not None:
+        logging.info("Symbol with LCSC Part '%s' already exists in %s", lcsc_id, lib_path)
+        return True
     # Paren-balanced lookup (indentation-agnostic): the old indent-anchored regex
     # missed template-merged symbols (open/close at different indents), so a
     # re-import saw "not present" and APPENDED a duplicate instead of updating.
@@ -417,6 +480,7 @@ def update_component_in_symbol_lib_file(
     lib_path: str,
     component_name: str,
     component_content: str,
+    lcsc_id: str | None = None,
 ) -> None:
     with open(file=lib_path, encoding="utf-8") as lib_file:
         current_lib = lib_file.read()
@@ -426,17 +490,34 @@ def update_component_in_symbol_lib_file(
     # that a previous (buggy, indent-anchored) re-import had already duplicated.
     new_lib = current_lib
     match_found = False
+
+    def _drop(span: "tuple[int, int]") -> None:
+        nonlocal new_lib
+        start, end = span
+        # Drop the symbol's own leading indentation + one trailing newline so
+        # no blank/indented line is left behind.
+        line_start = new_lib.rfind("\n", 0, start) + 1
+        seg_end = end + 1 if end < len(new_lib) and new_lib[end] == "\n" else end
+        new_lib = new_lib[:line_start] + new_lib[seg_end:]
+
+    # 1) Remove the symbol matched by the stable LCSC Part property first — this
+    #    catches a prior import under a DIFFERENT name (e.g. the LCSC id before
+    #    MPN naming) so the re-import overwrites it instead of leaving a duplicate.
+    if lcsc_id:
+        while True:
+            span = _find_symbol_span_by_lcsc(new_lib, lcsc_id)
+            if span is None:
+                break
+            _drop(span)
+            match_found = True
+
+    # 2) Remove every copy matched by name (self-heals prior name duplicates too).
     for variant in _component_name_variants(component_name):
         while True:
             span = _find_symbol_span(new_lib, variant)
             if span is None:
                 break
-            start, end = span
-            # Drop the symbol's own leading indentation + one trailing newline so
-            # no blank/indented line is left behind.
-            line_start = new_lib.rfind("\n", 0, start) + 1
-            seg_end = end + 1 if end < len(new_lib) and new_lib[end] == "\n" else end
-            new_lib = new_lib[:line_start] + new_lib[seg_end:]
+            _drop(span)
             match_found = True
 
     if not match_found:

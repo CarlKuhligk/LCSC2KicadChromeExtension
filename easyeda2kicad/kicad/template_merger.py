@@ -88,6 +88,16 @@ def _list_property_names(symbol_str: str) -> list[str]:
     return list(dict.fromkeys(re.findall(r'\(property\s+"([^"]+)"', symbol_str)))
 
 
+_PROP_AT_Y_RE = re.compile(r'\(property\s+"[^"]*"\s+"[^"]*"\s*\(at\s+-?[\d.]+\s+(-?[\d.]+)')
+
+
+def _min_property_y(symbol_str: str) -> float:
+    """Lowest Y among existing property positions — the anchor for stacking new
+    injected fields beneath them. Returns ``0.0`` when none are positioned."""
+    ys = [float(m.group(1)) for m in _PROP_AT_Y_RE.finditer(symbol_str)]
+    return min(ys) if ys else 0.0
+
+
 def _rename_property_key(text: str, old_name: str, new_name: str) -> str:
     """Rename the quoted key in ``(property "KEY" ...)`` declarations."""
     if old_name == new_name:
@@ -258,12 +268,16 @@ class TemplateMerger:
         return vmap
 
     @staticmethod
-    def _make_hidden_property(key: str, value: str) -> str:
-        """Return a tab-indented hidden KiCad property S-expression block."""
+    def _make_hidden_property(key: str, value: str, pos_y: float = 0.0) -> str:
+        """Return a tab-indented hidden KiCad property S-expression block.
+
+        ``pos_y`` places the field on the Y axis so injected fields stack below
+        the symbol instead of piling up at the origin (all unreadable at 0 0).
+        """
         safe = str(value).replace('"', "'")
         return (
             f'\t\t(property "{key}" "{safe}"\n'
-            f"\t\t\t(at 0 0 0)\n"
+            f"\t\t\t(at 0 {pos_y:.2f} 0)\n"
             f"\t\t\t(effects\n"
             f"\t\t\t\t(font\n"
             f"\t\t\t\t\t(size 1.27 1.27)\n"
@@ -432,9 +446,18 @@ class TemplateMerger:
             if v and not lcsc_param_matches_any_template_field(k, initial_template_norms)
         ]
         if extra:
+            # Stack injected fields beneath the lowest existing field with
+            # incremental spacing so they are readable, instead of overlapping
+            # at the origin (0 0). Only newly-injected fields are placed; the
+            # template's own fields keep their positions.
+            base_y = _min_property_y(result)
+            inc = 2.54  # standard KiCad field spacing (mm)
             extra_block = (
                 "\n"
-                + "\n".join(self._make_hidden_property(k, v) for k, v in extra)
+                + "\n".join(
+                    self._make_hidden_property(k, v, base_y - inc * (i + 1))
+                    for i, (k, v) in enumerate(extra)
+                )
                 + "\n"
             )
             # Insert before (embedded_fonts ...) or before the closing ) of symbol

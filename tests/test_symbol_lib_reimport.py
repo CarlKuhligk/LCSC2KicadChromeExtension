@@ -120,3 +120,62 @@ def test_update_dedups_preexisting_duplicates(tmp_path: Path) -> None:
     assert _top_count(text, "TPL1") == 1  # collapsed to one
     assert '"NEW"' in text
     assert text.count("(") == text.count(")")
+
+
+# --------------------------------------------------------------------------- #
+#  Re-import matched by the stable LCSC Part property (survives a rename, e.g.   #
+#  an older import named by the LCSC id, re-imported under the MPN).            #
+# --------------------------------------------------------------------------- #
+
+# A symbol named by the OLD scheme (the LCSC id) carrying its LCSC Part property.
+_LIB_LCSC = (
+    "(kicad_symbol_lib (version 20240618) (generator x)\n"
+    '\t(symbol "C7464890"\n'
+    '\t\t(property "Value" "OLD" (at 0 0 0) (effects (font (size 1.27 1.27))))\n'
+    '\t\t(property "LCSC Part" "C7464890" (at 0 -2.54 0) (effects (font (size 1.27 1.27)) (hide yes)))\n'
+    '\t\t(symbol "C7464890_0_1"\n'
+    "\t\t\t(pin passive line (at 0 0 0) (length 1)\n"
+    '\t\t\t\t(name "1" (effects (font (size 1.27 1.27))))\n'
+    '\t\t\t\t(number "1" (effects (font (size 1.27 1.27)))))\n'
+    "\t\t)\n"
+    "\t)\n"
+    ")\n"
+)
+
+# Re-import of the SAME part, now named by the MPN (different identity), same LCSC Part.
+_NEW_MPN = (
+    '(symbol "TLV9061IDBVR"\n'
+    '  (property "Value" "NEW" (at 0 0 0) (effects (font (size 1.27 1.27))))\n'
+    '  (property "LCSC Part" "C7464890" (at 0 -2.54 0) (effects (font (size 1.27 1.27)) (hide yes)))\n'
+    '  (symbol "TLV9061IDBVR_0_1"\n'
+    "    (pin passive line (at 0 0 0) (length 1)\n"
+    '      (name "1" (effects (font (size 1.27 1.27))))\n'
+    '      (number "1" (effects (font (size 1.27 1.27)))))\n'
+    "  )\n"
+    ")"
+)
+
+
+def test_id_already_matches_by_lcsc_part_despite_rename(tmp_path: Path) -> None:
+    p = tmp_path / "Lib.kicad_sym"
+    p.write_text(_LIB_LCSC, encoding="utf-8")
+    lib = str(p)
+    # Found via LCSC Part even though we look it up under the NEW (MPN) name.
+    assert id_already_in_symbol_lib(lib, "TLV9061IDBVR", lcsc_id="C7464890") is True
+    # Without the lcsc_id the new name does not match the old identity → not found.
+    assert id_already_in_symbol_lib(lib, "TLV9061IDBVR") is False
+
+
+def test_update_by_lcsc_overwrites_renamed_symbol_no_duplicate(tmp_path: Path) -> None:
+    p = tmp_path / "Lib.kicad_sym"
+    p.write_text(_LIB_LCSC, encoding="utf-8")
+    lib = str(p)
+    update_component_in_symbol_lib_file(lib, "TLV9061IDBVR", _NEW_MPN, lcsc_id="C7464890")
+    text = p.read_text(encoding="utf-8")
+    # Old LCSC-id-named symbol removed; new MPN-named one present; no duplicate.
+    assert _top_count(text, "C7464890") == 0  # the (symbol "C7464890") identity is gone
+    assert _top_count(text, "TLV9061IDBVR") == 1
+    assert '"NEW"' in text and '"OLD"' not in text
+    assert "C7464890" in text  # still recorded as the LCSC Part property value
+    assert text.count("(") == text.count(")")
+    assert set(list_symbols_in_lib(lib)) == {"TLV9061IDBVR"}

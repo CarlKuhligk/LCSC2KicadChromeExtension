@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import re
+import shutil
 import threading
 import time
 from dataclasses import dataclass, field
@@ -327,8 +328,100 @@ def _resolve_template_footprint_file(lib_path: str, name: str) -> Optional[Path]
     return candidate if candidate.is_file() else None
 
 
+_FP_MODEL_RE = re.compile(r'(\(model\s+")([^"]+)(")')
+
+
+def _compute_model_dir_ref(
+    request: "ConversionRequest", model_dir, output_path
+) -> tuple[str, bool]:
+    """Project-relative directory used in footprint 3D ``(model …)`` refs.
+
+    Returns ``(model_path, is_explicit)``. Shared by the EasyEDA footprint export
+    and the template-footprint 3D carry-over so both emit one convention.
+    """
+    override = (request.model_path or "").strip()
+    if override:
+        return override, True
+    model_path = str(model_dir).replace("\\", "/").replace("./", "/")
+    if request.project_relative:
+        relative_path = (request.project_relative_path or "").strip().replace("\\", "/")
+        if relative_path.startswith("${KIPRJMOD}"):
+            relative_path = relative_path[len("${KIPRJMOD}"):]
+        if relative_path:
+            if not relative_path.startswith("/"):
+                relative_path = f"/{relative_path}"
+            if relative_path.endswith(".3dshapes"):
+                model_path = "${KIPRJMOD}" + relative_path
+            else:
+                model_path = (
+                    "${KIPRJMOD}"
+                    + relative_path.rstrip("/")
+                    + f"/{output_path.name}.3dshapes"
+                )
+        else:
+            model_path = "${KIPRJMOD}/" + f"{output_path.name}.3dshapes"
+    return model_path, False
+
+
+def _carry_template_3d(
+    request: "ConversionRequest", content: str, model_dir, output_path
+) -> str:
+    """Copy a template footprint's referenced 3D model into the target library's
+    ``.3dshapes`` and repoint its ``(model …)`` ref there, so the imported
+    library is self-contained ("3D follows the footprint", #6).
+
+    The 3D file is looked up beside the template library — ``<lib>.3dshapes/`` —
+    by the basename in the footprint's ``(model …)`` ref. No-op when the target
+    context is absent (e.g. the direct unit tests pass no ``model_dir``), there
+    is no model ref, or the referenced file is not found (then the template's
+    own ref rides along verbatim, the prior behavior).
+    """
+    if model_dir is None or output_path is None:
+        return content
+    m = _FP_MODEL_RE.search(content)
+    if not m:
+        return content
+    basename = m.group(2).replace("\\", "/").rstrip("/").split("/")[-1]
+    if not basename:
+        return content
+    stub = basename.rsplit(".", 1)[0]
+    lib_path = (request.footprint_template_lib_path or "").strip()
+    if not lib_path:
+        return content
+    tpl_3dshapes = Path(lib_path).with_suffix(".3dshapes")
+    target_dir = Path(model_dir)
+    overwrite_model = bool(getattr(request, "overwrite_model", False) or request.overwrite)
+    copied_any = False
+    for ext in (".wrl", ".step"):
+        src = tpl_3dshapes / f"{stub}{ext}"
+        if not src.is_file():
+            continue
+        dst = target_dir / f"{stub}{ext}"
+        if dst.exists() and not overwrite_model:
+            copied_any = True
+            continue
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            copied_any = True
+        except OSError as exc:
+            logging.warning(
+                "Cannot copy template 3D model %s -> %s: %s", src, dst, exc
+            )
+    if not copied_any:
+        return content
+    model_path, _ = _compute_model_dir_ref(request, model_dir, output_path)
+    new_ref = f"{model_path.rstrip('/')}/{basename}"
+    return _FP_MODEL_RE.sub(
+        lambda mm: mm.group(1) + new_ref + mm.group(3), content, count=1
+    )
+
+
 def _export_footprint_from_template(
-    request: "ConversionRequest", footprint_dir: str
+    request: "ConversionRequest",
+    footprint_dir: str,
+    model_dir=None,
+    output_path=None,
 ) -> Optional[str]:
     """Copy a template ``.kicad_mod`` into the target ``.pretty`` library.
 
@@ -360,6 +453,9 @@ def _export_footprint_from_template(
         return None
     # Keep the embedded identity token in sync with the destination file stem.
     content = _FP_IDENTITY_RE.sub(rf'\g<1>"{name}"', content, count=1)
+    # Copy the template's referenced 3D model into the target library's .3dshapes
+    # and repoint the (model …) ref there (#6). No-op without the target context.
+    content = _carry_template_3d(request, content, model_dir, output_path)
     try:
         dest_file.write_text(content, encoding="utf-8")
     except OSError as exc:
@@ -402,6 +498,41 @@ def _coerce_template_pin_map(
         if sk and sv:
             out[sk] = sv
     return out or None
+
+
+# Page-snapshot labels that carry the Manufacturer Part Number (DE + EN + the
+# normalized "MPN"). Used to name template-only symbols by their MPN instead of
+# the LCSC id, so they're findable/recognizable in the library.
+_MPN_PARAM_KEYS = (
+    "MPN",
+    "Manufacturer Part Number",
+    "Manufacturer Part",
+    "Mfr. Part #",
+    "Mfr Part #",
+    "Herst.-Teilenr.",
+    "Hersteller-Teilenr.",
+    "Hersteller Teilenummer",
+)
+
+
+def _mpn_from_params(symbol_params: Optional[Mapping[str, Any]]) -> Optional[str]:
+    """Best-effort Manufacturer Part Number from the scraped page params.
+
+    The Native Host projects ALL page params into ``symbol_params`` (auto-upsert),
+    so the MPN is present under its page label. Case-insensitive lookup across the
+    known DE/EN/normalized labels; ``None`` when no MPN-like field is present.
+    """
+    if not symbol_params:
+        return None
+    lower: dict[str, str] = {}
+    for k, v in symbol_params.items():
+        if isinstance(k, str) and v is not None and str(v).strip():
+            lower.setdefault(k.strip().lower(), str(v).strip())
+    for key in _MPN_PARAM_KEYS:
+        hit = lower.get(key.lower())
+        if hit:
+            return hit
+    return None
 
 
 def _export_symbol_from_template(
@@ -467,7 +598,7 @@ def _export_symbol_from_template(
         # Template-only: metadata comes from the scraped page params (symbol_params)
         # + the resolved value/datasheet; the LCSC id fills name + LCSC Part.
         ki_info = KiSymbolInfo(
-            name=request.lcsc_id,
+            name=_mpn_from_params(request.symbol_params) or request.lcsc_id,
             prefix="U",
             package="",
             manufacturer="",
@@ -625,12 +756,15 @@ def run_conversion(
         prog.emit("symbol", 0.18, "Resolving pins, graphics, and sub-units…")
 
         component_name = (
-            primary_symbol.info.name if primary_symbol is not None else request.lcsc_id
+            primary_symbol.info.name
+            if primary_symbol is not None
+            else (_mpn_from_params(request.symbol_params) or request.lcsc_id)
         )
         sanitized_name = sanitize_fields(component_name)
         existing = id_already_in_symbol_lib(
             lib_path=str(symbol_file),
             component_name=sanitized_name,
+            lcsc_id=request.lcsc_id,
         )
         exported_symbol = ""
         exported_sub_symbols: List[str] = []
@@ -709,6 +843,7 @@ def run_conversion(
                         lib_path=str(symbol_file),
                         component_name=sanitized_name,
                         component_content=exported_symbol,
+                        lcsc_id=request.lcsc_id,
                     )
                 else:
                     add_component_in_symbol_lib_file(
@@ -738,7 +873,9 @@ def run_conversion(
                 0.2,
                 f"Copying template footprint '{request.footprint_template_name}'…",
             )
-            written = _export_footprint_from_template(request, footprint_dir)
+            written = _export_footprint_from_template(
+                request, footprint_dir, model_dir=str(model_dir), output_path=output_path
+            )
             if written:
                 result.footprint_path = written
                 footprint_from_template = True
@@ -767,30 +904,9 @@ def run_conversion(
                 footprint_dir, easyeda_footprint.info.name
             )
             footprint_filename = f"{easyeda_footprint.info.name}.kicad_mod"
-            model_path_override = (request.model_path or "").strip()
-            model_path_is_explicit = False
-            if model_path_override:
-                model_path = model_path_override
-                model_path_is_explicit = True
-            else:
-                model_path = str(model_dir).replace("\\", "/").replace("./", "/")
-                if request.project_relative:
-                    relative_path = (request.project_relative_path or "").strip().replace("\\", "/")
-                    if relative_path.startswith("${KIPRJMOD}"):
-                        relative_path = relative_path[len("${KIPRJMOD}"):]
-                    if relative_path:
-                        if not relative_path.startswith("/"):
-                            relative_path = f"/{relative_path}"
-                        if relative_path.endswith(".3dshapes"):
-                            model_path = "${KIPRJMOD}" + relative_path
-                        else:
-                            model_path = (
-                                "${KIPRJMOD}"
-                                + relative_path.rstrip("/")
-                                + f"/{output_path.name}.3dshapes"
-                            )
-                    else:
-                        model_path = "${KIPRJMOD}/" + f"{output_path.name}.3dshapes"
+            model_path, model_path_is_explicit = _compute_model_dir_ref(
+                request, model_dir, output_path
+            )
 
             if footprint_exists and not request.overwrite:
                 result.messages.append(

@@ -147,6 +147,80 @@ def test_run_conversion_template_only_skips_easyeda(tmp_path: Path, monkeypatch)
     assert result.symbol_path and result.footprint_path
 
 
+def test_template_only_names_symbol_by_mpn(tmp_path: Path, monkeypatch) -> None:
+    """Template-only: the written symbol's identity is the Manufacturer Part
+    Number (from the scraped page params), not the LCSC id — so it's findable."""
+    sym = _make_template_lib(tmp_path)
+
+    def _boom(*_a, **_k):
+        raise AssertionError("EasyEDA fetch must not run for a template-only import")
+
+    monkeypatch.setattr(conv, "_cad_fetch_with_pulsing_progress", _boom)
+
+    request = ConversionRequest(
+        lcsc_id="C7464890",
+        output_prefix=str(tmp_path / "TestImport"),
+        overwrite=True,
+        generate_symbol=True,
+        generate_footprint=True,
+        use_template=True,
+        template_name="TplR",
+        template_lib_path=str(sym),
+        force_template=True,
+        use_footprint_template=True,
+        footprint_template_name="R0603",
+        footprint_template_lib_path=str(sym),
+        force_footprint_template=True,
+        symbol_value_override="10k",
+        symbol_params={"Herst.-Teilenr.": "RC0603FR-0710KL", "Tolerance": "1%"},
+    )
+
+    run_conversion(request)
+    sym_text = (tmp_path / "TestImport.kicad_sym").read_text(encoding="utf-8")
+    assert '(symbol "RC0603FR-0710KL"' in sym_text  # identity = MPN
+    assert '(symbol "C7464890"' not in sym_text  # not the LCSC id
+    assert "C7464890" in sym_text  # LCSC id still recorded as the LCSC Part property
+
+
+def test_template_only_injected_fields_stack_below_symbol(tmp_path: Path) -> None:
+    """Injected metadata fields not present on the template get incremental Y
+    positions below the symbol's lowest field, instead of piling up at 0 0."""
+    sym = _make_template_lib(tmp_path)
+    request = ConversionRequest(
+        lcsc_id="C7464890",
+        output_prefix=str(tmp_path / "TestImport"),
+        overwrite=True,
+        generate_symbol=True,
+        use_template=True,
+        template_name="TplR",
+        template_lib_path=str(sym),
+        force_template=True,
+        use_footprint_template=True,
+        footprint_template_name="R0603",
+        footprint_template_lib_path=str(sym),
+        force_footprint_template=True,
+        symbol_value_override="10k",
+        symbol_value_param_key="Resistance",
+        symbol_params={"Tolerance": "1%", "Power": "0.1W"},
+    )
+
+    out = _export_symbol_from_template(request, None, library_name="TestImport")
+    import re
+
+    # Template's lowest existing field is Footprint at y=-5.08; injected fields
+    # (LCSC Part / Tolerance / Power) must sit below it, each at a distinct Y.
+    ys = [
+        float(y)
+        for y in re.findall(
+            r'\(property\s+"(?:LCSC Part|Tolerance|Power)"\s+"[^"]*"\s*\(at\s+0\s+(-?[\d.]+)',
+            out,
+        )
+    ]
+    assert ys, "expected injected fields with positions"
+    assert all(y < -5.08 for y in ys), f"injected fields should stack below the symbol, got {ys}"
+    assert len(ys) == len(set(ys)), f"injected fields need distinct Y (incremental), got {ys}"
+
+
 def test_run_conversion_easyeda_footprint_still_needs_cad_data(tmp_path: Path, monkeypatch) -> None:
     """Symbol=template but footprint=EasyEDA STILL needs the fetch — the skip is
     only for a fully-template import. Here the (boom) fetch must be reached."""
