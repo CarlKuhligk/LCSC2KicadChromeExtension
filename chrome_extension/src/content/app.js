@@ -390,7 +390,7 @@ function ensureSpinnerStyle() {
       width: 0%;
       border-radius: 4px;
       background: linear-gradient(90deg, #38bdf8, #2563eb);
-      transition: width 0.35s ease, background 0.3s ease;
+      transition: background 0.3s ease;
       box-shadow: 0 0 8px rgba(37, 99, 235, 0.45);
     }
 
@@ -742,7 +742,6 @@ function renderLanguageWarning(doc, anchorRow) {
       "margin:6px 0",
       "padding:8px 12px",
       "border:1px solid #f1aeb5",
-      "border-left:4px solid #dc3545",
       "border-radius:6px",
       "background:#fdf0f1",
       "color:#842029",
@@ -3450,7 +3449,7 @@ async function openTemplateGallery(anchorButton, groupDiv, lcscId, state, galler
         "width:min(220px,85%);height:6px;border-radius:999px;background:rgba(148,163,184,0.35);overflow:hidden;";
       const fill = document.createElement("div");
       fill.style.cssText =
-        "height:100%;width:0%;background:#60a5fa;border-radius:999px;transition:width 0.15s ease-out";
+        "height:100%;width:100%;transform:scaleX(0);transform-origin:left;background:#60a5fa;border-radius:999px;transition:transform 0.15s ease-out";
       track.appendChild(fill);
       pdfLoading.appendChild(label);
       pdfLoading.appendChild(track);
@@ -3466,7 +3465,7 @@ async function openTemplateGallery(anchorButton, groupDiv, lcscId, state, galler
       }
       if (total != null && Number.isFinite(total) && total > 0) {
         const pct = Math.min(100, Math.round((received / total) * 100));
-        fill.style.width = `${pct}%`;
+        fill.style.transform = `scaleX(${pct / 100})`;
         const mbTot = total / 1048576;
         if (mbTot >= 0.05) {
           label.textContent = `Downloading datasheet… ${pct}% (${(received / 1048576).toFixed(1)} / ${mbTot.toFixed(1)} MB)`;
@@ -3474,7 +3473,7 @@ async function openTemplateGallery(anchorButton, groupDiv, lcscId, state, galler
           label.textContent = `Downloading datasheet… ${pct}%`;
         }
       } else {
-        fill.style.width = "38%";
+        fill.style.transform = "scaleX(0.38)";
         label.textContent = `Downloading datasheet… ${(received / 1048576).toFixed(2)} MB`;
       }
     }
@@ -3631,7 +3630,7 @@ async function openTemplateGallery(anchorButton, groupDiv, lcscId, state, galler
 
         if (resp?.ok && resp.data?.base64) {
           if (pdfProgRef.fill) {
-            pdfProgRef.fill.style.width = "100%";
+            pdfProgRef.fill.style.transform = "scaleX(1)";
           }
           if (pdfProgRef.label) {
             pdfProgRef.label.textContent = "Preparing viewer…";
