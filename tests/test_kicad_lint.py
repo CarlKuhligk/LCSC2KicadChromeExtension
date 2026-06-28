@@ -142,3 +142,86 @@ def test_main_exit_codes(tmp_path: Path, capsys) -> None:
     assert kicad_lint.main([str(dirty), "--fix"]) == 0  # fixed → 0
     capsys.readouterr()
     assert kicad_lint.main([str(dirty)]) == 0  # now clean → 0
+
+
+# --------------------------------------------------------------------------- #
+#  --dedupe: the real FloraSense shape — a placed instance carrying BOTH the    #
+#  clean field and its whitespace orphan (KiCad's Update-from-Library leftover). #
+# --------------------------------------------------------------------------- #
+
+_ORPHAN = (
+    "(kicad_sch (version 20231120) (generator eeschema)\n"
+    "  (symbol\n"
+    '    (lib_id "lib:NTC")\n'
+    '    (property "Reference" "TH1" (at 0 0 0))\n'
+    '    (property "B Constant (25°C/85°C) " "4310K"\n'
+    "      (at 0 -2 0)\n"
+    "      (effects (font (size 1.27 1.27)) (hide yes))\n"
+    "    )\n"
+    '    (property "B Constant (25°C/85°C)" "4310K"\n'
+    "      (at 0 -4 0)\n"
+    "      (effects (font (size 1.27 1.27)))\n"
+    "    )\n"
+    "  )\n"
+    ")\n"
+)
+
+
+def test_dedupe_removes_orphan_keeps_clean_twin_crlf(tmp_path: Path) -> None:
+    p = _write(tmp_path, "x.kicad_sch", _ORPHAN, crlf=True)
+    before = p.read_bytes()
+    rep = kicad_lint.fix_file(p, dedupe=True)
+    assert rep.removed == 1
+    after = p.read_bytes()
+    text = after.decode("utf-8")
+    # The whitespace orphan is gone; exactly one clean twin remains (no duplicate).
+    assert '"B Constant (25°C/85°C) "' not in text
+    assert text.count('"B Constant (25°C/85°C)"') == 1
+    assert "4310K" in text  # value preserved (lived on the twin)
+    assert text.count("(") == text.count(")")  # structurally sound
+    # EOL preserved: the 4-line orphan block is gone (−4 CRLF) and NO lone LF
+    # was introduced — every remaining newline is still CRLF.
+    assert after.count(b"\r\n") == before.count(b"\r\n") - 4
+    assert b"\n" not in after.replace(b"\r\n", b"")
+    # No blank line left where the orphan block was removed.
+    assert "\n\n" not in text.replace("\r\n", "\n")
+
+
+def test_dedupe_text_counts_and_balance() -> None:
+    out, removed, trimmed = kicad_lint.dedupe_text(_ORPHAN)
+    assert removed == 1
+    assert out.count('(property "B Constant (25°C/85°C)"') == 1
+    assert out.count("(") == out.count(")")
+
+
+def test_dedupe_strips_orphan_without_twin(tmp_path: Path) -> None:
+    """An orphan with NO clean twin must NOT be removed (that would lose data) —
+    it falls through to a plain trim instead."""
+    txt = (
+        "(kicad_sch (version 1) (generator x)\n"
+        '  (symbol (lib_id "l:N")\n'
+        '    (property "Lone Field " "v" (at 0 0 0))\n'
+        "  )\n"
+        ")\n"
+    )
+    p = _write(tmp_path, "y.kicad_sch", txt)
+    rep = kicad_lint.fix_file(p, dedupe=True)
+    assert rep.removed == 0
+    assert rep.fixed == 1
+    text = p.read_text(encoding="utf-8")
+    assert '"Lone Field"' in text and '"Lone Field "' not in text
+    assert '"v"' in text  # value kept
+
+
+def test_main_dedupe_resolves_collision_exit_zero(tmp_path: Path, capsys) -> None:
+    p = _write(tmp_path, "z.kicad_sch", _ORPHAN)
+    # Plain scan sees the collision → exit 1.
+    assert kicad_lint.main([str(p)]) == 1
+    capsys.readouterr()
+    # Plain --fix refuses the collision (would merge) → file unchanged, exit 1.
+    assert kicad_lint.main([str(p), "--fix"]) == 1
+    capsys.readouterr()
+    # --fix --dedupe removes the orphan → exit 0, and a re-scan is clean.
+    assert kicad_lint.main([str(p), "--fix", "--dedupe"]) == 0
+    capsys.readouterr()
+    assert kicad_lint.main([str(p)]) == 0
