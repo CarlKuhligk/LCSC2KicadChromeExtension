@@ -300,6 +300,30 @@ def run_phase2_conversion(
         else None
     )
 
+    # Datasheet link (scraped LCSC PDF URL, ``pageData.datasheetUrl``). It is NOT
+    # a spec-table param, so it must ride as its own field: a template carries its
+    # own (generic/placeholder) Datasheet property, and on a TEMPLATE-ONLY import
+    # there is no EasyEDA datasheet to fall back on either — so without this the
+    # template's wrong datasheet survives. The merger overwrites the existing
+    # Datasheet property with this value when present (empty ⇒ template kept).
+    datasheet_raw = params.get("datasheetUrl")
+    datasheet_url = (
+        datasheet_raw.strip()
+        if isinstance(datasheet_raw, str) and datasheet_raw.strip()
+        else None
+    )
+
+    # Description (scraped LCSC "Hauptmerkmale"/"Description" blurb). Same dropped-
+    # field class as the datasheet: it is excluded from symbol_params as a STANDARD
+    # key, so without forwarding it here a template-only import keeps the template's
+    # own Description. The merger overwrites the existing Description when present.
+    description_raw = params.get("description")
+    description = (
+        description_raw.strip()
+        if isinstance(description_raw, str) and description_raw.strip()
+        else None
+    )
+
     request = ConversionRequest(
         lcsc_id=lcsc_id,
         output_prefix=output_prefix,
@@ -331,6 +355,8 @@ def run_phase2_conversion(
         hide_pin_names=hide_pin_names,
         symbol_value_override=value_override,
         symbol_value_param_key=value_param if value_override else None,
+        symbol_datasheet_url=datasheet_url,
+        symbol_description=description,
     )
 
     def _progress_cb(_stage: ConversionStage, pct: int, message: Optional[str]) -> None:

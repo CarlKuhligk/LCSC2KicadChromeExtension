@@ -235,6 +235,73 @@ class TestMergePropertyFuzzyKeys(unittest.TestCase):
         self.assertIn("±100ppm", out)
         self.assertNotIn("(property \"Temperature Coefficient\" \"—\"", out)
 
+    def test_merge_overwrites_existing_template_datasheet(self) -> None:
+        """A template carries its own (generic/placeholder) Datasheet property; on
+        import the scraped LCSC datasheet URL must REPLACE it. The symptom the owner
+        hit: the template's datasheet survived instead of the part's real one."""
+        tpl = '''
+(symbol "TplDS"
+  (property "Value" "x"
+    (at 0 0 0)
+    (effects (font (size 1.27 1.27))))
+  (property "Datasheet" "https://template-placeholder.example/OLD.pdf"
+    (at 0 -2.54 0)
+    (effects (font (size 1.27 1.27))))
+  (symbol "TplDS_0_1"
+    (pin passive line (at 0 0 0) (length 1.27) (name "1" (effects)) (number "1" (effects)))
+  )
+)
+'''
+        info = KiSymbolInfo(
+            name="R_10k",
+            prefix="R",
+            package="Lib:R_0402",
+            manufacturer="X",
+            datasheet="https://datasheet.lcsc.com/lcsc/REAL.pdf",
+            lcsc_id="C1",
+            jlc_id="",
+            value_override="10k",
+        )
+        merger = TemplateMerger()
+        out = merger.merge(tpl, "TplDS", info, source_pins=[_make_pin("1")])
+        self.assertIn(
+            '(property "Datasheet" "https://datasheet.lcsc.com/lcsc/REAL.pdf"', out
+        )
+        self.assertNotIn("template-placeholder", out)
+        self.assertNotIn("OLD.pdf", out)
+
+    def test_merge_overwrites_existing_template_description(self) -> None:
+        """Same dropped-field class as the datasheet: a scraped Description must
+        REPLACE the template's own (generic) Description property."""
+        tpl = '''
+(symbol "TplDesc"
+  (property "Value" "x"
+    (at 0 0 0)
+    (effects (font (size 1.27 1.27))))
+  (property "Description" "GENERIC TEMPLATE RESISTOR"
+    (at 0 -2.54 0)
+    (effects (font (size 1.27 1.27))))
+  (symbol "TplDesc_0_1"
+    (pin passive line (at 0 0 0) (length 1.27) (name "1" (effects)) (number "1" (effects)))
+  )
+)
+'''
+        info = KiSymbolInfo(
+            name="R_10k",
+            prefix="R",
+            package="Lib:R_0402",
+            manufacturer="X",
+            datasheet="",
+            lcsc_id="C1",
+            jlc_id="",
+            value_override="10k",
+            symbol_description="10kΩ ±1% 0603 Thick Film Resistor",
+        )
+        merger = TemplateMerger()
+        out = merger.merge(tpl, "TplDesc", info, source_pins=[_make_pin("1")])
+        self.assertIn("10kΩ ±1% 0603 Thick Film Resistor", out)
+        self.assertNotIn("GENERIC TEMPLATE RESISTOR", out)
+
 
 class TestBuildValueMap(unittest.TestCase):
     def test_value_param_key_duplicates_value_for_second_template_field(self) -> None:

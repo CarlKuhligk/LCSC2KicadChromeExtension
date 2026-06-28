@@ -4846,8 +4846,21 @@ function attachButton(lcscId) {
         // Value dropdown AND drives the auto-🟢 path so a fast Category-Match
         // import still fills the Value field. Computed once off the snapshot.
         let autoValueParam = null;
+        // Datasheet link for the EasyEDA-only + Override-Panel-confirm import paths
+        // (the template editor/one-click paths read it off their own snapshot).
+        // Lifted off the SAME snapshot so the merger can overwrite the template's
+        // placeholder Datasheet with the part's real PDF URL.
+        let pageDatasheetUrl = null;
+        let pageDescription = null;
         try {
-          autoValueParam = detectValueParam(extractPageData(document)?.params || {});
+          const _snap = extractPageData(document) || {};
+          autoValueParam = detectValueParam(_snap.params || {});
+          if (typeof _snap.datasheetUrl === "string" && _snap.datasheetUrl.trim()) {
+            pageDatasheetUrl = _snap.datasheetUrl.trim();
+          }
+          if (typeof _snap.description === "string" && _snap.description.trim()) {
+            pageDescription = _snap.description.trim();
+          }
         } catch (_e) {
           autoValueParam = null;
         }
@@ -4856,7 +4869,7 @@ function attachButton(lcscId) {
             rpc: async (id, libraryPath, ov) => {
               const resp = await contentRpc(
                 "v3Convert",
-                { lcscId: id, libraryPath, overrides: ov },
+                { lcscId: id, libraryPath, overrides: ov, datasheetUrl: pageDatasheetUrl, description: pageDescription },
                 k2cRpc(2, 200),
               );
               if (resp?.ok && resp.data) return resp.data;
@@ -4882,6 +4895,8 @@ function attachButton(lcscId) {
         const openRegisterEditor = async (initial = {}) => {
           let pageParams = {};
           let packageHint = null;
+          let datasheetUrl = null;
+          let description = null;
           try {
             const snap = extractPageData(document) || {};
             if (snap.params && typeof snap.params === "object") {
@@ -4889,6 +4904,12 @@ function attachButton(lcscId) {
             }
             if (typeof snap.package === "string" && snap.package.trim()) {
               packageHint = snap.package.trim();
+            }
+            if (typeof snap.datasheetUrl === "string" && snap.datasheetUrl.trim()) {
+              datasheetUrl = snap.datasheetUrl.trim();
+            }
+            if (typeof snap.description === "string" && snap.description.trim()) {
+              description = snap.description.trim();
             }
           } catch (e) {
             dbg("[register] snapshot for editor failed", e);
@@ -5061,6 +5082,10 @@ function attachButton(lcscId) {
                       overrides: ov,
                       labelMapping: rule.labelMapping || {},
                       pageParams,
+                      // Datasheet link (scraped PDF URL): the merger overwrites the
+                      // template's placeholder Datasheet property with the real one.
+                      datasheetUrl,
+                      description,
                       hidePinNumbers: rule.hidePinNumbers,
                       hidePinNames: rule.hidePinNames,
                       valueParam: rule.valueParam,
@@ -5092,10 +5117,18 @@ function attachButton(lcscId) {
         // the matched Rule's values prefilled.
         const runRulePhase2 = async () => {
           let pageParams = {};
+          let datasheetUrl = null;
+          let description = null;
           try {
             const snap = extractPageData(document) || {};
             if (snap.params && typeof snap.params === "object") {
               pageParams = snap.params;
+            }
+            if (typeof snap.datasheetUrl === "string" && snap.datasheetUrl.trim()) {
+              datasheetUrl = snap.datasheetUrl.trim();
+            }
+            if (typeof snap.description === "string" && snap.description.trim()) {
+              description = snap.description.trim();
             }
           } catch (e) {
             dbg("[phase2 green] snapshot failed", e);
@@ -5111,6 +5144,10 @@ function attachButton(lcscId) {
                   overrides: ov,
                   labelMapping: rule.labelMapping || {},
                   pageParams,
+                  // Datasheet link (scraped PDF URL): the merger overwrites the
+                  // template's placeholder Datasheet property with the real one.
+                  datasheetUrl,
+                  description,
                   // Registered rule: its own value; synth-rule (Category-Match):
                   // fall back to the ≤2-pin auto-heuristic so auto-🟢 stays clean.
                   hidePinNumbers: rule.hidePinNumbers ?? autoHidePinNumbers,
@@ -5174,7 +5211,7 @@ function attachButton(lcscId) {
               rpc: async (id, libraryPath, ov) => {
                 const resp = await contentRpc(
                   "v3Convert",
-                  { lcscId: id, libraryPath, overrides: ov },
+                  { lcscId: id, libraryPath, overrides: ov, datasheetUrl: pageDatasheetUrl, description: pageDescription },
                   k2cRpc(2, 200),
                 );
                 if (resp?.ok && resp.data) return resp.data;
@@ -5579,6 +5616,25 @@ async function handleDownloadClick(button, lcscId, overrides = {}) {
     overrides: { symbol: symbolSource, footprint: { source: "easyeda" } },
     pageParams: pageData.params,
   };
+  // Datasheet link (scraped PDF URL): forward it so the merger overwrites the
+  // template's own (placeholder) Datasheet property with the part's real one —
+  // critical for a template-only import (no EasyEDA datasheet to fall back on).
+  if (
+    pageData
+    && typeof pageData.datasheetUrl === "string"
+    && pageData.datasheetUrl.trim()
+  ) {
+    convertParams.datasheetUrl = pageData.datasheetUrl.trim();
+  }
+  // Description (scraped "Hauptmerkmale"/"Description"): same dropped-field class —
+  // forward it so the merger overwrites the template's own Description property.
+  if (
+    pageData
+    && typeof pageData.description === "string"
+    && pageData.description.trim()
+  ) {
+    convertParams.description = pageData.description.trim();
+  }
   if (
     useTemplate
     && overrides.templatePinMap

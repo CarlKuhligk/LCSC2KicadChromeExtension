@@ -286,6 +286,95 @@ def test_template_pin_map_flows_into_conversion_request() -> None:
     assert seen["req"].template_pin_map == {"1": "A", "2": "K"}
 
 
+def test_datasheet_url_flows_into_request() -> None:
+    """The scraped LCSC datasheet URL reaches ``ConversionRequest.symbol_datasheet_url``
+    so the merger overwrites a template's own (placeholder) Datasheet property — even on
+    a template-only import where there is no EasyEDA datasheet to fall back on."""
+    seen, runner = _capturing_runner()
+    run_phase2_conversion(
+        {
+            "lcscId": "C22548",
+            "libraryPath": "/tmp/MyLib",
+            "overrides": {
+                "symbol": {
+                    "source": "template",
+                    "libPath": "/tmp/MyTemplates.kicad_sym",
+                    "name": "R0603",
+                },
+                "footprint": {"source": "easyeda"},
+            },
+            "datasheetUrl": "https://datasheet.lcsc.com/lcsc/REAL.pdf",
+        },
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    assert seen["req"].symbol_datasheet_url == "https://datasheet.lcsc.com/lcsc/REAL.pdf"
+
+
+def test_datasheet_url_blank_or_missing_leaves_request_none() -> None:
+    """A missing or whitespace-only datasheetUrl ⇒ ``symbol_datasheet_url`` stays None,
+    so the merger's empty-value guard keeps whatever the template/EasyEDA already has."""
+    seen, runner = _capturing_runner()
+    run_phase2_conversion(
+        {
+            "lcscId": "C22548",
+            "libraryPath": "/tmp/MyLib",
+            "overrides": {
+                "symbol": {"source": "easyeda"},
+                "footprint": {"source": "easyeda"},
+            },
+            "datasheetUrl": "   ",
+        },
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    assert seen["req"].symbol_datasheet_url is None
+
+
+def test_description_flows_into_request() -> None:
+    """The scraped LCSC description ('Hauptmerkmale') reaches
+    ``ConversionRequest.symbol_description`` — same dropped-field class as the
+    datasheet — so the merger can overwrite a template's own Description."""
+    seen, runner = _capturing_runner()
+    run_phase2_conversion(
+        {
+            "lcscId": "C22548",
+            "libraryPath": "/tmp/MyLib",
+            "overrides": {
+                "symbol": {
+                    "source": "template",
+                    "libPath": "/tmp/MyTemplates.kicad_sym",
+                    "name": "R0603",
+                },
+                "footprint": {"source": "easyeda"},
+            },
+            "description": "10kΩ ±1% 0603 Thick Film Resistor",
+        },
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    assert seen["req"].symbol_description == "10kΩ ±1% 0603 Thick Film Resistor"
+
+
+def test_description_blank_or_missing_leaves_request_none() -> None:
+    """Missing / whitespace-only description ⇒ ``symbol_description`` stays None."""
+    seen, runner = _capturing_runner()
+    run_phase2_conversion(
+        {
+            "lcscId": "C22548",
+            "libraryPath": "/tmp/MyLib",
+            "overrides": {
+                "symbol": {"source": "easyeda"},
+                "footprint": {"source": "easyeda"},
+            },
+            "description": "   ",
+        },
+        emit=lambda *_: None,
+        conversion_runner=runner,
+    )
+    assert seen["req"].symbol_description is None
+
+
 def test_template_pin_map_ignored_without_template_symbol() -> None:
     """A pin map only applies to a template symbol; EasyEDA symbol → ignored."""
     seen, runner = _capturing_runner()
