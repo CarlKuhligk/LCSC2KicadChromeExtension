@@ -1,362 +1,322 @@
 # KiCad Parts Importer
 
-**Version 3.0.0** · Chrome extension for [LCSC](https://www.lcsc.com/) with a **local backend** — import symbols, footprints, and 3D models into KiCad libraries using EasyEDA-sourced data, with optional **custom KiCad symbol templates**.
+**Version 3.0.0** · A Chrome extension + local helper that imports **symbols, footprints, and 3D models** from [LCSC](https://www.lcsc.com/) product pages straight into your **KiCad** libraries — using EasyEDA-sourced CAD data, with optional **custom KiCad symbol/footprint templates**.
 
-> [!IMPORTANT]
-> **Doc status.** This README still documents the **published V2** UI and setup
-> (WebSocket backend, popup-driven category rules). The **V3 rebuild** (branch
-> `v3/rebuild`, manifest 3.0.0) replaces the backend with a **Native Host**
-> (Chrome Native Messaging — no `run_server.py`, no API-URL setting) and the
-> import flow with an on-page **confidence-driven Import-Editor** (⚪/🟡/🟢).
-> The V3 architecture is documented in `CONTEXT.md`, `V3-SPEC.md`, and
-> `docs/adr/`; this README is rewritten as part of the V3 Web-Store release
-> (issue #14).
+> [!NOTE]
+> **This README documents V3** (the current rebuild on branch `v3/rebuild`, manifest `3.0.0`). V3 replaces V2's standalone WebSocket server with a **Native Host** launched on demand through **Chrome Native Messaging** — there is **no server to start, no port, and no "API base URL"** to configure. The deeper design lives in [`CONTEXT.md`](CONTEXT.md) (domain language), [`V3-SPEC.md`](V3-SPEC.md), and [`docs/adr/`](docs/adr/).
 
 > [!WARNING]
 > EasyEDA source data can contain errors. **Verify pins and footprints** before using converted parts in production.
 
 > [!CAUTION]
-> **Set LCSC to English before importing.** The importer reads each part's metadata
-> from the LCSC product page **in its display language**. On a non-English LCSC
-> session the imported symbol Properties come out mixed/localized **and the
-> automatic template matching breaks** — a page showing "Widerstände" never matches
-> a template tagged `Resistors`. Switch your LCSC language to **English** and reload
-> the page. The extension shows a red banner on the page when it detects a
-> non-English session.
+> **Set LCSC to English before importing.** The importer reads each part's metadata from the LCSC product page **in its display language**. On a non-English session the symbol Properties come out localized **and template auto-matching breaks** — a page showing "Widerstände" never matches a template tagged `Resistors`. Switch LCSC to **English**, reload the page (the extension shows a red banner when it detects a non-English session).
 
 <p align="center">
   <img src="img/store_images/store-card.jpg" alt="KiCad Parts Importer" />
 </p>
 
-## Features
+## Contents
 
-What you get, in everyday terms:
+- [What it does](#what-it-does)
+- [How it works](#how-it-works)
+- [Getting started](#getting-started)
+- [Importing a part](#importing-a-part)
+- [The popup: Categories · Library · Settings](#the-popup-categories--library--settings)
+- [Templates & metadata](#templates--metadata)
+- [Troubleshooting](#troubleshooting)
+- [Credits & license](#credits--license)
+- [For developers](#for-developers)
 
-- **Import from LCSC** — On a part’s product page, choose **EasyEDA** (standard conversion) or **Template** (your own symbol shape). Progress shows on the page until the part is saved.
-- **Works in Chrome** — The extension adds buttons and dialogs on LCSC and a **popup** for libraries and rules. Optional **PDF datasheet** viewer for LCSC links.
-- **Your KiCad libraries** — New **Symbol**, **Footprint**, and **3D Model** files go into folders you pick. Open **KiCad** and use those libraries like any other.
-- **Smarter imports** — Popup **Categories** tab matches LCSC product paths so **Value** and pin visibility follow your rules. **Template** mode can ask you to match pins to footprint pads when needed.
+## What it does
 
----
+In everyday terms:
+
+- **Import from any LCSC product page.** Open a part, click **Import**, watch the progress bar on the page until the symbol, footprint, and 3D model land in your KiCad library.
+- **Two sources, picked per layer.** Each import can take its **Symbol** and its **Footprint** either from **EasyEDA** (the default automatic conversion) or from **your own KiCad template** — independently. The **3D model follows the footprint** automatically.
+- **Learns your categories.** The first time you import from an LCSC category you teach it once (which template, which column is the "Value"); after that, matching parts import in **one click**.
+- **All metadata comes along.** Datasheet link, manufacturer, MPN, description, and the full LCSC spec table are written into the KiCad symbol's Properties — no manual mapping.
+- **Stays out of your way.** Controls are injected directly into the LCSC product header. A **popup** manages your libraries, category rules, and settings. An optional in-page **PDF viewer** shows LCSC datasheets.
+
+**KiCad version:** output uses modern files (`.kicad_sym`, `.kicad_mod`, `.step`/`.wrl`). Primary testing targets **KiCad 9 and newer** (incl. **KiCad 10**); the formats generally work with **KiCad 6+**.
 
 ## How it works
 
-**Browser → extension → backend (on your PC) → KiCad library folders → KiCad.** The backend also pulls each part’s data from **EasyEDA** (LCSC’s design source).
+The browser extension talks to a small **Native Host** program on your PC over **Chrome Native Messaging** (plain stdin/stdout — no network server, no open port). The host pulls each part's CAD data from **EasyEDA** when needed and writes the files into the KiCad library folders you chose. KiCad then loads those folders like any other library.
 
 ```mermaid
 flowchart TB
-  lcsc["Browser<br>LCSC website"]
+  subgraph BROWSER["Google Chrome"]
+    direction TB
+    page["LCSC product page<br/>Anchor Card + Import-Editor (injected)"]
+    sw["Extension service worker<br/>holds one warm Native-Host port"]
+    popup["Popup<br/>Library · Categories · Settings"]
+  end
 
-  extension["Extension<br>KiCad Parts Importer in Chrome"]
+  host["Native Host — local Python<br/>Phase 1 Fetch · Phase 2 Conversion"]
+  ee["EasyEDA<br/>part CAD data (online)"]
+  libs[("KiCad library on disk<br/>.kicad_sym · .pretty · .3dshapes")]
+  kicad["KiCad<br/>schematic & PCB editors"]
 
-  backend["Backend<br>KiCad Importer on your computer"]
-
-  ee["EasyEDA<br>Part data online"]
-
-  libs[("KiCad library<br>Symbol · Footprint · 3D Model")]
-
-  kicad["KiCad<br>Schematic & PCB software"]
-
-  lcsc <--> extension
-  extension <--> backend
-  backend -->|Downloads for each part| ee
-  backend -->|Writes & updates files| libs
-  libs <-->|Uses these folders<br>in your projects| kicad
+  page <--> sw
+  popup <--> sw
+  sw <-->|"Native Messaging<br/>(length-prefixed JSON over stdio)"| host
+  host -->|"HTTPS, only when a layer is EasyEDA"| ee
+  host -->|"writes & updates files"| libs
+  libs <-->|"you point KiCad's library tables here"| kicad
 
   classDef browser fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a
-  classDef extmod fill:#e0e7ff,stroke:#4338ca,color:#312e81
   classDef server fill:#ffedd5,stroke:#c2410c,color:#7c2d12
   classDef cloud fill:#fce7f3,stroke:#be185d,color:#831843
   classDef storage fill:#d1fae5,stroke:#047857,color:#064e3b
   classDef cadapp fill:#e8f4fc,stroke:#0369a1,color:#0c4a6e
 
-  class lcsc browser
-  class extension extmod
-  class backend server
+  class page,sw,popup browser
+  class host server
   class ee cloud
   class libs storage
   class kicad cadapp
 ```
 
-| Step | In plain terms |
+| Piece | In plain terms |
 | --- | --- |
-| **Browser (LCSC)** | You browse and search parts on the LCSC site in Chrome. |
-| **Extension** | Adds **Download** actions and dialogs on LCSC, and a **popup** to pick libraries and category rules. |
-| **Backend** | The **KiCad Importer** program on your PC: it converts each part and saves files. It talks to the extension while you import. |
-| **EasyEDA** | LCSC parts are backed by **EasyEDA** data; the backend **downloads** symbol, footprint, and 3D data for the component you chose. |
-| **KiCad library** | Folders on disk for **Symbol**, **Footprint**, and **3D Model**—where the backend writes, and where you point KiCad’s library tables. |
-| **KiCad** | The **KiCad** application (schematic & board editors). It **loads** symbols and footprints from your library paths so you can place imported parts on a design. |
+| **LCSC product page** | Where you browse parts. The extension injects its **Import** controls into the part's header table (the **Anchor Card**). |
+| **Service worker** | The extension's background brain. It keeps **one warm connection** to the Native Host open so Python is already running when you click. |
+| **Native Host** | The local **Python** helper. Chrome starts it on demand; it does the actual conversion and writes files. Nothing to launch yourself. |
+| **EasyEDA** | LCSC parts are backed by EasyEDA CAD data; the host downloads symbol/footprint/3D **only for the layers you didn't replace with a template**. |
+| **KiCad library** | Folders on disk (`.kicad_sym`, `.pretty/`, `.3dshapes/`) the host writes into — the ones you register in KiCad's library tables. |
+| **KiCad** | Loads those libraries so you can place the imported parts in a schematic and on a board. |
 
-**KiCad version:** Imports use modern library files (`.kicad_sym`, `.kicad_mod`, etc.). Primary testing targets **KiCad 9 and newer** (including **KiCad 10**); the same formats generally work with **KiCad 6+**.
+### Two phases per import
 
-## Contents
+The import is split so the UI feels instant and the slow work is deferred until you've confirmed your choices:
 
-- [Features](#features)
-- [How it works](#how-it-works)
-- [Getting started](#getting-started)
-- [Troubleshooting: Windows blocks the backend](#troubleshooting-windows-blocks-the-backend)
-- [Using the popup and LCSC dialogs](#using-the-popup-and-lcsc-dialogs)
-- [Import workflow on LCSC](#import-workflow-on-lcsc)
-- [Templates & metadata](#templates--metadata)
-  - [What templates are for](#what-templates-are-for)
-  - [Supplying templates](#supplying-templates)
-  - [Merge behavior](#merge-behavior)
-  - [Metadata and symbol properties](#metadata-and-symbol-properties)
-  - [Pin numbers (check before import)](#pin-numbers-check-before-import)
-  - [Template list hover preview](#template-list-hover-preview-limitations)
-- [Screenshots](#screenshots)
-- [Credits & license](#credits--license)
-- [Changelog](#changelog)
-- [For developers](#for-developers)
+- **Phase 1 — Fetch (~1 s).** A lightweight lookup returns the **Category Path**, **pin count**, and **datasheet URL**. Enough to decide what to show you, with no symbol/footprint work yet.
+- **Phase 2 — Conversion (~5–10 s).** Runs the full EasyEDA pipeline (or assembles purely from templates) with your resolved sources baked in, **streaming progress** back to the page until it's done.
+
+Between the two phases the extension computes a **confidence state** and shows the right amount of UI — from a silent one-click import to a full editor (see [Importing a part](#importing-a-part)).
 
 ## Getting started
 
+> [!NOTE]
+> V3's Chrome Web Store listing ships with the public V3 release. Until then, install **from source** as below. (V2's separate listing keeps working with its own V2 backend but receives no V3 updates — there is no in-place upgrade; V3 is a clean break.)
+
 ### Prerequisites
 
-- **Google Chrome** (or a Chromium-based browser that supports unpacked extensions).
-- **Local backend** running on your machine — required for any import. Use a [release binary](../../releases) from this project, or run the Python server yourself if you work from the source tree.
+- **Google Chrome** (or a Chromium browser that supports unpacked extensions).
+- **Python 3.11+** with this project's dependencies, *or* a release binary of the Native Host (PyInstaller single file).
 
-### 1. Install the extension
+### 1 — Load the extension
 
-- **Chrome Web Store:** [KiCad Parts Importer](https://chromewebstore.google.com/detail/ojkpgmndjlkghmaccanfophkcngdkpmi)  
-- **From source:** open `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select the **`chrome_extension/`** folder. After code changes, reload the extension and refresh LCSC tabs. (Module loading details: [For developers](#for-developers).)
+1. `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select the **`chrome_extension/`** folder.
+2. Note the **extension ID** Chrome shows on the card — you need it in step 2.
+3. After any code change: reload the extension and refresh open LCSC tabs.
 
-### 2. Install and run the backend
+### 2 — Register the Native Host
 
-From **Releases**, use the build for your OS (macOS/Linux/Windows). Examples:
+Chrome only launches a native host that's registered for your exact extension ID. Two ways:
 
-- **macOS / Linux:** `chmod +x "./<version>-KiCad Parts Importer-<OS>"` then run the binary.  
-- **macOS Gatekeeper:** `xattr -dr com.apple.quarantine "./<version>-KiCad Parts Importer-Mac"`  
-- **Windows:** run `"<version>-KiCad Parts Importer-Windows.exe"`
+- **From source (developer preview):** install deps, then self-register:
+  ```bash
+  pip install -r requirements.txt -r requirements-dev.txt
+  python native_host/install.py --extension-id <your-extension-id>
+  ```
+  This writes the **Native-Host Manifest** to the OS-specific location and a small generated launcher that pins Chrome's subprocess to your Python interpreter. *(Windows is wired today; macOS/Linux self-register is in progress — issue #13.)*
+- **Release binary:** run the downloaded executable once — it **self-registers** the manifest and exits. (See [Troubleshooting](#troubleshooting) if Windows blocks an unsigned binary.)
 
-If you run the backend **from source**, install the project’s Python dependencies, start `python run_server.py`, and use the port printed in the terminal (often **8087**) in the extension’s **API base URL**.
+There is **no server to keep running** and **no URL or port to set**. When you open an LCSC page the extension **pre-warms** the host so it's hot by the time you click.
 
-### Troubleshooting: Windows blocks the backend
+### 3 — Pick a library
 
-Release builds are **PyInstaller** executables. They are **not Authenticode-signed** (signing requires a paid certificate and a separate release step). That is normal for many open-source projects, but Windows may still treat the file as **unfamiliar** or **not trusted** until you allow it—or until the project publishes **signed** binaries in the future.
+Open the popup → **Library** tab → **Add** to scaffold a new `.kicad_sym` + `.pretty` (+ `.3dshapes`) set, or **Import** an existing `.kicad_sym`. **Activate** the one that should receive imports (only one is active at a time). Register the same folders in KiCad's **Symbol/Footprint Library Tables**.
 
-**Why you might see warnings or blocks**
+## Importing a part
 
-| Situation | What it means |
-| --- | --- |
-| **Downloaded file** | Browsers mark downloads with a “from the internet” flag. **Unblock** (below) removes that flag. |
-| **SmartScreen** (“Windows protected your PC”) | Microsoft does not yet **trust the publisher** (no commercial signature + low download history). |
-| **Smart App Control** (common on **Windows 11**) | Can **block unsigned** apps by policy. |
-| **`Application Control policy has blocked this file`** (e.g. in PowerShell) | A **stricter policy** is active: **Smart App Control**, **WDAC**, **AppLocker**, or a **managed** (work/school) PC. Only an **administrator** (or your **IT** department) can allow the app, unless you change the policy on a **personal** PC you control. |
+1. Open an LCSC **product detail** page (`/product-detail/...`). The extension injects an **Import** button (and a small **Modify** button) into the part's header — the **Anchor Card**. If LCSC ships an unfamiliar layout, a floating panel appears instead.
+2. Click **Import**. **Phase 1** runs, then the extension shows one of three **confidence** states:
+   - 🟢 **Green** — a saved **Category Rule** fully resolves this part → **one-click import** (a compact confirm-preview; **Modify** opens the full editor if you want it).
+   - 🟡 **Yellow** — partial match → a hint plus the **Import-Editor** to confirm sources.
+   - ⚪ **White** — no rule yet → a **Register** prompt: teach it the template + Value column for this category, once.
+3. In the **Import-Editor** (also reachable any time via **Modify**) you choose, per layer:
+   - **Symbol source:** keep **EasyEDA** or replace with one of **your templates**.
+   - **Footprint source:** keep **EasyEDA** or replace with a **template footprint**.
+   - **Pin ↔ Pad map:** auto, or confirm/remap when a template's pin numbers disagree with the footprint pads.
+   - A **read-only property preview** shows the metadata that will be written; a hover **SVG preview** shows the symbol/footprint.
+4. Confirm. **Phase 2** runs and streams progress on the page until the part is saved into your active library — then KiCad can load it.
 
-**What to try (in order)**
-
-1. **Unblock (Properties)** — Right‑click the `.exe` → **Properties** → **General**. If you see **Security: This file came from another computer…** and a checkbox **Unblock**, enable it → **Apply** → **OK**. Then run the executable again.  
-   This only clears the **download zone** marker; it does not replace SmartScreen or Smart App Control.
-
-2. **SmartScreen** — If you get the blue **Windows protected your PC** screen: click **More info** → **Run anyway** (only if you trust this GitHub project’s release asset).
-
-3. **Smart App Control (Windows 11)** — **Settings** → **Privacy & security** → **Windows Security** → **App & browser control** → **Smart App Control**.  
-   If it is **On**, try **Off** or **Evaluation** (if your edition allows it), then run the `.exe` again. Re‑enable stricter settings afterward if you prefer.
-
-4. **Managed PC / “Application Control”** — If the message explicitly says an **Application Control policy** blocked the file, your device may be **organization-managed** or running **WDAC/AppLocker**. **Unblock** and SmartScreen steps may not be enough. Use a **privately owned** test machine, or ask **IT** to allowlist the binary—or wait for a future **signed** Windows release from this project.
-
-**Longer term:** Publishing a **code-signed** Windows binary improves trust with SmartScreen and Smart App Control but does not automatically bypass corporate lockdown policies.
-
-### 3. Point the extension at the backend
-
-1. Open the extension **popup** → **Settings** tab.  
-2. Set **API base URL** to match the server (e.g. `http://localhost:8087`).  
-3. Click **Test** to confirm the backend is reachable.  
-4. The header should show the backend as connected; if not, check firewalls or anything blocking the extension from reaching `localhost`.
-
-### 4. Add or select a KiCad library
-
-1. Open the **Library** tab.  
-2. Use **Add** to **create** a new library folder layout or **Import library** to register an existing `.kicad_sym`.  
-3. **Activate** the library that should receive imports. Only one library is active at a time.
-
-### 5. Import a part
-
-1. Open an LCSC **product detail** page (`/product-detail/...`).  
-2. Use **Download / EasyEDA** for the default LCSC-derived symbol, or **Download / Template** if you use template libraries (see [Templates & metadata](#templates--metadata)).  
-3. Wait for the job to finish; the part appears under your active library’s paths.
-
-**List pages** may show a compact download control; the full **Template** choice is on product pages.
-
-## Using the popup and LCSC dialogs
-
-Use the **extension popup** for libraries and rules, and **LCSC product pages** to run imports. The **Categories** tab maps LCSC product paths to **Value** and pin visibility; on-page LCSC tables supply parameter text when you import.
-
-### Popup: Categories · Library · Settings
-
-The popup uses **three tabs**, in this order:
+## The popup: Categories · Library · Settings
 
 | Tab | Role |
 | --- | --- |
-| **Categories** | Rows keyed by LCSC **category path**; per row: **Value Param**, **hide pin numbers/names**. Used when resolving imports. |
-| **Library** | KiCad libraries on disk: **activate** one for output, **Add** / **Import**, **Template** switch per library, search and asset counts. |
-| **Settings** | **Backend** URL and **Test**, popup **theme**, and **import defaults** (overwrites, debug logging, project-relative 3D path defaults). |
+| **Library** | Your KiCad libraries on disk: **activate** one for output, **Add**/**Import**, mark **Template Libraries**, browse folders (via the Native Host's file picker), see symbol/footprint/3D counts, and one-click **whitespace cleanup**. |
+| **Categories** | One row per saved **Category Rule**, keyed by a normalized LCSC **Category Path** (e.g. `Passives/Resistors/SMD`). Each row stores the **Value-Param**, the template source(s), and pin-visibility flags. Matching is **deepest-prefix**: the longest key equal to (or a strict prefix of) the product path wins. |
+| **Settings** | Theme (popup only), **overwrite** policies (symbol/footprint, 3D), **project-relative 3D** path defaults (`${KIPRJMOD}`), and debug logging. **No backend URL** — Native Messaging needs none. |
 
----
-
-### Categories tab
-
-Each **row** is one saved rule. Expand a row to edit details; changes save as you edit.
-
-| Field | Purpose |
-| --- | --- |
-| **Category name** | Lookup key: LCSC breadcrumb path with slashes, e.g. `Passives/Resistors/SMD` (normalized when saved, same rules as the page path). |
-| **Value Param** | **Exact** LCSC parameter **column title** for the KiCad symbol **Value**. If missing or empty on a part, you get a **Value parameter not found** dialog (default Value, reconfigure, or cancel). |
-| **Hide pin numbers / Hide pin names** | Passed to conversion when this row wins the match below. |
-
-**Matching:** **Deepest-prefix** — among all rows, the **longest** key that **equals** the product path or is a **strict prefix** (`key + "/"`) wins. There is no separate short-name or second-segment shortcut. A single segment like **`Resistors`** only matches paths that are exactly `Resistors` or start with `Resistors/`; nested LCSC categories usually need a longer prefix (e.g. **`Passives/Resistors`**, included by default on new installs).
-
-**Default row:** New installs include **`Passives/Resistors`** so typical resistor paths match by prefix; adjust or add rows if your LCSC locale uses a different tree.
-
-**Templates:** The **template symbol** is chosen on the **LCSC page** (**Download → Template**), not in this tab. Mark **template libraries** on the **Library** tab.
-
----
-
-### Library tab
-
-| Item | Purpose |
-| --- | --- |
-| **Active library** | All imports write into this library’s on-disk paths. |
-| **Add / Create** | Name, base folder, and whether to create `.kicad_sym`, `.pretty`, `.3dshapes`, plus optional **project-relative 3D** paths (`${KIPRJMOD}` + **3D base path**). |
-| **Import library** | Register an existing `.kicad_sym` with the backend. |
-| **Template** switch | Marks a template library so its symbols appear in the LCSC Template picker. How merging and metadata work, and how to verify pin numbering on the LCSC page, are described under [Templates & metadata](#templates--metadata). |
-| **Search / counts** | Filter the list; summary shows symbol / footprint / 3D counts. |
-
-**3D paths:** Each library stores project-relative options from **Create** / import. On import, the **active library** is used first; if its **3D base path** is empty, the extension falls back to **Settings → Import defaults → Project relative 3D paths**. Changing defaults pre-fills **Add library** but does not rewrite older libraries.
-
----
-
-### Settings tab
-
-#### Backend & appearance
-
-| Item | Purpose |
-| --- | --- |
-| **API base URL** | Address of the KiCad Importer program on your PC (must match where the backend listens). |
-| **Test** | Verifies reachability (not a full conversion). |
-| **Light / Dark** | Theme for the **popup only** (not LCSC). |
-
-#### Import defaults
-
-These apply to **product-page imports** unless a dialog offers a one-off choice (e.g. overwrite).
-
-| Item | Purpose |
-| --- | --- |
-| **Overwrite footprints & symbols** | Replace existing symbol/footprint files without asking each time when appropriate. |
-| **Overwrite 3D models** | Same for 3D files. |
-| **Project relative 3D paths** | Default for new libraries and fallback path segment for `${KIPRJMOD}`-based model references. |
-| **Enable debug logging** | Optional: extra detail in the extension’s logs (see **For developers** to open the service worker console). |
-
----
-
-### Category and value dialogs on LCSC
-
-- **New category:** No saved **Categories** row matches this product’s path — skip once, save for the path shown, continue without saving, or cancel. **Hide pin numbers** and **Hide pin names** start **off** (pins visible); turn them on in the dialog if you want them hidden for that category.  
-- **No parameters:** Attribute tables could not be read — default Value or add a **Categories** row.  
-- **Value mismatch:** The saved **Value Param** is missing or empty on this page — default, reconfigure in **Categories**, or cancel.
-
-### Where your settings live
-
-**Categories**, **Library** list, and **Settings** are saved in **Chrome** (extension storage). When the backend is connected, the extension keeps the backend aligned so imports use the same choices.
-
-## Import workflow on LCSC
-
-When you start a download on a **product page**, the extension roughly:
-
-1. Confirms the **backend** is connected.  
-2. If the part **already exists** and overwrites are off, may ask **Overwrite?** (once, permanently, or cancel).  
-3. Resolves **category** and **Value** using the **Categories** tab rules and on-page tables (dialogs if needed).  
-4. **Template** only: checks pin count vs EasyEDA, then a **pin ↔ pad** screen (previews + table). **Back** / **Cancel** / **Confirm** to finish or return to the template list; you can continue with a warning if counts differ. **EasyEDA** skips this step.  
-5. Submits a **job** and shows **progress** on the page until success or error.
-
-Cancelling a blocking dialog returns you to a normal button state; **in library** state is refreshed where applicable.
+**Category Rules** and the **Library** list are stored in Chrome extension storage; the Native Host keeps its own Rule store in sync so imports use the same choices whether the popup is open or not.
 
 ## Templates & metadata
 
 ### What templates are for
 
-You draw a KiCad symbol once (outline, pin positions, property placement, fonts) and reuse that layout for many LCSC parts. Each import still pulls fresh part data from LCSC/EasyEDA; the template is the starting geometry and style, not a frozen copy of one component.
+You draw a KiCad symbol (or footprint) once — outline, pin positions, property placement, fonts — and reuse that styling for many LCSC parts. Each import still pulls **fresh part data** from LCSC/EasyEDA; the template is the starting geometry and style, not a frozen copy of one component. The template **name** is all a Category Rule stores — the file is re-read fresh on every import (**Always Re-Resolve**).
 
 ### Supplying templates
 
-- Put `Templates.kicad_sym` next to your active symbol library, or mark any library as a template library in the extension popup and keep template symbols there.
-- Names such as `Template_Resistor` or `Template_Capacitor` are typical. The Template picker on the LCSC product page lists symbol names the backend finds in those libraries.
+Put a `Templates.kicad_sym` (with a sibling `Templates.pretty/` for footprints) next to your active library, or mark any library as a **Template Library** in the popup. Self-describing templates can carry a KiCad **`Category`** property so a matching LCSC category **auto-registers** a one-click rule with no manual setup.
 
-### Merge behavior
+### Merge behavior (symbol)
 
-On import, the merger keeps your drawing and property layout where it can, overwrites field values with new LCSC data, and makes the **symbol** pin list match EasyEDA for that exact part:
+The **Template Merger** keeps your drawing and property layout, overwrites field values with fresh LCSC data, and makes the symbol's **pin list match EasyEDA** for that exact part:
 
-- A pin number exists in both template and EasyEDA → your template keeps that pin’s position and orientation.
-- Number exists only in EasyEDA → a new pin is added (often at the origin until you move it).
-- Number exists only in the template → that pin is removed.
+- pin number in **both** template and EasyEDA → your template keeps that pin's position/orientation;
+- only in **EasyEDA** → a new pin is added (often at the origin until you move it);
+- only in the **template** → that pin is removed.
 
-Any difference between your numbering and EasyEDA’s therefore shows up as extra editing work on the symbol, even though the merged pin set is consistent with EasyEDA’s model for that component.
+The template does **not** describe how schematic pins map to **footprint pads** — pad shapes, positions, and numbers always come from the footprint source. Re-check the pin↔pad mapping after import even when the merge ran cleanly.
 
-The template does **not** describe how schematic pins attach to the **footprint**. Pad shapes, positions, and pad numbers always come from EasyEDA for the part you import. You cannot infer package numbering from the template alone, and datasheets or vendor drawings sometimes use a pad order that feels “wrong” or confusing next to your symbol. If symbol pin numbers and footprint pad numbers are misaligned with what you expected, nets can look correct on the schematic but connect to the wrong pads—so it is worth re-checking the mapping after import (schematic, footprint editor, and datasheet) even when the merger ran cleanly.
+### Metadata (auto-upsert)
 
-### Metadata and symbol properties
+The extension reads the LCSC product data — datasheet link, **description**, manufacturer, MPN, package, and the full attribute table — and writes it all into the symbol's KiCad **Properties**: existing fields are **overwritten**, missing ones **added**. There is no manual label-mapping step; the Import-Editor shows a read-only preview. The one **Value-Param** you pick (e.g. `Resistance`) fills the KiCad **Value** field and is excluded from the property list so it isn't duplicated.
 
-The extension reads LCSC product data—datasheet link, description, manufacturer, package, and the attribute tables—and writes them into KiCad symbol properties. A small mapping table rewrites common LCSC column titles into shorter, stable names (for example power, tolerance, voltage ratings) so properties stay consistent across parts.
+### 3D — follows the footprint (Template-3D Carry-Over)
 
-### Pin numbers (check before import)
+The 3D model is never chosen separately — it **follows whichever footprint** ends up in the library:
+
+- **Template footprint with a `(model …)` reference** → the referenced `.step`/`.wrl` is **copied into** `<ActiveLib>.3dshapes/` and the reference rewritten to `${KIPRJMOD}/<ActiveLib>.3dshapes/…` (deduplicated by content; KiCad system-variable paths like `${KICAD9_3DMODEL_DIR}` are left verbatim, no copy).
+- **Template footprint without a reference** → falls back to the EasyEDA 3D model.
+- **EasyEDA footprint** → uses the EasyEDA 3D model.
+- **No 3D anywhere** → the footprint is written without a model (not an error).
 
 > [!WARNING]
-> Use real numeric pin numbers in KiCad (1, 2, 3, …) that match EasyEDA for the devices you care about, and put text like G, D, or S in the pin name field, not in the number field. On the LCSC product page, use the pinout diagram or package illustration, or open the EasyEDA schematic view for that component, and confirm each pad matches the digit you used in the template. If anything disagrees, fix the template before importing; otherwise the merger will add or move pins and you will need to clean up the symbol by hand.
+> **Pin numbers.** Use real numeric pin numbers in KiCad (1, 2, 3, …) that match EasyEDA for the parts you care about, and put labels like G/D/S in the pin **name** field, not the number field. Verify against the LCSC pinout / package drawing or the EasyEDA schematic view before importing — otherwise the merger will add or move pins and you'll clean up the symbol by hand.
 
-### Template list hover preview (limitations)
+## Troubleshooting
 
-While the **Template** picker is open, hovering or focusing a row requests a **small SVG** of that template symbol from the backend. It is a **subset** of KiCad graphics (no `extends` inheritance, limited primitives); huge symbols may be capped. It is meant as a quick visual hint, not a full editor preview.
+**Nothing happens when I click Import / "host not found".** The Native Host isn't registered for this extension ID. Re-run `python native_host/install.py --extension-id <id>` with the ID shown in `chrome://extensions`, then reload the extension. Inspect the service-worker console (`chrome://extensions` → the extension → *Inspect views: service worker*) for errors.
 
-## Screenshots
+**Windows blocks the release binary.** Release builds are unsigned **PyInstaller** executables, so SmartScreen / Smart App Control may flag them. In order:
 
-The picture at the top of this page is the **Chrome Web Store** style card (`img/store_images/store-card.jpg`). Other files under `img/` are not shown here because they no longer match the current extension UI.
+1. **Unblock:** right-click the `.exe` → **Properties** → **General** → tick **Unblock** → **Apply**.
+2. **SmartScreen:** *More info* → *Run anyway* (only if you trust the GitHub release asset).
+3. **Smart App Control (Win 11):** *Settings → Privacy & security → Windows Security → App & browser control → Smart App Control* → set **Off**/**Evaluation** if your edition allows, then run again.
+4. **"Application Control policy has blocked this file":** a stricter policy (WDAC/AppLocker) or a managed PC — ask IT to allowlist it, or use a personally-owned machine. Running **from source** sidesteps all of this.
+
+**Imported properties look localized / templates don't match.** Switch LCSC to **English** and reload (see the caution at the top).
 
 ## Credits & license
 
 Based on [easyeda2kicad](https://github.com/uPesy/easyeda2kicad.py) by uPesy.
 
-### License
-
 > [!NOTE]
-> This repository includes **AGPL-3.0** code from the upstream project; that license still applies to those parts. See `LICENSE`.
+> This repository includes **AGPL-3.0** code from the upstream project; that license applies to those parts. See [`LICENSE`](LICENSE).
 
-## Changelog
-
-### [v2.0.0](https://github.com/theautomatist/KiCad-Parts-Importer/releases/tag/v2.0.0)
-
-Major release since **[v1.0.1](https://github.com/theautomatist/KiCad-Parts-Importer/releases/tag/v1.0.1)** (extension manifest **2.0.0**). Full diff: [v1.0.1…v2.0.0](https://github.com/theautomatist/KiCad-Parts-Importer/compare/v1.0.1...v2.0.0).
-
-### Extension
-
-- **WebSocket-only** control plane with the local backend (`/ws/extension`, JSON-RPC + task push); no separate REST surface for app logic.
-- **Modular MV3 front end:** ES-module **content script** (`inject.js` → `main.js`), shared **WebSocket RPC** client and constants, background organized around runtime message handlers and job/WebSocket sections.
-- **Popup:** redesigned **Categories**, **Library**, and **Settings**; theme tokens; library create/import and category table UX.
-- **LCSC product pages:** shadow-DOM download controls, **EasyEDA** vs **Template** flows, progress and **confetti** on success; category / value dialogs with full breadcrumb path.
-- **Categories:** normalized paths and **deepest-prefix** resolution only (legacy second-segment matching removed); shared **`categoryPath.js`** across service worker, content script, and popup; default starter row **`Passives/Resistors`** for typical LCSC resistor paths.
-- **Templates:** per-library template mode, LCSC template picker with **hover SVG preview**, **pin-count check** vs EasyEDA, **pin ↔ pad assignment** modal (previews + remap sent as `template_pin_map`), optional continue when counts differ.
-- **PDF:** local **PDF viewer** page using vendored **pdf.js** (ESM) for LCSC datasheets where useful.
-- **Other:** backend **connection hint** when offline; **`notifications`** permission removed.
-
-### Backend & conversion
-
-- **Template symbols:** merge LCSC metadata into user templates; **pin table** synced with EasyEDA (add/remove pins); optional **`force_template`** and template **pin-check** on the API.
-- **LCSC → KiCad:** richer metadata as symbol properties; EasyEDA API **retries**, timeouts, and calmer logging for missing 3D models; primary target **KiCad 9+** / **10** (modern ``.kicad_sym`` / ``.kicad_mod``).
-- **Previews & geometry:** **symbol SVG** preview (including pin label visibility aligned with KiCad), **footprint SVG** preview from the KiCad footprint model, **pin remap** support, **pad numbering** normalized for KiCad, footprint export fixes (pads, THT, 3D placement with Z rotation), safer **SVGNODE** parsing for 3D assets.
-- **Service layer:** shared LCSC **footprint / preview bundle** for conversion and UI flows.
-
-### Tests
-
-- Template **merger** unit tests; symbol **preview** tests (pin label visibility).
-
-### Docs & tooling
-
-- README **How it works** diagram, import workflow, popup overview, and extension refactor **playbook**; **WebSocket RPC contract** (`chrome_extension/EXTENSION_WS_RPC_CONTRACT.md`).
-- **GitHub Actions:** manual **CI** workflow (Python tests + extension checks); **build/release** workflow on version tags; workflows use **Node 24**–native action versions (`actions/checkout`, `setup-python`, `setup-node`, upload/download artifacts, `action-gh-release`).
+---
 
 ## For developers
 
-- **Extension ↔ backend** — One **WebSocket** to **`/ws/extension`** (same host and port as the API base URL, e.g. `http://localhost:8087` → `ws://localhost:8087/ws/extension`). **JSON-RPC–style** methods plus server push for jobs and state. No separate REST API for that control plane. Full method list: [`chrome_extension/EXTENSION_WS_RPC_CONTRACT.md`](chrome_extension/EXTENSION_WS_RPC_CONTRACT.md).
-- **Chrome extension layout** — Unpacked root is **`chrome_extension/`**. MV3 **service worker** (`background.js`) holds the socket; LCSC UI lives under **`src/content/`**. Entry: **`inject.js`** loads **`main.js`** as a module (so static `import` works reliably); after edits, reload the extension.
-- **Backend** — Python package **`easyeda2kicad/`**; run **`python run_server.py`** from the repo. EasyEDA is called over **HTTPS** from the server. There is no desktop window when running from source, so there is no in-app icon in that mode.
-- **Packaged server (PyInstaller)** — CI and release builds use the high-resolution store master **`img/store_images/icon.png`** (downscaled per size for ICO/ICNS). The Chrome toolbar still uses **`chrome_extension/icon.png`**. Windows: generated **`app.ico`** embeds **16–512 px** PNG layers (512×512 for large Explorer views); **`build/pyinstaller/app_icon_512.png`** is also written as a flat **512×512** asset. Stepped downscaling + light unsharp on small sizes keeps taskbar icons crisp. macOS: **`app.icns`** (`packaging/pyinstaller/build_macos_icns.sh`, `sips` + `iconutil`). Linux onefile binaries do not get a custom executable icon from PyInstaller. Example (Windows): `pip install pyinstaller pillow` → `python packaging/pyinstaller/build_windows_ico.py` → `pyinstaller --onefile --icon build/pyinstaller/app.ico --name "KiCad Parts Importer" run_server.py`.
+A rough map of *what lives where, how it talks, and the core idea* — start here, then read [`CONTEXT.md`](CONTEXT.md) (load-bearing vocabulary) and [`docs/adr/`](docs/adr/) (the decisions).
+
+### Core idea
+
+One job — **LCSC product page → KiCad library** — with the **fewest moving parts**: a vanilla-ES-module MV3 extension for the UI, a **Native Host** (Python, launched by Chrome on demand) for filesystem + conversion, and **no standalone server**. Everything else (two-phase split, confidence-driven UI, template override layers) exists to make that one job fast and low-friction. Design rule: *keep it stupid simple* — see [`V3-SPEC.md`](V3-SPEC.md).
+
+### Repository layout
+
+```
+chrome_extension/            # MV3 extension (unpacked root)
+  manifest.json              #   permissions: storage, nativeMessaging, alarms
+  background.js              #   service worker — owns the single warm Native-Host port (Pre-Warm)
+  popup.html / popup.js      #   Library · Categories · Settings tabs
+  src/content/               #   on-LCSC UI
+    inject.js                #     content-script entry → dynamic import() of main.js
+    main.js → app.js         #     orchestrator: Anchor Card, Import-Editor, progress
+    anchorCard.js            #     inject Import/Modify row into the LCSC header table
+    overridePanel.js         #     the Import-Editor (Register / Modify / low-confidence)
+    phase1Fetch.js           #     Phase 1 call + status
+    phase2Convert.js         #     Phase 2 call + streamed progress
+    lcscPageSnapshot.js      #     structural LCSC scraper (Category Path, params, datasheet, description)
+    datasheetPanel.js        #     in-page PDF.js viewer
+  shared/*.mjs               #   single sources of truth: categoryPath, confidenceState, valueParam, packageForm
+
+native_host/                 # Python — Chrome Native Messaging endpoint
+  host.py                    #   stdin/stdout JSON loop + verb dispatch (reader-thread + worker pool)
+  phase1.py                  #   Phase 1 Fetch  (fetchMetadata)
+  phase2.py                  #   Phase 2 Conversion (convert) — builds the ConversionRequest, streams progress
+  rules.py                   #   Category Rule store (getRule / setRule, deepest-prefix)
+  fs.py                      #   library FS verbs: list/validate/scaffold/clean + "already in library?"
+  templates.py               #   template listing, previews, pin-count check
+  preview.py                 #   LCSC symbol/footprint SVG previews
+  install.py                 #   Self-Register the Native-Host Manifest (+ generated launcher)
+
+easyeda2kicad/               # the conversion engine (forked from uPesy/easyeda2kicad.py)
+  service/conversion.py      #   run_conversion — EasyEDA Pipeline vs Template-Assembly
+  easyeda/                   #   EasyEDA HTTPS fetch + parse
+  kicad/                     #   .kicad_sym / .kicad_mod / 3D writers, template_merger, text-normalize
+  helpers.py                 #   library read/write (single write convergence point, strips whitespace)
+
+tools/kicad_lint.py          # KiCad property-hygiene linter (whitespace + orphan --dedupe)
+docs/adr/                    # ADR-0001…0006 — the load-bearing decisions
+```
+
+### Transport: Chrome Native Messaging
+
+The service worker opens **one** persistent `chrome.runtime.connectNative` port (the **Warm-Port**) and multiplexes every RPC over it by request `id`. Each frame is a little-endian `uint32` length prefix + UTF-8 JSON. Requests carry `{id, verb, params}`; responses are `{id, ok, result|error}`; `convert` additionally streams `{id, type:"progress", message, progress}` frames before its terminal `done`. The host serves fast read-only verbs from a worker pool while a slow `convert` runs, and returns `busy` if a second slow verb (`fetchMetadata`/`convert`) overlaps — there is **no job queue and no job state** (ADR-0004).
+
+| Verb | Purpose |
+| --- | --- |
+| `ping` | liveness / pre-warm |
+| `fetchMetadata` | **Phase 1** — Category Path, pin count, datasheet URL |
+| `convert` | **Phase 2** — run the engine, stream `progress`, write files |
+| `getRule` · `setRule` | read/write Category Rules |
+| `listTemplates` · `templatePinCheck` | template listing + EasyEDA-vs-template pin-count compare |
+| `lcscSymbolPreview` · `lcscFootprintPreview` | on-page SVG previews of the EasyEDA part |
+| `templateSymbolPreview` · `templateFootprintPreview` · `templateGalleryPinSummary` | template previews + pin summary |
+| `fsRoots` · `fsList` · `fsCheck` | popup file picker (whitelisted roots) |
+| `validateLibrary` · `scaffoldLibrary` · `cleanLibrary` · `libraryComponent` | validate / create / whitespace-clean / "already imported?" |
+
+### Import flow (sequence)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor U as User
+  participant CS as Content script
+  participant SW as Service worker
+  participant NH as Native Host
+  participant EE as EasyEDA
+  participant LIB as KiCad library
+
+  Note over CS,SW: page load → Pre-Warm opens the Warm-Port (Python hot)
+  U->>CS: open product page
+  CS->>CS: inject Anchor Card + take LCSC Page Snapshot
+  U->>CS: click Import
+  CS->>SW: fetchMetadata + getRule
+  SW->>NH: Phase 1 Fetch (warm port)
+  NH-->>SW: Category Path · pin count · datasheet
+  SW-->>CS: result + Category Rule
+  CS->>CS: confidence ⚪/🟡/🟢 → Import-Editor (or one-click)
+  U->>CS: confirm Symbol / Footprint / Pin↔Pad
+  CS->>SW: convert(overrides, pageParams, datasheet, description, …)
+  SW->>NH: Phase 2 Conversion
+  alt at least one layer = EasyEDA
+    NH->>EE: fetch CAD (symbol / footprint / 3D)
+  else both layers = Template (Template-Assembly)
+    Note over NH: no EasyEDA call — templates + Phase-1 metadata
+  end
+  NH-->>SW: progress frames (streamed)
+  SW-->>CS: progress → on-page bar
+  NH->>LIB: write Symbol · Footprint · 3D (3D follows the footprint)
+  NH-->>SW: done
+  SW-->>CS: success
+```
+
+### Running & testing from source
+
+- **Extension:** load `chrome_extension/` unpacked. There's **no build step** — `inject.js` dynamically `import()`s `main.js`, so source edits load after an extension reload + page refresh (`Ctrl+Shift+R`).
+- **Native Host:** registered via `python native_host/install.py --extension-id <id>`. For a manual smoke test outside Chrome, run `python native_host/host.py` and pipe a length-prefixed frame; Chrome itself invokes it through the generated launcher.
+- **Tests:** `pytest` (engine + host) and `cd chrome_extension && npm test` (Vitest). `tools/kicad_lint.py PATH [--fix] [--dedupe]` lints KiCad files for property-whitespace issues.
+
+### Conventions
+
+- **Vocabulary is load-bearing** — use the names in [`CONTEXT.md`](CONTEXT.md) verbatim (Native Host, Phase 1 Fetch, Override Panel, Anchor Card, Template-3D Carry-Over, …).
+- **Single sources of truth** — Category-Path normalization, confidence, value-param detection live in `shared/*.mjs` and are mirrored in `helpers.py`; don't fork them.
+- **Property hygiene** — all symbol writes converge on `helpers.add_component_in_symbol_lib_file`, which strips property whitespace; libraries stay clean by construction.
