@@ -103,10 +103,6 @@ function isLcscImporterHostUrl(url) {
 }
 
 const DEFAULT_STATE = {
-  serverUrl:
-    typeof globalThis.K2C_DEFAULT_SERVER_URL === "string"
-      ? globalThis.K2C_DEFAULT_SERVER_URL
-      : "http://localhost:8087",
   libraries: [],
   overwriteFootprints: false,
   overwriteModels: false,
@@ -642,13 +638,6 @@ async function ensureInitialized() {
   if (!initialized) {
     await init();
   }
-}
-
-function buildUrl(path) {
-  const base = state.serverUrl || DEFAULT_STATE.serverUrl;
-  const normalized = base.endsWith("/") ? base : `${base}/`;
-  const cleanedPath = path.startsWith("/") ? path.slice(1) : path;
-  return new URL(cleanedPath, normalized).toString();
 }
 
 async function validateLibraryOnServer(path) {
@@ -1250,7 +1239,6 @@ function snapshotState() {
   return {
     connected: state.connected,
     connectionHint: state.connectionHint || null,
-    serverUrl: state.serverUrl,
     libraries: state.libraries.map((library) => ({ ...library })),
     libraryTotals: { ...state.libraryTotals },
     selectedLibraryPath: state.selectedLibraryPath,
@@ -1832,12 +1820,6 @@ const RUNTIME_MESSAGE_HANDLERS = {
     }
     return { ...snap, uiTheme };
   },
-  setServerUrl: async (message) => {
-    // V3: serverUrl is a vestigial setting (no WebSocket to reconnect).
-    state.serverUrl = message.url || DEFAULT_STATE.serverUrl;
-    await persistState(["serverUrl"]);
-    return snapshotState();
-  },
   createLibrary: async (message) => {
     const { type: _t, ...rest } = message;
     return handleCreateLibrary(rest);
@@ -1849,9 +1831,6 @@ const RUNTIME_MESSAGE_HANDLERS = {
   validateLibrary: async (message) => handleValidateLibrary(message),
   cleanLibrary: async (message) => nativeHostCleanLibrary(message.path),
   updateSettings: async (message) => {
-    if (typeof message.serverUrl === "string") {
-      state.serverUrl = message.serverUrl.trim() || DEFAULT_STATE.serverUrl;
-    }
     if (typeof message.overwriteFootprints === "boolean") {
       state.overwriteFootprints = message.overwriteFootprints;
     }
@@ -1874,7 +1853,6 @@ const RUNTIME_MESSAGE_HANDLERS = {
       state.categorySettings = dedupeCategorySettings({ ...message.categorySettings });
     }
     await persistState([
-      "serverUrl",
       "overwriteFootprints",
       "overwriteModels",
       "debugLogs",

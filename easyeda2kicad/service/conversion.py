@@ -102,42 +102,6 @@ class ConversionRequest:
             raise ConversionError("At least one export target must be selected.")
         self.output_prefix = str(Path(self.output_prefix))
 
-    @classmethod
-    def from_task_create_payload(cls, payload: Any) -> ConversionRequest:
-        """
-        Build from the extension WebSocket ``enqueue_task`` model (``TaskCreatePayload``).
-
-        Imported lazily to avoid a circular import with ``easyeda2kicad.api.server``.
-        """
-        from easyeda2kicad.api.models import TaskCreatePayload
-
-        if not isinstance(payload, TaskCreatePayload):
-            payload = TaskCreatePayload.model_validate(payload)
-        return cls(
-            lcsc_id=payload.lcsc_id,
-            output_prefix=payload.output_path,
-            overwrite=payload.overwrite,
-            overwrite_model=payload.overwrite_model,
-            generate_symbol=payload.symbol,
-            generate_footprint=payload.footprint,
-            generate_model=payload.model,
-            project_relative=payload.project_relative,
-            project_relative_path=payload.project_relative_path,
-            model_path=payload.model_path,
-            hide_pin_numbers=payload.hide_pin_numbers,
-            hide_pin_names=payload.hide_pin_names,
-            symbol_value_override=payload.symbol_value_override,
-            symbol_value_param_key=payload.symbol_value_param_key,
-            symbol_params=payload.symbol_params,
-            symbol_description=payload.symbol_description,
-            symbol_datasheet_url=payload.symbol_datasheet_url,
-            use_template=payload.use_template,
-            template_name=payload.template_name,
-            template_lib_path=payload.template_lib_path,
-            force_template=payload.force_template,
-            template_pin_map=payload.template_pin_map,
-        )
-
 
 @dataclass
 class ConversionResult:

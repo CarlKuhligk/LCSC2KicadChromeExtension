@@ -110,10 +110,10 @@
             <form id="settings-form" class="settings-form" novalidate>
               <section class="settings-section" aria-labelledby="settings-heading-backend">
                 <div class="settings-section-title-row">
-                  <h3 class="settings-section-title" id="settings-heading-backend">Backend</h3>
+                  <h3 class="settings-section-title" id="settings-heading-backend">Native Host</h3>
                   <button type="button" class="settings-section-info" id="settings-info-backend"
-                    aria-label="More about Backend connection"
-                    title="Enter the base URL of the easyeda2kicad API (same host and port as when you run run_server.py). The extension talks to it over HTTP and WebSocket to run conversions and list libraries.">
+                    aria-label="More about the Native Host"
+                    title="The extension launches a local Python host on demand through Chrome Native Messaging. There is no server to start and no port to configure — if the host is registered, this test reports it as reachable.">
                     <svg class="settings-section-info-icon" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"
                       focusable="false">
                       <path fill-rule="evenodd" clip-rule="evenodd"
@@ -123,11 +123,7 @@
                 </div>
                 <div class="row g-3 settings-section-body">
                   <div class="col-12">
-                    <label for="settings-server" class="form-label">API base URL</label>
-                    <div class="input-group">
-                      <input id="settings-server" type="text" class="form-control" placeholder="http://localhost:8087" />
-                      <button class="btn btn-primary" type="button" id="settings-test">Test</button>
-                    </div>
+                    <button class="btn btn-primary" type="button" id="settings-test">Test connection</button>
                   </div>
                 </div>
               </section>

@@ -9,7 +9,6 @@
     "alarms"
   ],
   "host_permissions": [
-    "http://localhost:8087/*",
     "https://www.lcsc.com/*",
     "https://lcsc.com/*",
     "https://*.lcsc.com/*",
