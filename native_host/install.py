@@ -10,12 +10,15 @@ covers Windows because that's the ADR-0001 risk-validation target.
 
 Usage:
 
-    python native_host/install.py --extension-id <chrome-extension-id>
+    python native_host/install.py
 
-Pass the extension's ID (find it in ``chrome://extensions`` after loading
-the unpacked extension). The ID is required because Chrome only allows
-Native Messaging from origins explicitly listed in the manifest's
-``allowed_origins``.
+Chrome only accepts Native Messaging from origins listed in the manifest's
+``allowed_origins``, so the host must know the extension's ID up front.
+``chrome_extension/manifest.json`` pins a ``key``, which makes Chrome derive
+the same ID on every machine — so the ID is a constant here rather than
+something the user has to read off ``chrome://extensions``. Override it with
+``--extension-id`` when loading a build whose ``key`` was stripped (for
+instance one installed from the Chrome Web Store, which issues its own).
 """
 
 from __future__ import annotations
@@ -27,6 +30,10 @@ from pathlib import Path
 
 HOST_NAME = "com.kicad_parts_importer.host"
 REGISTRY_KEY_PATH = rf"Software\Google\Chrome\NativeMessagingHosts\{HOST_NAME}"
+
+# Derived from the "key" pinned in chrome_extension/manifest.json:
+# sha256(DER public key), first 16 bytes, hex digits 0-f mapped onto a-p.
+DEFAULT_EXTENSION_ID = "ajbbipncafmnckigkalhbhpnmjldniao"
 
 
 def build_manifest(host_path: Path, extension_id: str) -> dict[str, object]:
@@ -132,8 +139,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--extension-id",
-        required=True,
-        help="Chrome extension ID (find it on chrome://extensions after loading the unpacked extension)",
+        default=DEFAULT_EXTENSION_ID,
+        help=(
+            "Chrome extension ID. Defaults to the ID pinned by the manifest's "
+            f"`key` ({DEFAULT_EXTENSION_ID}); override only for a build whose key was stripped."
+        ),
     )
     args = parser.parse_args()
 

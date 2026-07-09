@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "KiCad Parts Importer",
   "version": "3.0.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwv4MdV+183wmNSlP6hKWnuG9qA1ZCyTadkROO04DuA9lXH+vUrhi+HHvd8WPpBs+p/8W4J4GwLEMt2PJ94UqJSExh3EKZ0/tc8qSUKbkkMuOI+LDX27CF+5p3tJ5EjAFIdfe0EtqJ+7c1RdLqcyMfHmoW0BhQfYjJQoQrR6ZgjTRU7/y3GlZKUkGLS11tvkvLWhhHCpGHVkh8Ui+IrQllHXEBwHyYOYEZxHhQSaLuBmRJvCcN9gzIuB+j6kP1i0M6rlgfB8LDbFu+sMFTSLKaMEqaoVGse45HX2sg3RuyOEcXkGQlw6AzULn38le/fS8posiUhg+YvXOZ5EuT+O14QIDAQAB",
   "description": "Download KiCad 9+ compatible symbols, footprints & 3D from LCSC. Local backend via Native Host.",
   "permissions": [
     "storage",
