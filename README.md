@@ -3,7 +3,7 @@
 **Version 3.0.0** · A Chrome extension + local helper that imports **symbols, footprints, and 3D models** from [LCSC](https://www.lcsc.com/) product pages straight into your **KiCad** libraries — using EasyEDA-sourced CAD data, with optional **custom KiCad symbol/footprint templates**.
 
 > [!NOTE]
-> **This README documents V3** (the current rebuild on branch `v3/rebuild`, manifest `3.0.0`). V3 replaces V2's standalone WebSocket server with a **Native Host** launched on demand through **Chrome Native Messaging** — there is **no server to start, no port, and no "API base URL"** to configure. The deeper design lives in [`CONTEXT.md`](CONTEXT.md) (domain language), [`V3-SPEC.md`](V3-SPEC.md), and [`docs/adr/`](docs/adr/).
+> **This README documents V3** (the current rebuild on `master`, manifest `3.0.0`). V3 replaces V2's standalone WebSocket server with a **Native Host** launched on demand through **Chrome Native Messaging** — there is **no server to start, no port, and no "API base URL"** to configure. The deeper design lives in [`CONTEXT.md`](CONTEXT.md) (domain language), [`V3-SPEC.md`](V3-SPEC.md), and [`docs/adr/`](docs/adr/).
 
 > [!WARNING]
 > EasyEDA source data can contain errors. **Verify pins and footprints** before using converted parts in production.

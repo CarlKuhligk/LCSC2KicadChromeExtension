@@ -8,7 +8,7 @@ should be used verbatim in code, not paraphrased.
 > **V2 vs V3 (read first).** The **Surfaces**, **Content‑script concepts**,
 > **Backend concepts**, and **Shared utilities** sections below describe the
 > **V2** model (WebSocket backend, Job‑Queue, separate dialogs) and are kept as
-> legacy reference. **V3 (current, on `v3/rebuild`)** supersedes them — see
+> legacy reference. **V3 (current, on `master`)** supersedes them — see
 > **V3 vocabulary** at the bottom: the **Native Host** (Native Messaging)
 > replaces the WebSocket backend, streamed `progress` replaces the Job‑Queue,
 > and the **Import‑Editor** replaces the separate Category/Value/Pin↔Pad
@@ -116,10 +116,10 @@ should be used verbatim in code, not paraphrased.
 
 ---
 
-## V3 vocabulary (current — implemented on `v3/rebuild`)
+## V3 vocabulary (current — implemented on `master`)
 
 Terms locked during V3 grilling (2026-05-29), now largely in code on
-`v3/rebuild`. See `V3-SPEC.md` for the broader spec, `docs/adr/` for the
+`master`. See `V3-SPEC.md` for the broader spec, `docs/adr/` for the
 load-bearing decisions. Use these names verbatim, not paraphrases.
 
 - **Native Host** — Python process Chrome launches on-demand via Chrome

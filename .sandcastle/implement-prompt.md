@@ -104,8 +104,10 @@ with `git checkout {{SOURCE_BRANCH}}` and commit there.
    - Include a body explaining WHY (the issue number is the WHAT)
    - Sign off with `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`
 8. **Open a PR**, do NOT auto-close the issue. The PR is the review gate:
-   - `gh pr create --repo theautomatist/KiCad-Parts-Importer --base v3/rebuild --title "<commit subject>" --body "<acceptance criteria checklist + summary + 'Closes #<N>'>"`
-   - **Base is always `v3/rebuild`** (the V3 integration branch), NEVER `master`. Omitting `--base` makes GitHub default to `master`, which produces a PR diff containing the entire v3 drift instead of just this slice.
+   - `gh pr create --repo theautomatist/KiCad-Parts-Importer --base master --title "<commit subject>" --body "<acceptance criteria checklist + summary + 'Closes #<N>'>"`
+   - **Base is always `master`.** Since 2026-07-09 `master` *is* V3: the old
+     `v3/rebuild` integration branch was fast-forwarded into it and deleted.
+     Branch off `master` and target it — there is no other long-lived branch.
    - The PR body's `Closes #N` will auto-close the issue on merge — but
      not before the human reviewer signs off.
 9. **Leave a comment on the issue** linking the PR:
