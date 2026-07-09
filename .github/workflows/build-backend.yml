@@ -36,11 +36,16 @@ jobs:
           fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
+      # `pip install .` is load-bearing, not tidiness: PyInstaller analyses
+      # host.py with sys.path = [native_host/], from which easyeda2kicad is not
+      # importable. host.py's sys.path bootstrap only runs at runtime, and is
+      # skipped when frozen. Without installing the package first, not one
+      # engine module lands in the bundle.
       - name: Install dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install .
           pip install pyinstaller pillow
 
       - name: Prepare PyInstaller icon
@@ -51,6 +56,9 @@ jobs:
       # None on Windows, which silently destroys the Native Messaging frames.
       # --collect-submodules pulls in modules PyInstaller's static analysis of
       # host.py might otherwise miss.
+      # --add-data ships packageTaxonomy.json, which package_form.py reads at
+      # import time via a path relative to its package. Without it the host dies
+      # on startup with FileNotFoundError.
       - name: Build PyInstaller binary
         shell: pwsh
         run: |
@@ -59,6 +67,7 @@ jobs:
             --name "$env:APP_NAME" `
             --collect-submodules native_host `
             --collect-submodules easyeda2kicad `
+            --add-data "chrome_extension/shared/packageTaxonomy.json;chrome_extension/shared" `
             native_host/host.py
 
       # Proves the two things a broken bundle would silently get wrong: that the
