@@ -523,7 +523,30 @@ def serve(
         executor.shutdown(wait=True)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    """Serve Chrome, or self-register when the release binary is run directly.
+
+    Chrome always passes the calling extension's origin as the first argument
+    (``chrome-extension://<id>/``), plus ``--parent-window=<hwnd>`` on Windows.
+    A frozen binary invoked with no arguments therefore was not started by
+    Chrome — it was double-clicked, and the user is trying to install it.
+
+    Running from a checkout keeps serving unconditionally, so
+    ``python native_host/host.py`` can still be fed frames by hand; use the
+    explicit ``--register`` there instead.
+    """
+    args = list(sys.argv[1:] if argv is None else argv)
+
+    if "--register" in args:
+        from native_host.install import self_register
+
+        return self_register()
+
+    if getattr(sys, "frozen", False) and not args:
+        from native_host.install import self_register
+
+        return self_register()
+
     return serve()
 
 

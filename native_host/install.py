@@ -1,16 +1,25 @@
-"""
-V3 Native Host installer — Self-Register implementation (Windows only for now).
+"""V3 Native Host installer — Self-Register (Windows).
 
-Writes the Native-Host-Manifest JSON to disk plus a registry entry that
-points Chrome at it. Idempotent: re-running on an installed system is a
-no-op when the manifest content matches.
+Writes the Native-Host Manifest and the registry entry that points Chrome at
+it. Idempotent: re-running on an installed system is a no-op when nothing
+changed.
 
-Cross-OS (macOS, Linux) lands in Issue #13; this walking-skeleton version
-covers Windows because that's the ADR-0001 risk-validation target.
+Two shapes, because the host is invoked differently in each:
+
+**Release binary** (PyInstaller, ``sys.frozen``). The executable *is* the
+host, so the manifest points straight at ``sys.executable``. The manifest
+lives next to Chrome's other per-user data under ``%LOCALAPPDATA%``, because
+the binary may sit in Downloads or be moved later.
+
+**From source** (a checkout with a venv). Chrome would otherwise inherit
+whatever ``python`` is on the subprocess PATH, which usually lacks the
+project's dependencies. So we generate a small ``.bat`` that pins the current
+interpreter and point the manifest at that.
 
 Usage:
 
-    python native_host/install.py
+    python native_host/install.py       # from source
+    KiCadPartsImporterHost.exe          # release binary, double-clicked
 
 Chrome only accepts Native Messaging from origins listed in the manifest's
 ``allowed_origins``, so the host must know the extension's ID up front.
@@ -19,12 +28,15 @@ the same ID on every machine — so the ID is a constant here rather than
 something the user has to read off ``chrome://extensions``. Override it with
 ``--extension-id`` when loading a build whose ``key`` was stripped (for
 instance one installed from the Chrome Web Store, which issues its own).
+
+macOS and Linux registration is not implemented — see issue #13.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -33,35 +45,57 @@ REGISTRY_KEY_PATH = rf"Software\Google\Chrome\NativeMessagingHosts\{HOST_NAME}"
 
 # Derived from the "key" pinned in chrome_extension/manifest.json:
 # sha256(DER public key), first 16 bytes, hex digits 0-f mapped onto a-p.
+# tests/test_extension_manifest.py fails if these two ever drift apart.
 DEFAULT_EXTENSION_ID = "ajbbipncafmnckigkalhbhpnmjldniao"
 
 
+def is_frozen() -> bool:
+    """True when running from a PyInstaller bundle rather than a checkout."""
+    return bool(getattr(sys, "frozen", False))
+
+
+def default_repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def manifest_dir(repo_root: Path | None = None) -> Path:
+    """Directory holding the generated Native-Host Manifest.
+
+    Frozen builds must not write beside the executable — it may live in a
+    read-only or transient location (Downloads, a temp extract dir).
+    """
+    if is_frozen():
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        root = Path(base) if base else Path.home()
+        return root / "KiCadPartsImporter"
+    return (repo_root or default_repo_root()) / "native_host" / "_generated"
+
+
+def manifest_target_path(repo_root: Path | None = None) -> Path:
+    """The on-disk location of the Native-Host Manifest JSON file."""
+    return manifest_dir(repo_root) / f"{HOST_NAME}.json"
+
+
+def host_command_path(repo_root: Path | None = None) -> Path:
+    """The path Chrome invokes.
+
+    Frozen: the executable itself. From source: a generated ``.bat`` that pins
+    the interpreter (see the module docstring).
+    """
+    if is_frozen():
+        return Path(sys.executable)
+    return manifest_dir(repo_root) / "host-launcher.bat"
+
+
 def build_manifest(host_path: Path, extension_id: str) -> dict[str, object]:
-    """Build the Native-Host-Manifest dict per the Chrome Native Messaging spec."""
+    """Build the Native-Host Manifest dict per the Chrome Native Messaging spec."""
     return {
         "name": HOST_NAME,
-        "description": "KiCad Parts Importer V3 native host (walking skeleton)",
+        "description": "KiCad Parts Importer native host",
         "path": str(host_path.resolve()),
         "type": "stdio",
         "allowed_origins": [f"chrome-extension://{extension_id}/"],
     }
-
-
-def manifest_target_path(repo_root: Path) -> Path:
-    """The on-disk location of the Native-Host-Manifest JSON file."""
-    return repo_root / "native_host" / "_generated" / f"{HOST_NAME}.json"
-
-
-def host_executable_path(repo_root: Path) -> Path:
-    """The path Chrome invokes — a runtime .bat that pins the venv-Python.
-
-    Generated rather than checked in because the path to the user's Python
-    interpreter is host-specific. The committed ``kicad-host.bat`` is a
-    fallback for manual smoke-testing inside an activated venv; Chrome uses
-    this generated shim so it gets the venv interpreter (with
-    ``easyeda2kicad`` installed) regardless of subprocess PATH.
-    """
-    return repo_root / "native_host" / "_generated" / "host-launcher.bat"
 
 
 def write_runtime_bat(bat_path: Path, python_exe: str, host_py: Path) -> bool:
@@ -112,12 +146,17 @@ def register_in_windows_registry(manifest_path: Path) -> bool:
     return True
 
 
-def install(extension_id: str, repo_root: Path) -> dict[str, object]:
+def install(extension_id: str = DEFAULT_EXTENSION_ID, repo_root: Path | None = None) -> dict[str, object]:
     """Self-Register entry point. Returns a result dict for callers / tests."""
+    repo_root = repo_root or default_repo_root()
     manifest_path = manifest_target_path(repo_root)
-    host_path = host_executable_path(repo_root)
-    host_py = repo_root / "native_host" / "host.py"
-    bat_changed = write_runtime_bat(host_path, sys.executable, host_py)
+    host_path = host_command_path(repo_root)
+
+    # Only the source install needs a launcher; a frozen binary is its own host.
+    bat_changed: bool | None = None
+    if not is_frozen():
+        bat_changed = write_runtime_bat(host_path, sys.executable, repo_root / "native_host" / "host.py")
+
     manifest = build_manifest(host_path, extension_id)
     manifest_changed = write_manifest(manifest_path, manifest)
 
@@ -132,11 +171,44 @@ def install(extension_id: str, repo_root: Path) -> dict[str, object]:
         "bat_changed": bat_changed,
         "registry_changed": registry_changed,
         "host_name": HOST_NAME,
+        "extension_id": extension_id,
+        "frozen": is_frozen(),
     }
 
 
+def self_register(extension_id: str = DEFAULT_EXTENSION_ID) -> int:
+    """Register this host with Chrome and report what happened.
+
+    Called both by ``main()`` here and by the frozen host when it is launched
+    without arguments (i.e. double-clicked rather than started by Chrome).
+    """
+    if sys.platform != "win32":
+        print(
+            "Self-Register currently supports Windows only.\n"
+            "macOS and Linux registration is tracked in issue #13:\n"
+            "  https://github.com/theautomatist/KiCad-Parts-Importer/issues/13",
+            file=sys.stderr,
+        )
+        return 1
+
+    result = install(extension_id)
+
+    print("KiCad Parts Importer — Native Host registered.")
+    print()
+    print(f"  Manifest:     {result['manifest_path']}")
+    print(f"  Host command: {result['host_path']}")
+    print(f"  Extension ID: {result['extension_id']}")
+    if result["bat_changed"] is not None:
+        print(f"  Launcher written: {result['bat_changed']}")
+    print(f"  Manifest written: {result['manifest_changed']}")
+    print(f"  Registry updated: {result['registry_changed']}")
+    print()
+    print("Reload the extension in chrome://extensions, then refresh any open LCSC tab.")
+    return 0
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description="Register the KiCad Parts Importer Native Host with Chrome.")
     parser.add_argument(
         "--extension-id",
         default=DEFAULT_EXTENSION_ID,
@@ -146,19 +218,7 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
-
-    repo_root = Path(__file__).resolve().parent.parent
-    result = install(args.extension_id, repo_root)
-
-    print(f"Native Host Manifest: {result['manifest_path']}")
-    print(f"Runtime BAT:          {result['host_path']}")
-    print(f"Manifest changed:     {result['manifest_changed']}")
-    print(f"BAT changed:          {result['bat_changed']}")
-    if result["registry_changed"] is not None:
-        print(f"Registry changed:     {result['registry_changed']}")
-    print(f"Host name:            {result['host_name']}")
-    print("Done.")
-    return 0
+    return self_register(args.extension_id)
 
 
 if __name__ == "__main__":
