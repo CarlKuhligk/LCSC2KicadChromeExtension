@@ -3,7 +3,7 @@
 **Version 3.0.0** · A Chrome extension + local helper that imports **symbols, footprints, and 3D models** from [LCSC](https://www.lcsc.com/) product pages straight into your **KiCad** libraries — using EasyEDA-sourced CAD data, with optional **custom KiCad symbol/footprint templates**.
 
 > [!NOTE]
-> **This README documents V3** (the current rebuild on branch `v3/rebuild`, manifest `3.0.0`). V3 replaces V2's standalone WebSocket server with a **Native Host** launched on demand through **Chrome Native Messaging** — there is **no server to start, no port, and no "API base URL"** to configure. The deeper design lives in [`CONTEXT.md`](CONTEXT.md) (domain language), [`V3-SPEC.md`](V3-SPEC.md), and [`docs/adr/`](docs/adr/).
+> **This README documents V3** (the current rebuild on `master`, manifest `3.0.0`). V3 replaces V2's standalone WebSocket server with a **Native Host** launched on demand through **Chrome Native Messaging** — there is **no server to start, no port, and no "API base URL"** to configure. The deeper design lives in [`CONTEXT.md`](CONTEXT.md) (domain language), [`V3-SPEC.md`](V3-SPEC.md), and [`docs/adr/`](docs/adr/).
 
 > [!WARNING]
 > EasyEDA source data can contain errors. **Verify pins and footprints** before using converted parts in production.
@@ -97,33 +97,45 @@ Between the two phases the extension computes a **confidence state** and shows t
 
 ## Getting started
 
+> [!IMPORTANT]
+> **Windows only.** The Native Host registers itself through the Windows registry. macOS and Linux are not supported yet — see [issue #13](https://github.com/theautomatist/KiCad-Parts-Importer/issues/13).
+
 > [!NOTE]
-> V3's Chrome Web Store listing ships with the public V3 release. Until then, install **from source** as below. (V2's separate listing keeps working with its own V2 backend but receives no V3 updates — there is no in-place upgrade; V3 is a clean break.)
+> V3 is distributed as a **GitHub release**, not through the Chrome Web Store. V2's Store listing keeps working with its own V2 backend but receives no V3 updates — there is no in-place upgrade; V3 is a clean break.
 
 ### Prerequisites
 
 - **Google Chrome** (or a Chromium browser that supports unpacked extensions).
-- **Python 3.11+** with this project's dependencies, *or* a release binary of the Native Host (PyInstaller single file).
+- Nothing else. The release ships a self-contained Native Host; you do **not** need Python installed.
 
 ### 1 — Load the extension
 
-1. `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select the **`chrome_extension/`** folder.
-2. Note the **extension ID** Chrome shows on the card — you need it in step 2.
-3. After any code change: reload the extension and refresh open LCSC tabs.
+1. Download `…-KiCad Parts Importer-Chrome.zip` from the [latest release](https://github.com/theautomatist/KiCad-Parts-Importer/releases) and unzip it.
+2. `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select the unzipped **`chrome_extension/`** folder.
+
+The extension ID will read `ajbbipncafmnckigkalhbhpnmjldniao`. It is pinned by the manifest, so it is the same on every machine — which is what lets the Native Host register itself in the next step without you copying anything.
 
 ### 2 — Register the Native Host
 
-Chrome only launches a native host that's registered for your exact extension ID. Two ways:
+Download `…-KiCadPartsImporterHost.exe` from the same release and **run it once**. It registers itself and exits. Windows may warn about an unsigned binary; choose *More info* → *Run anyway* (see [Troubleshooting](#troubleshooting)).
 
-- **From source (developer preview):** install deps, then self-register:
-  ```bash
-  pip install -r requirements.txt -r requirements-dev.txt
-  python native_host/install.py --extension-id <your-extension-id>
-  ```
-  This writes the **Native-Host Manifest** to the OS-specific location and a small generated launcher that pins Chrome's subprocess to your Python interpreter. *(Windows is wired today; macOS/Linux self-register is in progress — issue #13.)*
-- **Release binary:** run the downloaded executable once — it **self-registers** the manifest and exits. (See [Troubleshooting](#troubleshooting) if Windows blocks an unsigned binary.)
+Then reload the extension in `chrome://extensions` and refresh any open LCSC tab.
 
 There is **no server to keep running** and **no URL or port to set**. When you open an LCSC page the extension **pre-warms** the host so it's hot by the time you click.
+
+<details>
+<summary>Running from source instead</summary>
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+python native_host/install.py
+```
+
+This writes the **Native-Host Manifest** plus a small generated launcher that pins Chrome's subprocess to your Python interpreter — otherwise Chrome would inherit whatever `python` is on its `PATH`, which usually lacks this project's dependencies.
+
+Load `chrome_extension/` unpacked as above. Pass `--extension-id <id>` only if you stripped the manifest's `key`. After any code change: reload the extension and refresh open LCSC tabs.
+
+</details>
 
 ### 3 — Pick a library
 
@@ -191,7 +203,7 @@ The 3D model is never chosen separately — it **follows whichever footprint** e
 
 ## Troubleshooting
 
-**Nothing happens when I click Import / "host not found".** The Native Host isn't registered for this extension ID. Re-run `python native_host/install.py --extension-id <id>` with the ID shown in `chrome://extensions`, then reload the extension. Inspect the service-worker console (`chrome://extensions` → the extension → *Inspect views: service worker*) for errors.
+**Nothing happens when I click Import / "host not found".** The Native Host isn't registered. Run `KiCadPartsImporterHost.exe` once (or `python native_host/install.py` from source), then reload the extension. If Chrome shows an extension ID other than `ajbbipncafmnckigkalhbhpnmjldniao`, you are loading a build whose manifest `key` was removed — re-register with `--extension-id <the id Chrome shows>`. Inspect the service-worker console (`chrome://extensions` → the extension → *Inspect views: service worker*) for errors.
 
 **Windows blocks the release binary.** Release builds are unsigned **PyInstaller** executables, so SmartScreen / Smart App Control may flag them. In order:
 
@@ -204,10 +216,12 @@ The 3D model is never chosen separately — it **follows whichever footprint** e
 
 ## Credits & license
 
-Based on [easyeda2kicad](https://github.com/uPesy/easyeda2kicad.py) by uPesy.
+This project is free software under the **[GNU AGPL v3](LICENSE)** (or, at your option, any later version). It is a fork of [easyeda2kicad](https://github.com/uPesy/easyeda2kicad.py) by uPesy — the conversion engine derives from that work, so the same license governs this project as a whole. [`NOTICE`](NOTICE) records the origin and the significant modifications.
 
-> [!NOTE]
-> This repository includes **AGPL-3.0** code from the upstream project; that license applies to those parts. See [`LICENSE`](LICENSE).
+- **Source:** <https://github.com/theautomatist/KiCad-Parts-Importer> — also linked from the popup's *About* section.
+- **Changes:** [`CHANGELOG.md`](CHANGELOG.md)
+- **Privacy:** [`chrome_extension/PRIVACY_POLICY.md`](chrome_extension/PRIVACY_POLICY.md) — everything runs locally; no telemetry.
+- **Third party:** PDF.js (Apache-2.0), vendored under `chrome_extension/vendor/pdfjs/`.
 
 ---
 
@@ -312,7 +326,7 @@ sequenceDiagram
 ### Running & testing from source
 
 - **Extension:** load `chrome_extension/` unpacked. There's **no build step** — `inject.js` dynamically `import()`s `main.js`, so source edits load after an extension reload + page refresh (`Ctrl+Shift+R`).
-- **Native Host:** registered via `python native_host/install.py --extension-id <id>`. For a manual smoke test outside Chrome, run `python native_host/host.py` and pipe a length-prefixed frame; Chrome itself invokes it through the generated launcher.
+- **Native Host:** registered via `python native_host/install.py`. For a manual smoke test outside Chrome, run `python native_host/host.py` and pipe a length-prefixed frame — running from source always serves, so use `python native_host/host.py --register` if you want to register instead. Chrome itself invokes the host through the generated launcher.
 - **Tests:** `pytest` (engine + host) and `cd chrome_extension && npm test` (Vitest). `tools/kicad_lint.py PATH [--fix] [--dedupe]` lints KiCad files for property-whitespace issues.
 
 ### Conventions

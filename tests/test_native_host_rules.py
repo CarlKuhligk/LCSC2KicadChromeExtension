@@ -246,6 +246,7 @@ def test_set_rule_persists_easyeda_symbol_source(tmp_path: Path) -> None:
         "hidePinNumbers": False,
         "hidePinNames": False,
         "valueParam": None,
+        "templatePinMap": {},
     }
     assert get_rule("Passives/Resistors", store_path=store) == written
 
@@ -441,6 +442,76 @@ def test_set_rule_drops_blank_label_mapping_entries(tmp_path: Path) -> None:
         store_path=store,
     )
     assert written["labelMapping"] == {"Resistance": "Value"}
+
+
+# ---------------------------------------------------------------------------
+# templatePinMap (Issue #9)
+# ---------------------------------------------------------------------------
+
+
+def test_set_rule_persists_template_pin_map(tmp_path: Path) -> None:
+    """The Import-Editor's Pin↔Pad mapper writes ``templatePinMap`` onto the rule.
+
+    Before this was allowed, ``collectRegisterEditorRule`` emitted a field the
+    store rejected: registering a template symbol with a pin mapping failed with
+    "unsupported field(s)", and the green one-click path then converted with no
+    mapping at all.
+    """
+    store = tmp_path / "rules.json"
+    written = set_rule(
+        "Resistors",
+        {
+            "symbolSource": {"source": "template", "libPath": "/lib/T.kicad_sym", "name": "R"},
+            "templatePinMap": {"1": "1", "2": "2"},
+        },
+        store_path=store,
+    )
+    assert written["templatePinMap"] == {"1": "1", "2": "2"}
+    assert get_rule("Resistors", store_path=store)["templatePinMap"] == {"1": "1", "2": "2"}
+
+
+def test_set_rule_defaults_template_pin_map_to_empty(tmp_path: Path) -> None:
+    """Most rules have no mapping; the field must still round-trip as {}."""
+    store = tmp_path / "rules.json"
+    written = set_rule(
+        "Passives", {"symbolSource": {"source": "easyeda"}}, store_path=store
+    )
+    assert written["templatePinMap"] == {}
+
+
+def test_set_rule_coerces_template_pin_map_scalars(tmp_path: Path) -> None:
+    """Pad labels are strings in KiCad, but JSON from the extension may carry ints."""
+    store = tmp_path / "rules.json"
+    written = set_rule(
+        "Diodes",
+        {
+            "symbolSource": {"source": "template", "libPath": "/lib/T.kicad_sym", "name": "D"},
+            "templatePinMap": {1: 2, "3": "A1", "  ": "dropped", "4": " "},
+        },
+        store_path=store,
+    )
+    assert written["templatePinMap"] == {"1": "2", "3": "A1"}
+
+
+def test_set_rule_rejects_non_object_template_pin_map(tmp_path: Path) -> None:
+    store = tmp_path / "rules.json"
+    with pytest.raises(ValueError, match="templatePinMap must be an object"):
+        set_rule(
+            "Bad",
+            {"symbolSource": {"source": "easyeda"}, "templatePinMap": ["1", "2"]},
+            store_path=store,
+        )
+
+
+def test_set_rule_still_rejects_dropped_adr0006_fields(tmp_path: Path) -> None:
+    """Widening the allow-list must not reopen it to the V2-era triplet."""
+    store = tmp_path / "rules.json"
+    with pytest.raises(ValueError, match="unsupported field"):
+        set_rule(
+            "Bad",
+            {"symbolSource": {"source": "easyeda"}, "autoApply": True},
+            store_path=store,
+        )
 
 
 # ---------------------------------------------------------------------------

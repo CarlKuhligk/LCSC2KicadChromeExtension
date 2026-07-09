@@ -18,7 +18,9 @@ glob already covers it).
 
 from __future__ import annotations
 
+import base64
 import fnmatch
+import hashlib
 import json
 from pathlib import Path
 
@@ -113,3 +115,40 @@ def test_manifest_is_valid_mv3() -> None:
         assert isinstance(entry.get("resources"), list)
         assert isinstance(entry.get("matches"), list)
         assert len(entry["matches"]) > 0
+
+
+def _extension_id_from_key(key_b64: str) -> str:
+    """Reimplement Chrome's ID derivation: sha256(DER pubkey)[:16], hex 0-f -> a-p."""
+    digest = hashlib.sha256(base64.b64decode(key_b64)).hexdigest()[:32]
+    return "".join(chr(ord("a") + int(c, 16)) for c in digest)
+
+
+def test_manifest_pins_the_extension_key() -> None:
+    """Without a pinned `key`, Chrome derives the ID from the install path.
+
+    An unpacked extension would then get a different ID on every machine, and
+    the Native Host — whose manifest names one exact origin — could not be
+    registered ahead of time.
+    """
+    manifest = _load_manifest()
+    assert "key" in manifest, (
+        "chrome_extension/manifest.json must pin a `key` so the extension ID is "
+        "reproducible across machines; the Native Host registers against that "
+        "one ID."
+    )
+    base64.b64decode(manifest["key"], validate=True)
+
+
+def test_installer_default_id_matches_the_manifest_key() -> None:
+    """The installer's baked-in ID must equal what Chrome will derive from `key`.
+
+    If these drift, the host registers for an origin Chrome never uses and every
+    import fails with "host not found" — a silent, confusing break.
+    """
+    from native_host.install import DEFAULT_EXTENSION_ID
+
+    expected = _extension_id_from_key(_load_manifest()["key"])
+    assert DEFAULT_EXTENSION_ID == expected, (
+        f"native_host/install.py DEFAULT_EXTENSION_ID is {DEFAULT_EXTENSION_ID!r}, but "
+        f"chrome_extension/manifest.json's key derives {expected!r}. Regenerate one to match."
+    )

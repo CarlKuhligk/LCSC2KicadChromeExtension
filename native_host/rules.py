@@ -136,6 +136,7 @@ _ALLOWED_RULE_FIELDS: frozenset[str] = frozenset(
         "hidePinNumbers",
         "hidePinNames",
         "valueParam",
+        "templatePinMap",
     }
 )
 """ADR-0006 ComponentRule fields persisted by the Register slice.
@@ -208,6 +209,35 @@ def _normalize_source_layer(raw: Any, *, field: str) -> dict[str, Any]:
     return {"source": "template", "libPath": lib_path.strip(), "name": name.strip()}
 
 
+def _normalize_template_pin_map(raw: Any) -> dict[str, str]:
+    """Validate the symbol-pin-number → footprint-pad-label map (Issue #9).
+
+    Persisting this on the rule is what lets a later one-click import reuse the
+    mapping instead of asking again. ``phase2`` applies it only when the symbol
+    comes from a template, so an empty map is the normal case and stores as
+    ``{}``.
+
+    Keys and values are coerced to trimmed strings: pad labels are strings in
+    KiCad, but a JSON round-trip through the extension can hand us ints.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("rule.templatePinMap must be an object")
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, (str, int)):
+            raise ValueError("rule.templatePinMap keys must be strings")
+        if not isinstance(value, (str, int)):
+            raise ValueError(f"rule.templatePinMap[{key!r}] must be a string")
+        k = str(key).strip()
+        v = str(value).strip()
+        if not k or not v:
+            continue
+        out[k] = v
+    return out
+
+
 def _normalize_label_mapping(raw: Any) -> dict[str, str]:
     """Validate the LCSC-label → KiCad-property map.
 
@@ -268,6 +298,11 @@ def _normalize_rule(rule: Any, category_path: str) -> dict[str, Any]:
             if isinstance(rule.get("valueParam"), str) and rule["valueParam"].strip()
             else None
         ),
+        # Pin↔Pad map (Issue #9): the Import-Editor's mapper writes this when the
+        # symbol is a template. Without persisting it here, the map would be
+        # rebuilt by hand on every import and the green one-click path would
+        # convert with no mapping at all.
+        "templatePinMap": _normalize_template_pin_map(rule.get("templatePinMap")),
     }
     if "footprintSource" in rule and rule["footprintSource"] is not None:
         # Reserved slot for the footprint follow-up slice. Validate with the

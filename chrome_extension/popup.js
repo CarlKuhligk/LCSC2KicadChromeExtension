@@ -147,15 +147,6 @@ const bootstrap = globalScope.bootstrap || (globalScope.bootstrap = createSimple
 const UI_STORAGE_KEY = "popupUiState";
 const TAB_IDS = ["categories", "libraries", "settings"];
 
-const DEFAULT_SETTINGS_SERVER_URL =
-  typeof globalThis.K2C_DEFAULT_SERVER_URL === "string"
-    ? globalThis.K2C_DEFAULT_SERVER_URL
-    : "http://localhost:8087";
-
-function extensionWsEndpointKeyFromBaseUrl(baseUrl) {
-  return globalThis.k2cExtensionSocketEndpointKey(baseUrl);
-}
-
 /** Library row IDs with the read-only details panel open (session only; cleared on reload). */
 const libraryDetailExpandedIds = new Set();
 
@@ -184,7 +175,6 @@ const state = {
   selectedLibraryPath: "",
   selectedLibraryName: "",
   settings: {
-    serverUrl: DEFAULT_SETTINGS_SERVER_URL,
     overwrite: false,
     overwriteModel: false,
     debug: false,
@@ -336,7 +326,6 @@ function cacheElements() {
 
   // Settings
   elements.settingsForm = document.getElementById("settings-form");
-  elements.settingsServer = document.getElementById("settings-server");
   elements.settingsTest = document.getElementById("settings-test");
   elements.settingsOverwrite = document.getElementById("settings-overwrite");
   elements.settingsOverwriteModel = document.getElementById("settings-overwrite-model");
@@ -346,6 +335,10 @@ function cacheElements() {
   elements.settingsProjectRelativePath = document.getElementById("settings-project-relative-path");
   elements.settingsLowConfidence = document.getElementById("settings-low-confidence");
   elements.themeOptions = Array.from(document.querySelectorAll(".theme-option"));
+
+  // Single source of truth for the version is manifest.json.
+  const aboutVersion = document.getElementById("settings-about-version");
+  if (aboutVersion) aboutVersion.textContent = chrome.runtime.getManifest().version;
 
   // Modals shared
   elements.libraryRequiredModal = document.getElementById("library-required-modal");
@@ -573,11 +566,6 @@ function applyState(snapshot = {}) {
   state.selectedLibraryPath = typeof snapshot.selectedLibraryPath === "string" ? snapshot.selectedLibraryPath : "";
   state.selectedLibraryName = typeof snapshot.selectedLibraryName === "string" ? snapshot.selectedLibraryName : "";
 
-  const serverUrl = typeof snapshot.serverUrl === "string" && snapshot.serverUrl.trim().length
-    ? snapshot.serverUrl.trim()
-    : state.settings.serverUrl;
-
-  state.settings.serverUrl = serverUrl;
   state.settings.overwrite = Boolean(snapshot.overwriteFootprints);
   state.settings.overwriteModel = Boolean(snapshot.overwriteModels);
   state.settings.debug = Boolean(snapshot.debugLogs);
@@ -1031,10 +1019,7 @@ function buildLibraryDetailsPanel(library) {
 }
 
 function renderSettings() {
-  if (!elements.settingsServer) return;
-  if (!elements.settingsServer.matches(":focus")) {
-    elements.settingsServer.value = state.settings.serverUrl;
-  }
+  if (!elements.settingsOverwrite) return;
   elements.settingsOverwrite.checked = state.settings.overwrite;
   elements.settingsOverwriteModel.checked = state.settings.overwriteModel;
   elements.settingsDebug.checked = state.settings.debug;
@@ -1706,17 +1691,9 @@ function handleSettingsChange() {
     ? rawProjectPath
     : (state.settings.projectRelativePath || rawProjectPath);
   const categorySettings = readCategoryTableState();
-  const trimmedServerUrl = elements.settingsServer.value.trim();
-  const resolvedServerUrl = trimmedServerUrl || DEFAULT_SETTINGS_SERVER_URL;
-  const serverUrlPayload =
-    extensionWsEndpointKeyFromBaseUrl(resolvedServerUrl)
-    !== extensionWsEndpointKeyFromBaseUrl(state.settings.serverUrl)
-      ? { serverUrl: resolvedServerUrl }
-      : {};
   const lowConfidenceBehaviour =
     elements.settingsLowConfidence?.value === "keepEasyeda" ? "keepEasyeda" : "openEditor";
   const payload = {
-    ...serverUrlPayload,
     overwriteFootprints: elements.settingsOverwrite.checked,
     overwriteModels: elements.settingsOverwriteModel.checked,
     debugLogs: elements.settingsDebug.checked,
@@ -1749,13 +1726,11 @@ function toggleSettingsProjectPath() {
 }
 
 function testServerConnection() {
-  setSettingsFeedback("Checking backend…", "text-muted");
-  sendMessage("updateSettings", {
-    serverUrl: elements.settingsServer.value.trim() || DEFAULT_SETTINGS_SERVER_URL,
-  })
+  setSettingsFeedback("Checking Native Host…", "text-muted");
+  sendMessage("getState")
     .then((status) => {
-      if (status.connected) setSettingsFeedback("Backend reachable", "text-success");
-      else setSettingsFeedback("Backend not reachable", "text-danger");
+      if (status.connected) setSettingsFeedback("Native Host reachable", "text-success");
+      else setSettingsFeedback("Native Host not reachable — is it registered?", "text-danger");
     });
 }
 

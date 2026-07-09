@@ -1,3 +1,37 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kicad-parts-importer"
+description = "Import LCSC parts into KiCad libraries: symbols, footprints and 3D models, with custom template support."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "AGPL-3.0-or-later" }
+authors = [{ name = "theautomatist" }]
+dynamic = ["version"]
+dependencies = [
+    "requests>=2.0.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0.0", "ruff>=0.8.0", "pre-commit>=2.17.0"]
+
+[project.urls]
+Homepage = "https://github.com/theautomatist/KiCad-Parts-Importer"
+Issues = "https://github.com/theautomatist/KiCad-Parts-Importer/issues"
+
+[project.scripts]
+kicad-parts-importer-host = "native_host.host:main"
+
+[tool.setuptools.dynamic]
+# Single source of truth, so the package version cannot drift from the engine's.
+version = { attr = "easyeda2kicad.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["easyeda2kicad*", "native_host*"]
+
 [tool.black]
 line-length = 88
 preview = true
