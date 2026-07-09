@@ -1,8 +1,20 @@
 # V3-SPEC.md — KiCad Parts Importer V3
 
-**Status:** decisions locked · 2026-05-29 · post-grilling
+**Status:** historical · locked 2026-05-29 · **partly superseded**
 **Author:** theautomatist (idea owner) + Claude (drafter)
-**Sibling docs:** [CONTEXT.md](CONTEXT.md) (domain language), [REFACTOR-PLAN.md](REFACTOR-PLAN.md) (V2 hand-off — now mostly archive), [docs/adr/](docs/adr/) (load-bearing decisions)
+**Sibling docs:** [CONTEXT.md](CONTEXT.md) (domain language), [docs/adr/](docs/adr/) (load-bearing decisions)
+
+> [!WARNING]
+> This document predates **[ADR-0006](docs/adr/0006-confidence-driven-apply-model.md)** and describes an apply model that was never built. Where it disagrees with ADR-0006, [`CONTEXT.md`](CONTEXT.md), or the code, **those win**.
+>
+> Specifically, the following appear below but **do not exist**:
+>
+> - The **Customize button** on the anchor card. The Import-Editor is reached through the Override Panel instead (*Register* / *Modify*).
+> - The **"Always show Override Panel"** master toggle, and the per-rule `autoApply` / `autoConfirm` flags.
+> - The **Skip-Panel Flow**. It was replaced by the **Confidence State** machine: green imports in one click, yellow follows a setting, white prompts you to register.
+> - The **manual label mapping** editor. All LCSC parameters are auto-upserted as symbol properties.
+>
+> The Pitch, the transport decision, and the domain vocabulary remain accurate.
 
 ---
 
