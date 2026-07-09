@@ -66,9 +66,14 @@ from typing import Any, Callable
 # and the parent of native_host/ is NOT on sys.path — so `from native_host.X
 # import ...` raises ModuleNotFoundError. Insert the repo root explicitly.
 # Idempotent: no-op when already importable (e.g. when imported by tests).
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
+#
+# A PyInstaller bundle resolves these from its own archive, and __file__ then
+# points inside the extraction dir — so the computed "repo root" would be a
+# path that does not exist. Skip it there.
+if not getattr(sys, "frozen", False):
+    _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if _REPO_ROOT not in sys.path:
+        sys.path.insert(0, _REPO_ROOT)
 
 from native_host.fs import (  # noqa: E402
     check_path,

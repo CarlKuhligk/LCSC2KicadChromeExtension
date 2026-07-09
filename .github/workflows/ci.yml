@@ -1,9 +1,12 @@
-# Manual CI: tests + extension sanity checks. Does not publish releases or bump versions.
+# CI: tests + extension sanity checks. Does not publish releases or bump versions.
 # Version context is printed from manifest.json + git (see "Report versions" step).
 # See README → Development → CI.
 name: CI
 
 on:
+  push:
+    branches: [master]
+  pull_request:
   workflow_dispatch:
     inputs:
       note:

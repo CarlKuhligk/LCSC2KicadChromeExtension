@@ -1,10 +1,9 @@
 name: Build backend binaries
 
 on:
-  # PARKED 2026-06-04 (V3 fresh-start): tag auto-trigger disabled.
-  # The PyInstaller entry-point must move from the deleted run_server.py (V2 WebSocket
-  # server) to native_host/host.py once native-host bundling lands — see KONZEPT.md §Install
-  # ("ci-entry-point-fix") and native_host README issue #13. Re-add the tag trigger then.
+  push:
+    tags:
+      - "v*"
   workflow_dispatch: {}
 
 permissions:
@@ -12,14 +11,13 @@ permissions:
 
 jobs:
   build:
-    name: Build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+    # Windows only: install.py registers the Native Host through the Windows
+    # registry. A macOS/Linux binary would write a manifest nothing reads, so we
+    # ship no artifact rather than a broken one. Cross-OS support is issue #13.
+    name: Build host binary (Windows)
+    runs-on: windows-latest
     env:
-      APP_NAME: "KiCad Parts Importer"
+      APP_NAME: "KiCadPartsImporterHost"
       PYTHON_VERSION: "3.11"
     steps:
       - uses: actions/checkout@v5
@@ -38,82 +36,67 @@ jobs:
           fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
-      - name: Set OS name (Linux/macOS)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          case "$RUNNER_OS" in
-            Linux) OS_NAME="Linux" ;;
-            macOS) OS_NAME="Mac" ;;
-            *) OS_NAME="$RUNNER_OS" ;;
-          esac
-          echo "OS_NAME=$OS_NAME" >> "$GITHUB_ENV"
-
-      - name: Set OS name (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          "OS_NAME=Windows" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-      - name: Install dependencies (Linux/macOS)
-        if: runner.os != 'Windows'
-        run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install pyinstaller
-
-      - name: Install dependencies (Windows)
-        if: runner.os == 'Windows'
+      - name: Install dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          if (Test-Path requirements.txt) { pip install -r requirements.txt }
+          pip install -r requirements.txt
           pip install pyinstaller pillow
 
-      - name: Prepare PyInstaller icon (macOS)
-        if: runner.os == 'macOS'
-        run: bash packaging/pyinstaller/build_macos_icns.sh
-
-      - name: Prepare PyInstaller icon (Windows)
-        if: runner.os == 'Windows'
+      - name: Prepare PyInstaller icon
         shell: pwsh
         run: python packaging/pyinstaller/build_windows_ico.py
 
-      - name: Build PyInstaller binary (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          pyinstaller --onefile --name "$APP_NAME" run_server.py
-
-      - name: Build PyInstaller binary (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          pyinstaller --onefile --icon "build/pyinstaller/app.icns" --name "$APP_NAME" run_server.py
-
-      - name: Build PyInstaller binary (Windows)
-        if: runner.os == 'Windows'
+      # --console (the default) is load-bearing: --windowed sets sys.stdout to
+      # None on Windows, which silently destroys the Native Messaging frames.
+      # --collect-submodules pulls in modules PyInstaller's static analysis of
+      # host.py might otherwise miss.
+      - name: Build PyInstaller binary
         shell: pwsh
         run: |
-          pyinstaller --onefile --icon "build\pyinstaller\app.ico" --name "$env:APP_NAME" run_server.py
+          pyinstaller --onefile --console `
+            --icon "build\pyinstaller\app.ico" `
+            --name "$env:APP_NAME" `
+            --collect-submodules native_host `
+            --collect-submodules easyeda2kicad `
+            native_host/host.py
 
-      - name: Package artifact (Linux/macOS)
-        if: runner.os != 'Windows'
+      # Proves the two things a broken bundle would silently get wrong: that the
+      # frozen host can reach install.py and register itself, and that it still
+      # serves (rather than reinstalling) when Chrome starts it with an origin.
+      - name: Smoke-test the binary
+        shell: pwsh
         run: |
-          mkdir -p out
-          OUTPUT_NAME="${VERSION}-${APP_NAME}-${OS_NAME}"
-          cp "dist/$APP_NAME" "out/$OUTPUT_NAME"
+          $ErrorActionPreference = "Stop"
+          $exe = "dist\$env:APP_NAME.exe"
+          if (-not (Test-Path $exe)) { throw "binary not produced at $exe" }
 
-      - name: Package artifact (Windows)
-        if: runner.os == 'Windows'
+          & $exe --register
+          if ($LASTEXITCODE -ne 0) { throw "--register exited with $LASTEXITCODE" }
+
+          $manifest = Join-Path $env:LOCALAPPDATA "KiCadPartsImporter\com.kicad_parts_importer.host.json"
+          if (-not (Test-Path $manifest)) { throw "no manifest written to $manifest" }
+          $m = Get-Content $manifest -Raw | ConvertFrom-Json
+          if ($m.path -ne (Resolve-Path $exe).Path) { throw "manifest points at $($m.path), not the binary" }
+          if ($m.allowed_origins[0] -notmatch '^chrome-extension://[a-p]{32}/$') { throw "bad origin: $($m.allowed_origins[0])" }
+
+          # Chrome hands over an origin. Closed stdin means EOF on the first
+          # frame, so the host must exit 0 instead of crashing or registering.
+          $null | & $exe $m.allowed_origins[0]
+          if ($LASTEXITCODE -ne 0) { throw "host exited with $LASTEXITCODE on closed stdin" }
+
+          Write-Host "Binary registers, and serves when Chrome launches it."
+
+      - name: Package artifact
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path out | Out-Null
-          $OutputName = "$env:VERSION-$env:APP_NAME-$env:OS_NAME"
-          Copy-Item "dist\\$env:APP_NAME.exe" "out\\$OutputName.exe"
+          Copy-Item "dist\$env:APP_NAME.exe" "out\$env:VERSION-$env:APP_NAME.exe"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: "${{ env.VERSION }}-KiCad Parts Importer-${{ env.OS_NAME }}"
+          name: "${{ env.VERSION }}-KiCadPartsImporterHost-Windows"
           path: out/*
 
   package-extension:
@@ -136,14 +119,21 @@ jobs:
 
       - name: Verify extension manifest
         run: |
-          test -d "$EXT_DIR" || { echo "Missing $EXT_DIR"; exit 1; }
           test -f "$EXT_DIR/manifest.json" || { echo "Missing manifest.json"; exit 1; }
+          # A stripped `key` means Chrome derives the ID from the install path and
+          # the Native Host, registered for one fixed origin, is never reachable.
+          python -c "import json,sys; m=json.load(open('$EXT_DIR/manifest.json')); sys.exit(0 if m.get('key') else 'manifest.json is missing the pinned key')"
 
       - name: Create extension zip
         run: |
-          SRC="$EXT_DIR"
-          if [ -d "$EXT_DIR/dist" ]; then SRC="$EXT_DIR/dist"; fi
-          zip -r "${VERSION}-KiCad Parts Importer-Chrome.zip" "$SRC" -x "**/node_modules/**" "**/.git/**" "**/.vscode/**" "**/*.map"
+          zip -r "${VERSION}-KiCad Parts Importer-Chrome.zip" "$EXT_DIR" \
+            -x "$EXT_DIR/node_modules/*" \
+               "$EXT_DIR/package.json" \
+               "$EXT_DIR/package-lock.json" \
+               "$EXT_DIR/vitest.config.mjs" \
+               "*.test.js" \
+               "*.test.mjs" \
+               "*.map"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -167,3 +157,15 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: release/*
+          body: |
+            Windows only. macOS and Linux are not supported yet (issue #13).
+
+            **Install**
+            1. Download and unzip the Chrome extension archive.
+            2. Open `chrome://extensions`, enable Developer mode, choose
+               *Load unpacked*, and select the `chrome_extension` folder.
+            3. Run `KiCadPartsImporterHost.exe` once. It registers itself and exits.
+            4. Reload the extension, then open any LCSC product page.
+
+            Windows may warn about an unsigned binary; choose *More info* →
+            *Run anyway*.
