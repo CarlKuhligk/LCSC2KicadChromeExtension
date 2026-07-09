@@ -1,0 +1,49 @@
+KiCad Parts Importer
+Copyright (C) 2025-2026 theautomatist
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version. See the LICENSE file for the full text.
+
+
+UPSTREAM ORIGIN AND MODIFICATIONS
+---------------------------------
+
+This project is a fork of:
+
+    easyeda2kicad.py
+    Copyright (C) uPesy <contact@upesy.com>
+    https://github.com/uPesy/easyeda2kicad.py
+    Licensed under the GNU Affero General Public License v3.0
+
+The conversion engine under `easyeda2kicad/` derives from that work and has
+been modified. In accordance with section 5(a) of the AGPL, the significant
+changes are recorded here:
+
+  2025    Forked from upstream. Added a template system that merges curated
+          KiCad symbols and footprints with EasyEDA-sourced data.
+  2025    Added a Chrome extension front end (`chrome_extension/`) that drives
+          the conversion from LCSC product pages.
+  2026    Replaced the HTTP/WebSocket backend with a Chrome Native Messaging
+          host (`native_host/`). The engine is now invoked in-process rather
+          than served over a socket.
+  2026    Added symbol/footprint SVG preview rendering, a confidence-driven
+          import model with persisted per-category rules, property whitespace
+          normalisation, and a pin-to-pad mapping layer.
+
+Generator strings written into exported KiCad files credit this project rather
+than the upstream, because the emitted footprints and 3D models derive from
+EasyEDA data. `tests/test_generator_string.py` guards that boundary.
+
+
+THIRD-PARTY COMPONENTS
+----------------------
+
+  PDF.js (`chrome_extension/vendor/pdfjs/`)
+  Copyright 2024 Mozilla Foundation
+  Licensed under the Apache License, Version 2.0
+  The license notice is retained in the header of the vendored files.
+
+Runtime Python dependencies (`requests`, `pydantic`) are installed separately
+and remain under their own licenses.

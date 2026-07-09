@@ -91,7 +91,7 @@ from native_host.templates import (  # noqa: E402
     template_symbol_preview,
 )
 
-HOST_VERSION = "0.0.1"
+HOST_VERSION = "3.0.0"
 
 # Single-flight guard shared across slow RPCs (fetchMetadata, convert).
 # ADR-0004: concurrent imports across two LCSC tabs return ``busy``.

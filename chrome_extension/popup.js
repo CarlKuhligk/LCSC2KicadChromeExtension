@@ -336,6 +336,10 @@ function cacheElements() {
   elements.settingsLowConfidence = document.getElementById("settings-low-confidence");
   elements.themeOptions = Array.from(document.querySelectorAll(".theme-option"));
 
+  // Single source of truth for the version is manifest.json.
+  const aboutVersion = document.getElementById("settings-about-version");
+  if (aboutVersion) aboutVersion.textContent = chrome.runtime.getManifest().version;
+
   // Modals shared
   elements.libraryRequiredModal = document.getElementById("library-required-modal");
   elements.pickerModal = document.getElementById("picker-modal");

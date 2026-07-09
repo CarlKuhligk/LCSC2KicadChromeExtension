@@ -1,7 +1,7 @@
 {
   "name": "kicad-parts-importer",
-  "version": "1.0.0",
-  "description": "**Version 2.0.0** · Chrome extension for [LCSC](https://www.lcsc.com/) with a **local backend** — import symbols, footprints, and 3D models into KiCad libraries using EasyEDA-sourced data, with optional **custom KiCad symbol templates**.",
+  "version": "3.0.0",
+  "description": "Chrome extension for LCSC that imports symbols, footprints and 3D models into KiCad libraries through a local Native Host, with support for custom KiCad symbol and footprint templates.",
   "main": "index.js",
   "directories": {
     "doc": "docs",
@@ -15,8 +15,8 @@
     "url": "git+https://github.com/theautomatist/KiCad-Parts-Importer.git"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "theautomatist",
+  "license": "AGPL-3.0-or-later",
   "type": "commonjs",
   "bugs": {
     "url": "https://github.com/theautomatist/KiCad-Parts-Importer/issues"
